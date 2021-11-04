@@ -64,6 +64,14 @@ if [ "$AARCH64" = "true" ]; then
     fi
 fi
 
+if [ "$PPC64LE" = "true" ]; then
+    if [ "${CC%%clang}" != "$CC" ]; then
+        OPTS="$OPTS --cross-file config/ppc/ppc64le-power8-linux-clang"
+    else
+        OPTS="$OPTS --cross-file config/ppc/ppc64le-power8-linux-gcc"
+    fi
+fi
+
 if [ "$BUILD_DOCS" = "true" ]; then
     OPTS="$OPTS -Denable_docs=true"
 fi
@@ -86,7 +94,7 @@ OPTS="$OPTS -Dcheck_includes=true"
 meson build --werror $OPTS
 ninja -C build
 
-if [ "$AARCH64" != "true" ]; then
+if [ "$AARCH64" != "true" ] && [ "$PPC64LE" != "true" ]; then
     failed=
     configure_coredump
     devtools/test-null.sh || failed="true"

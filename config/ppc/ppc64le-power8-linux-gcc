@@ -1,8 +1,8 @@
 [binaries]
-c = 'powerpc64le-linux-gcc'
-cpp = 'powerpc64le-linux-cpp'
-ar = 'powerpc64le-linux-gcc-ar'
-strip = 'powerpc64le-linux-strip'
+c = 'powerpc64le-linux-gnu-gcc'
+cpp = 'powerpc64le-linux-gnu-cpp'
+ar = 'powerpc64le-linux-gnu-ar'
+strip = 'powerpc64le-linux-gnu-strip'
 
 [host_machine]
 system = 'linux'
