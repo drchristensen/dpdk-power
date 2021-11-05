@@ -61,6 +61,10 @@ jobs:
             compiler: gcc
             library: shared
             cross: ppc64le
+          - os: ubuntu-18.04
+            compiler: gcc
+            library: static
+            cross: ppc64le
 
     steps:
     - name: Checkout sources
