@@ -10,7 +10,7 @@ defaults:
     shell: bash --noprofile --norc -exo pipefail {0}
 
 jobs:
-  build:
+  ubuntu-vms:
     name: ${{ join(matrix.config.*, '-') }}
     runs-on: ${{ matrix.config.os }}
     env:
@@ -140,7 +140,70 @@ jobs:
       with:
         name: meson-logs-${{ join(matrix.config.*, '-') }}
         path: |
+          build/.ninja_log
+          build/gdb.log
+          build/meson-logs/meson-log.txt
           build/meson-logs/testlog.txt
+
+  rpm-containers:
+    name: ${{ join(matrix.config.*, '-') }}
+    runs-on: ubuntu-latest
+    container:
+      image: ${{ matrix.config.image }}
+    env:
+      CC: ccache ${{ matrix.config.compiler }}
+      DEF_LIB: ${{ matrix.config.library }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        config:
+          - image: fedora:35
+            compiler: gcc
+            library: static
+          - image: fedora:35
+            compiler: gcc
+            library: shared
+          - image: fedora:35
+            compiler: clang
+            library: static
+          - image: fedora:35
+            compiler: clang
+            library: shared
+
+    steps:
+    - name: Checkout sources
+      uses: actions/checkout@v2
+    - name: Generate various keys
+      id: get_keys
+      run: |
+        echo -n '::set-output name=ccache::'
+        echo 'ccache-${{ matrix.config.image }}-${{ matrix.config.compiler }}-'$(date -u +%Y-w%W)
+        echo -n '::set-output name=logs::'
+        echo 'meson-logs-${{ join(matrix.config.*, '-') }}' | tr -d ':'
+    - name: Retrieve ccache cache
+      uses: actions/cache@v2
+      with:
+        path: ~/.ccache
+        key: ${{ steps.get_keys.outputs.ccache }}-${{ github.ref }}
+        restore-keys: |
+          ${{ steps.get_keys.outputs.ccache }}-refs/heads/main
+    - name: Update
+      run: dnf update -y || true
+    - name: Install packages
+      run: dnf install -y ccache numactl-devel python3-setuptools
+        python3-wheel python3-pip python3-pyelftools ninja-build
+        libatomic libbpf-devel libfdt-devel libpcap-devel openssl-devel
+        rdma-core-devel zlib-devel ${{ matrix.config.compiler }}
+    - name: Run setup
+      run: .ci/linux-setup.sh
+    - name: Build
+      run: .ci/linux-build.sh
+    - name: Upload logs on failure
+      if: failure()
+      uses: actions/upload-artifact@v2
+      with:
+        name: ${{ steps.get_keys.outputs.logs }}
+        path: |
           build/.ninja_log
           build/meson-logs/meson-log.txt
-          build/gdb.log
