@@ -1,0 +1,11 @@
+[binaries]
+c = '/opt/at15.0/bin/powerpc64le-linux-gnu-gcc'
+cpp = '/opt/at15.0/bin/powerpc64le-linux-gnu-cpp'
+ar = '/opt/at15.0/bin/powerpc64le-linux-gnu-ar'
+strip = '/opt/at15.0/bin/powerpc64le-linux-gnu-strip'
+
+[host_machine]
+system = 'linux'
+cpu_family = 'ppc64'
+cpu = 'power8'
+endian = 'little'

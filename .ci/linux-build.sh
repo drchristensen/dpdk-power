@@ -68,7 +68,11 @@ if [ "$AARCH64" = "true" ]; then
 fi
 
 if [ "$PPC64LE" = "true" ]; then
-    OPTS="$OPTS --cross-file config/ppc/ppc64le-power8-linux-gcc-ubuntu1804"
+    if [ "$ADVTOOL" = "true" ]; then
+        OPTS="$OPTS --cross-file config/ppc/ppc64le-power8-linux-at15"
+    else
+        OPTS="$OPTS --cross-file config/ppc/ppc64le-power8-linux-gcc-ubuntu1804"
+    fi
 fi
 
 if [ "$BUILD_DOCS" = "true" ]; then
