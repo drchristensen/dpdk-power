@@ -32,6 +32,7 @@ jobs:
             compiler: gcc
             library: shared
             cross: ppc64le
+            advtool_ver: at15.0
 
     steps:
     - name: Checkout sources
@@ -50,7 +51,7 @@ jobs:
         key: ${{ steps.get_keys.outputs.ccache }}-${{ github.ref }}
         restore-keys: |
           ${{ steps.get_keys.outputs.ccache }}-refs/heads/main
-    - name: Install IBM toolchain repo (ppc64le)
+    - name: Install POWER toolchain repo (ppc64le)
       if: env.PPC64LE == 'true' && env.ADVTOOL == 'true'
       run: .ci/advtool-setup.sh
     - name: Update installed packages
@@ -59,12 +60,10 @@ jobs:
       run: dnf install -y ccache numactl-devel python3-setuptools
         python3-wheel python3-pip python3-pyelftools ninja-build
         libatomic libbpf-devel libfdt-devel libpcap-devel openssl-devel
-        rdma-core-devel zlib-devel
-    - name: Install distro gcc/clang compiler package
-      run: dnf install -y ${{ matrix.config.compiler }}
-    - name: Install cross-compile packages (ppc64le)
+        rdma-core-devel zlib-devel ${{ matrix.config.compiler }}
+    - name: Install POWER cross-compile packages (ppc64le)
       if: env.PPC64LE == 'true' && env.ADVTOOL == 'true'
-      run: dnf install -y advance-toolchain-at15.0-cross-ppc64le
+      run: dnf install -y advance-toolchain-${{ matrix.config.advtool_ver }}-cross-ppc64le
     - name: Run setup
       run: .ci/linux-setup.sh
     - name: Build

@@ -69,7 +69,9 @@ fi
 
 if [ "$PPC64LE" = "true" ]; then
     if [ "$ADVTOOL" = "true" ]; then
-        OPTS="$OPTS --cross-file config/ppc/ppc64le-power8-linux-at15"
+        if [ "$ADVTOOL_VER" = "at15.0" ]; then
+            OPTS="$OPTS --cross-file config/ppc/ppc64le-power8-linux-at15"
+        fi
     else
         OPTS="$OPTS --cross-file config/ppc/ppc64le-power8-linux-gcc-ubuntu1804"
     fi
