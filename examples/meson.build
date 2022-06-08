@@ -131,5 +131,5 @@ foreach example: examples
             link_whole: link_whole_libs,
             link_args: ldflags,
             c_args: cflags,
-            dependencies: dep_objs)
+            dependencies: base_dep_objs + dep_objs)
 endforeach

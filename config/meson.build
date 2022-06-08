@@ -146,30 +146,67 @@ if not is_windows
     add_project_link_arguments('-Wl,--no-as-needed', language: 'c')
 endif
 
-# use pthreads if available for the platform
+
+# DRC - Start
+base_dep_objs = []
+
+# Check for external thread library
 if not is_windows
-    add_project_link_arguments('-pthread', language: 'c')
-    dpdk_extra_ldflags += '-pthread'
+    thread_dep = dependency('threads')
+    if thread_dep.found()
+        base_dep_objs += thread_dep
+    endif
 endif
 
-# on some OS, maths functions are in a separate library
-if cc.find_library('m', required : false).found()
-    # some libs depend on maths lib
-    add_project_link_arguments('-lm', language: 'c')
-    dpdk_extra_ldflags += '-lm'
+## use pthreads if available for the platform
+#if not is_windows
+#    add_project_link_arguments('-pthread', language: 'c')
+#    dpdk_extra_ldflags += '-pthread'
+#endif
+# DRC - End
+
+
+# DRC - Start
+# Check for external math library
+math_dep = cc.find_library('m', required : false)
+if math_dep.found()
+    base_dep_objs += math_dep
 endif
 
+#if cc.find_library('m', required : false).found()
+#    # some libs depend on maths lib
+#    add_project_link_arguments('-lm', language: 'c')
+#    dpdk_extra_ldflags += '-lm'
+#endif
+# DRC - End
+
+
+# DRC - Start
+# Check for external dynamic load library
 if is_linux
-    link_lib = 'dl'
-else
-    link_lib = ''
+    if meson.version().version_compare('<=0.62.0')
+        dl_dep = cc.find_library('dl', required : false)
+    else
+        dl_dep = dependency('dl')
+    endif
+    if dl_dep.found()
+        base_dep_objs += dl_dep
+    endif
 endif
 
-# if link_lib is empty, do not add it to project properties
-if link_lib != ''
-    add_project_link_arguments('-l' + link_lib, language: 'c')
-    dpdk_extra_ldflags += '-l' + link_lib
-endif
+#if is_linux
+#    link_lib = 'dl'
+#else
+#    link_lib = ''
+#endif
+
+## if link_lib is empty, do not add it to project properties
+#if link_lib != ''
+#    add_project_link_arguments('-l' + link_lib, language: 'c')
+#    dpdk_extra_ldflags += '-l' + link_lib
+#endif
+
+# DRC - End
 
 # check for libraries used in multiple places in DPDK
 has_libnuma = 0

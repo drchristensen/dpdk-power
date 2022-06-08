@@ -31,6 +31,9 @@ endif
 
 # set up some global vars for compiler, platform, configuration, etc.
 cc = meson.get_compiler('c')
+# DRC - Start
+message('DRC - cc = @0@'.format(cc.get_id()))
+# DRC - End
 dpdk_source_root = meson.current_source_dir()
 dpdk_build_root = meson.current_build_dir()
 dpdk_conf = configuration_data()

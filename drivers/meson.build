@@ -165,7 +165,7 @@ foreach subpath:subdirs
         out_filename = lib_name + '.pmd.c'
         tmp_lib = static_library('tmp_' + lib_name, sources,
                 include_directories: includes,
-                dependencies: static_deps,
+                dependencies: base_dep_objs + static_deps,
                 c_args: cflags)
         objs += tmp_lib.extract_all_objects(recursive: true)
         sources = custom_target(out_filename,
@@ -178,7 +178,7 @@ foreach subpath:subdirs
                 sources,
                 objects: objs,
                 include_directories: includes,
-                dependencies: static_deps,
+                dependencies: base_dep_objs + static_deps,
                 c_args: cflags,
                 install: true)
 
@@ -223,7 +223,7 @@ foreach subpath:subdirs
         shared_lib = shared_library(lib_name, sources,
                 objects: objs,
                 include_directories: includes,
-                dependencies: shared_deps,
+                dependencies: base_dep_objs + shared_deps,
                 c_args: cflags,
                 link_args: lk_args,
                 link_depends: lk_deps,
@@ -236,10 +236,10 @@ foreach subpath:subdirs
         # testpmd or other built-in apps can find it if necessary
         shared_dep = declare_dependency(link_with: shared_lib,
                 include_directories: includes,
-                dependencies: shared_deps)
+                dependencies: base_dep_objs + shared_deps)
         static_dep = declare_dependency(
                 include_directories: includes,
-                dependencies: static_deps)
+                dependencies: base_dep_objs + static_deps)
 
         dpdk_drivers += static_lib
 

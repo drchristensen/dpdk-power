@@ -190,12 +190,12 @@ foreach l:libraries
             sources,
             objects: objs,
             c_args: cflags,
-            dependencies: static_deps,
+            dependencies: base_dep_objs + static_deps,
             include_directories: includes,
             install: true)
     static_dep = declare_dependency(
             include_directories: includes,
-            dependencies: static_deps)
+            dependencies: base_dep_objs + static_deps)
 
     if not use_function_versioning or is_windows
         # use pre-build objects to build shared lib
@@ -250,7 +250,7 @@ foreach l:libraries
             sources,
             objects: objs,
             c_args: cflags,
-            dependencies: shared_deps,
+            dependencies: base_dep_objs + shared_deps,
             include_directories: includes,
             link_args: lk_args,
             link_depends: lk_deps,
@@ -259,7 +259,7 @@ foreach l:libraries
             install: true)
     shared_dep = declare_dependency(link_with: shared_lib,
             include_directories: includes,
-            dependencies: shared_deps)
+            dependencies: base_dep_objs + shared_deps)
 
     dpdk_libraries = [shared_lib] + dpdk_libraries
     dpdk_static_libraries = [static_lib] + dpdk_static_libraries

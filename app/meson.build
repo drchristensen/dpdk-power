@@ -65,14 +65,21 @@ foreach app:apps
         link_libs = dpdk_static_libraries + dpdk_drivers
     endif
 
+    # DRC - Start
+    message('DRC - cflags = @0@'.format(cflags))
+    message('DRC - ldflags = @0@'.format(ldflags))
+    build_libs_rpath = '/opt/at15.0/lib64'
+    # DRC - End
+
     executable('dpdk-' + name,
             sources,
             c_args: cflags,
             link_args: ldflags,
             link_whole: link_libs,
-            dependencies: ext_deps + dep_objs,
+            dependencies: base_dep_objs + ext_deps + dep_objs,
             include_directories: includes,
-            install_rpath: join_paths(get_option('prefix'), driver_install_path),
+            build_rpath : build_libs_rpath,
+            # install_rpath: join_paths(get_option('prefix'), driver_install_path),
             install: true)
 endforeach
 

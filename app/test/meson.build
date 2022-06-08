@@ -450,13 +450,16 @@ if get_option('default_library') == 'static'
     link_libs = dpdk_static_libraries + dpdk_drivers
 endif
 
+build_libs_rpath = '/opt/at15.0/lib64'
+
 dpdk_test = executable('dpdk-test',
         test_sources,
         link_whole: link_libs,
-        dependencies: test_dep_objs + ext_deps,
+        dependencies: base_dep_objs + test_dep_objs + ext_deps,
         c_args: cflags,
-        install_rpath: join_paths(get_option('prefix'),
-             driver_install_path),
+        build_rpath: build_libs_rpath,
+        # install_rpath: join_paths(get_option('prefix'),
+        #     driver_install_path),
         install: true)
 
 has_hugepage = run_command(py3, 'has_hugepage.py', check: true).stdout().strip() != '0'

@@ -24,6 +24,7 @@ if (cc.get_id() == 'gcc' and cc.version().version_compare('>=10.0') and
         cc.version().version_compare('<12.0') and cc.has_argument('-Wno-psabi'))
     add_project_arguments('-Wno-psabi', language: 'c')
 endif
+
 # If using a generic build, select the lowest common denominator
 if platform == 'generic'
      cpu_instruction_set = 'power8'
@@ -123,3 +124,28 @@ dpdk_conf.set('RTE_MAX_LCORE', 128)
 dpdk_conf.set('RTE_MAX_NUMA_NODES', 16)
 
 dpdk_conf.set('RTE_CACHE_LINE_SIZE', 128)
+
+# DRC - Test for IBM Advanced Toolchain 15.0 (uses glibc v2.34)
+message('DRC - cc = @0@'.format(cc.get_id()))
+glibc_major = cc.get_define('__GLIBC__', prefix: '#include <unistd.h>')
+glibc_minor = cc.get_define('__GLIBC_MINOR__', prefix: '#include <unistd.h>')
+message('DRC - GLIBC = @0@.@1@'.format(glibc_major, glibc_minor))
+thread = '''
+#include <stdio.h>
+#include <pthread.h>
+
+/*thread function definition*/
+void* threadFunction(void* args)
+{
+    while(1) { printf("Thread\n"); }
+}
+int main()
+{
+    pthread_t id;
+    int ret = pthread_create(&id,NULL,&threadFunction,NULL);
+    if (ret == 0) { printf("Success\n"); } else { printf("Failure\n"); return 0; }
+    while(1) { printf("Main\n"); }
+    return 0;
+}
+'''
+result = cc.links(thread, name : 'Thread link check')
