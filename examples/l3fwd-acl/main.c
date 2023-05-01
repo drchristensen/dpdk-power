@@ -170,6 +170,10 @@ static const struct {
 		.name = "altivec",
 		.alg = RTE_ACL_CLASSIFY_ALTIVEC,
 	},
+    {
+        .name = "s390x",
+        .alg = RTE_ACL_CLASSIFY_S390X,
+    }
 	{
 		.name = "avx512x16",
 		.alg = RTE_ACL_CLASSIFY_AVX512X16,

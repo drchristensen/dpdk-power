@@ -101,6 +101,8 @@ static const rte_acl_classify_t classify_fns[] = {
 	[RTE_ACL_CLASSIFY_AVX2] = rte_acl_classify_avx2,
 	[RTE_ACL_CLASSIFY_NEON] = rte_acl_classify_neon,
 	[RTE_ACL_CLASSIFY_ALTIVEC] = rte_acl_classify_altivec,
+	/* use scalar for s390x for now */
+	[RTE_ACL_CLASSIFY_S390X] = rte_acl_classify_scalar,
 	[RTE_ACL_CLASSIFY_AVX512X16] = rte_acl_classify_avx512x16,
 	[RTE_ACL_CLASSIFY_AVX512X32] = rte_acl_classify_avx512x32,
 };
@@ -144,6 +146,27 @@ acl_check_alg_ppc(enum rte_acl_classify_alg alg)
 
 	return -EINVAL;
 }
+
+
+
+/*
+ * Helper function for acl_check_alg.
+ * Check support for PPC specific classify methods.
+ */
+static int
+acl_check_alg_s390x(enum rte_acl_classify_alg alg)
+{
+    if (alg == RTE_ACL_CLASSIFY_S390X) {
+#if defined(RTE_ARCH_S390X)
+        if (rte_vect_get_max_simd_bitwidth() >= RTE_VECT_SIMD_128) 
+			return 0;
+#endif
+        return -ENOTSUP;
+    }
+
+    return -EINVAL;
+}
+
 
 #ifdef CC_AVX512_SUPPORT
 static int
@@ -216,6 +239,8 @@ acl_check_alg(enum rte_acl_classify_alg alg)
 		return acl_check_alg_arm(alg);
 	case RTE_ACL_CLASSIFY_ALTIVEC:
 		return acl_check_alg_ppc(alg);
+    case RTE_ACL_CLASSIFY_S390X:
+        return acl_check_alg_s390x(alg);
 	case RTE_ACL_CLASSIFY_AVX512X32:
 	case RTE_ACL_CLASSIFY_AVX512X16:
 	case RTE_ACL_CLASSIFY_AVX2:
@@ -244,6 +269,8 @@ acl_get_best_alg(void)
 		RTE_ACL_CLASSIFY_NEON,
 #elif defined(RTE_ARCH_PPC_64)
 		RTE_ACL_CLASSIFY_ALTIVEC,
+#elif defined(RTE_ARCH_S390X)
+        RTE_ACL_CLASSIFY_S390X,
 #elif defined(RTE_ARCH_X86)
 		RTE_ACL_CLASSIFY_AVX512X32,
 		RTE_ACL_CLASSIFY_AVX512X16,

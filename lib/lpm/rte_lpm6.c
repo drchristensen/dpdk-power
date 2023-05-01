@@ -18,6 +18,7 @@
 #include <assert.h>
 #include <rte_jhash.h>
 #include <rte_tailq.h>
+#include <rte_byteorder.h>
 
 #include "rte_lpm6.h"
 
@@ -52,6 +53,8 @@ static struct rte_tailq_elem rte_lpm6_tailq = {
 };
 EAL_REGISTER_TAILQ(rte_lpm6_tailq)
 
+#if RTE_BYTE_ORDER == RTE_LITTLE_ENDIAN
+
 /** Tbl entry structure. It is the same for both tbl24 and tbl8 */
 struct rte_lpm6_tbl_entry {
 	uint32_t next_hop:	21;  /**< Next hop / next table to be checked. */
@@ -62,6 +65,21 @@ struct rte_lpm6_tbl_entry {
 	uint32_t valid_group :1; /**< Group validation flag. */
 	uint32_t ext_entry :1;   /**< External entry. */
 };
+
+#else
+
+struct rte_lpm6_tbl_entry {
+
+	/* Flags. */
+	uint32_t ext_entry :1;   /**< External entry. */
+	uint32_t valid_group :1; /**< Group validation flag. */
+	uint32_t valid     :1;   /**< Validation flag. */
+
+	uint32_t depth	:8;      /**< Rule depth. */
+	uint32_t next_hop:	21;  /**< Next hop / next table to be checked. */
+};
+
+#endif
 
 /** Rules tbl entry structure. */
 struct rte_lpm6_rule {

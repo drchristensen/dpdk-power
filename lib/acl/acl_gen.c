@@ -360,7 +360,16 @@ acl_gen_node(struct rte_acl_node *node, uint64_t *node_array,
 		array_ptr = &node_array[index->quad_index];
 		acl_add_ptrs(node, array_ptr, no_match, 0);
 		qtrp = (uint32_t *)node->transitions;
+
+		/* Swap qtrp on big endian that transitions[0]
+		 * is at least signifcant byte.
+		 */
+#if __BYTE_ORDER == __ORDER_BIG_ENDIAN__
+		node->node_index = __bswap_32(qtrp[0]);
+#else
 		node->node_index = qtrp[0];
+#endif
+
 		node->node_index <<= sizeof(index->quad_index) * CHAR_BIT;
 		node->node_index |= index->quad_index | node->node_type;
 		index->quad_index += node->fanout;

@@ -178,6 +178,8 @@ const char *memif_version(void);
 #define __NR_memfd_create 279
 #elif defined __powerpc__
 #define __NR_memfd_create 360
+#elif defined __s390x__
+#define __NR_memfd_create 350
 #elif defined __i386__
 #define __NR_memfd_create 356
 #else

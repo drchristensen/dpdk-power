@@ -25,6 +25,7 @@
  * e.g.: key size = 4, key = 0x03020100
  *       key size = 8, key = 0x0706050403020100
  */
+#if !defined(RTE_ARCH_S390X)
 static uint32_t hash_values_jhash[2][12] = {{
 	0x8ba9414b, 0xdf0d39c9,
 	0xe4cf1d42, 0xd4ccb93c, 0x5e84eafc, 0x21362cfe,
@@ -51,6 +52,34 @@ static uint32_t hash_values_crc[2][12] = {{
 	0x789c104f, 0x53028d3e
 }
 };
+#else
+static uint32_t hash_values_jhash[2][12] = {{
+	0x8ba9414b, 0x8a2f8eb,
+	0x55dcd60b, 0xf0b95bfe, 0x1a28d94c, 0x003d8f00,
+	0x84c90b2c, 0x24b83acf, 0x5e16af2f, 0x751c9f59,
+	0x665b8254, 0x6e347c81
+},
+{
+	0x5c62c303, 0xb21d4b7b,
+	0xa33cdfcf, 0x47cf3d14, 0x1cae829f, 0x1253a9ea,
+	0x7171efd1, 0xcef21db0, 0x3df3f5fe, 0x35fd67d2,
+	0x2922cbc4, 0xeaee5c5c
+}
+};
+static uint32_t hash_values_crc[2][12] = {{
+	0x00000000, 0x13a29877,
+	0x3eef4343, 0xb6719589, 0x938d3d79, 0xed93196b,
+	0xe710a46c, 0x81f7ab71, 0x702bc9ee, 0x26c72488,
+	0x2e7092a9, 0xf2fbc80b
+},
+{
+	0xbdfd3980, 0x91e95e36,
+	0x37765e57, 0x6559eb17, 0x49c8a164, 0x18daa0d3,
+	0x67065980, 0x62f966d0, 0x4e28a2a0, 0xe342d18f,
+	0x1518c680, 0xebe8026b
+}
+};
+#endif
 
 /*******************************************************************************
  * Hash function performance test configuration section. Each performance test

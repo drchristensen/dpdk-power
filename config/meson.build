@@ -121,6 +121,8 @@ if cpu_instruction_set == 'generic'
         cpu_instruction_set = 'generic'
     elif host_machine.cpu_family().startswith('ppc')
         cpu_instruction_set = 'power8'
+	elif host_machine.cpu_family().startswith('s390x')
+		machine = 'z13'
     endif
 endif
 

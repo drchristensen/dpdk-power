@@ -10,6 +10,7 @@
 
 #include <cmdline_parse.h>
 #include <cmdline_parse_num.h>
+#include <rte_byteorder.h>
 
 #include "test_cmdline.h"
 
@@ -438,6 +439,48 @@ test_parse_num_valid(void)
 			/* check if result matches what it should have matched
 			 * since unsigned numbers don't care about number of bits, we can just convert
 			 * everything to uint64_t without any worries. */
+#if RTE_BYTE_ORDER == RTE_BIG_ENDIAN
+            switch (type) {
+                case RTE_UINT8:
+                {
+                    uint8_t *temp = (uint8_t *)&result;
+                    result = *temp;
+                    break;
+                }
+                case RTE_UINT16:
+                {
+                    uint16_t *temp = (uint16_t *)&result;
+                    result = *temp;
+                    break;
+                }
+                case RTE_UINT32:
+                {
+                    uint32_t *temp = (uint32_t *)&result;
+                    result = *temp;
+                    break;
+                }
+                case RTE_INT8:
+                {
+                    int8_t *temp = (int8_t *)&result;
+                    result = *temp;
+                    break;
+                }
+                case RTE_INT16:
+                {
+                    int16_t *temp = (int16_t *)&result;
+                    result = *temp;
+                    break;
+                }
+                case RTE_INT32:
+                {
+                    int32_t *temp = (int32_t *)&result;
+                    result = *temp;
+                    break;
+                }
+                default:
+                    break;
+            }
+#endif
 			if (ret > 0 && num_valid_positive_strs[i].result != result) {
 				printf("Error: parsing %s as %s failed: result mismatch!\n",
 						num_valid_positive_strs[i].str, buf);
@@ -467,6 +510,7 @@ test_parse_num_valid(void)
 			 * the result is signed in this case, so we have to account for that */
 			if (ret > 0) {
 				/* detect negative */
+#if RTE_BYTE_ORDER == RTE_LITTLE_ENDIAN
 				switch (type) {
 				case RTE_INT8:
 					result = (int8_t) result;
@@ -480,6 +524,30 @@ test_parse_num_valid(void)
 				default:
 					break;
 				}
+#else
+                switch (type) {
+				case RTE_INT8:
+				{
+					int8_t *temp = (int8_t *)&result;
+					result = *temp;
+					break;
+				}
+				case RTE_INT16:
+				{
+					int16_t *temp = (int16_t *)&result;
+					result = *temp;
+					break;
+				}
+				case RTE_INT32:
+				{
+					int32_t *temp = (int32_t *)&result;
+					result = *temp;
+					break;
+				}
+				default:
+					break;
+				}
+#endif
 				if (num_valid_negative_strs[i].result == (int64_t) result)
 					continue;
 				printf("Error: parsing %s as %s failed: result mismatch!\n",
@@ -516,6 +584,48 @@ test_parse_num_valid(void)
 			/* check if result matches what it should have matched
 			 * since unsigned numbers don't care about number of bits, we can just convert
 			 * everything to uint64_t without any worries. */
+#if RTE_BYTE_ORDER == RTE_BIG_ENDIAN
+            switch (type) {
+                case RTE_UINT8:
+                {
+                    uint8_t *temp = (uint8_t *)&result;
+                    result = *temp;
+                    break;
+                }
+                case RTE_UINT16:
+                {
+                    uint16_t *temp = (uint16_t *)&result;
+                    result = *temp;
+                    break;
+                }
+                case RTE_UINT32:
+                {
+                    uint32_t *temp = (uint32_t *)&result;
+                    result = *temp;
+                    break;
+                }
+                case RTE_INT8:
+                {
+                    int8_t *temp = (int8_t *)&result;
+                    result = *temp;
+                    break;
+                }
+                case RTE_INT16:
+                {
+                    int16_t *temp = (int16_t *)&result;
+                    result = *temp;
+                    break;
+                }
+                case RTE_INT32:
+                {
+                    int32_t *temp = (int32_t *)&result;
+                    result = *temp;
+                    break;
+                }
+                default:
+                    break;
+            }
+#endif
 			if (ret > 0 && num_garbage_positive_strs[i].result != result) {
 				printf("Error: parsing %s as %s failed: result mismatch!\n",
 						num_garbage_positive_strs[i].str, buf);

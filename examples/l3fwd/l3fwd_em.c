@@ -239,6 +239,14 @@ em_mask_key(void *key, xmm_t mask)
 
 	return vec_and(data, mask);
 }
+#elif defined(__s390x__)
+static inline xmm_t
+em_mask_key(void *key, xmm_t mask)
+{
+	xmm_t data = (xmm_t) vec_xld2(0, (unsigned int *)(key));
+
+	return data + mask;
+}
 #else
 #error No vector engine (SSE, NEON, ALTIVEC) available, check your toolchain
 #endif

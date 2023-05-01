@@ -13,6 +13,7 @@ headers = files('rte_lpm.h', 'rte_lpm6.h')
 # without worrying about which architecture we actually need
 indirect_headers += files(
         'rte_lpm_altivec.h',
+        'rte_lpm_s390x.h',
         'rte_lpm_neon.h',
         'rte_lpm_scalar.h',
         'rte_lpm_sse.h',

@@ -17,6 +17,7 @@
 #include <rte_lcore.h>
 #include <rte_random.h>
 #include <rte_hash_crc.h>
+#include <rte_byteorder.h>
 
 #include "test.h"
 
@@ -351,6 +352,7 @@ volatile uint16_t token16;
 volatile uint32_t token32;
 volatile uint64_t token64;
 
+#ifndef RTE_ARCH_S390X
 static void
 build_crc8_table(void)
 {
@@ -441,6 +443,8 @@ test_atomic_exchange(__rte_unused void *arg)
 
 	return 0;
 }
+#endif
+
 static int
 test_atomic(void)
 {
@@ -597,6 +601,7 @@ test_atomic(void)
 	}
 #endif
 
+#if RTE_BYTE_ORDER == RTE_LITTLE_ENDIAN
 	/*
 	 * Test 16/32/64bit atomic exchange.
 	 */
@@ -628,7 +633,7 @@ test_atomic(void)
 		printf("Atomic exchange test failed\n");
 		return -1;
 	}
-
+#endif
 	return 0;
 }
 REGISTER_TEST_COMMAND(atomic_autotest, test_atomic);

@@ -241,8 +241,9 @@ enum rte_acl_classify_alg {
 	RTE_ACL_CLASSIFY_AVX2 = 3,    /**< requires AVX2 support. */
 	RTE_ACL_CLASSIFY_NEON = 4,    /**< requires NEON support. */
 	RTE_ACL_CLASSIFY_ALTIVEC = 5,    /**< requires ALTIVEC support. */
-	RTE_ACL_CLASSIFY_AVX512X16 = 6,  /**< requires AVX512 support. */
-	RTE_ACL_CLASSIFY_AVX512X32 = 7,  /**< requires AVX512 support. */
+    RTE_ACL_CLASSIFY_S390X = 6,    /**< requires s390x z13 support. */
+	RTE_ACL_CLASSIFY_AVX512X16 = 7,  /**< requires AVX512 support. */
+	RTE_ACL_CLASSIFY_AVX512X32 = 8,  /**< requires AVX512 support. */
 };
 
 /**

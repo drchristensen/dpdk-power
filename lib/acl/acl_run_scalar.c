@@ -141,6 +141,14 @@ rte_acl_classify_scalar(const struct rte_acl_ctx *ctx, const uint8_t **data,
 		input0 = GET_NEXT_4BYTES(parms, 0);
 		input1 = GET_NEXT_4BYTES(parms, 1);
 
+		/* input needs to be swapped because the rules get
+		 * swapped while building the trie.
+		 */
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+		input0 = __bswap_32(input0);
+		input1 = __bswap_32(input1);
+#endif
+
 		for (n = 0; n < 4; n++) {
 
 			transition0 = scalar_transition(flows.trans,

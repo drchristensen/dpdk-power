@@ -780,6 +780,9 @@ acl_build_reset(struct rte_acl_ctx *ctx)
 		sizeof(*ctx) - offsetof(struct rte_acl_ctx, num_categories));
 }
 
+
+
+
 static void
 acl_gen_full_range(struct acl_build_context *context, struct rte_acl_node *root,
 	struct rte_acl_node *end, int size, int level)

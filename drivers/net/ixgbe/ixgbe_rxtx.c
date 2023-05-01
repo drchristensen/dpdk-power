@@ -5958,7 +5958,7 @@ ixgbe_config_rss_filter(struct rte_eth_dev *dev,
 }
 
 /* Stubs needed for linkage when RTE_ARCH_PPC_64 is set */
-#if defined(RTE_ARCH_PPC_64)
+#if defined(RTE_ARCH_PPC_64) || defined(RTE_ARCH_S390X)
 int
 ixgbe_rx_vec_dev_conf_condition_check(struct rte_eth_dev __rte_unused *dev)
 {

@@ -20,6 +20,11 @@
 #include <rte_spinlock.h>
 #include <rte_os_shim.h>
 
+/* s390x pci implemenation. */
+#ifdef RTE_MACHINE_CPUFLAG_ZARCH
+#include <rte_io.h>
+#endif
+
 #include "mlx5_prm.h"
 #include "mlx5_devx_cmds.h"
 #include "mlx5_common_os.h"
@@ -358,7 +363,11 @@ mlx5_doorbell_ring(struct mlx5_uar_data *uar, uint64_t val, uint32_t index,
 	/* Ensure ordering between DB record actual update and UAR access. */
 	rte_wmb();
 #ifdef RTE_ARCH_64
+# ifndef RTE_MACHINE_CPUFLAG_ZARCH
 	*uar->db = val;
+# else
+    rte_write64_relaxed(val, uar->db);
+# endif
 #else /* !RTE_ARCH_64 */
 	rte_spinlock_lock(uar->sl_p);
 	*(volatile uint32_t *)uar->db = val;

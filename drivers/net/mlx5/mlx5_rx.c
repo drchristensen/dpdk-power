@@ -209,6 +209,8 @@ mlx5_rx_burst_mode_get(struct rte_eth_dev *dev,
 		snprintf(mode->info, sizeof(mode->info), "%s", "Vector Neon");
 #elif defined RTE_ARCH_PPC_64
 		snprintf(mode->info, sizeof(mode->info), "%s", "Vector AltiVec");
+#elif defined RTE_ARCH_S390X
+        snprintf(mode->info, sizeof(mode->info), "%s", "Vector S390X");
 #else
 		return -EINVAL;
 #endif
@@ -219,6 +221,8 @@ mlx5_rx_burst_mode_get(struct rte_eth_dev *dev,
 		snprintf(mode->info, sizeof(mode->info), "%s", "MPRQ Vector Neon");
 #elif defined RTE_ARCH_PPC_64
 		snprintf(mode->info, sizeof(mode->info), "%s", "MPRQ Vector AltiVec");
+#elif defined RTE_ARCH_S390X
+        snprintf(mode->info, sizeof(mode->info), "%s", "MPRQ Vector S390X");
 #else
 		return -EINVAL;
 #endif
@@ -313,12 +317,24 @@ rxq_cq_to_pkt_type(struct mlx5_rxq_data *rxq, volatile struct mlx5_cqe *cqe,
 	uint8_t ptype;
 	uint8_t pinfo = (cqe->pkt_info & 0x3) << 6;
 
+    /*
+     * hdr_type_etc is from the cqe thus it is BE
+     * the logic below did not convert BE -> LE prior
+     * to using the value of it.  So the logic below
+     * is written for LE thus the value of hdr_type_etc has
+     * to be converted from LE to BE for the logic to work
+    */
+    uint16_t cqe_t_le  = rte_le_to_cpu_16(cqe->hdr_type_etc);
+    uint16_t mcqe_t_le;
+
 	/* Get l3/l4 header from mini-CQE in case L3/L4 format*/
 	if (mcqe == NULL ||
 	    rxq->mcqe_format != MLX5_CQE_RESP_FORMAT_L34H_STRIDX)
-		ptype = (cqe->hdr_type_etc & 0xfc00) >> 10;
-	else
-		ptype = mcqe->hdr_type >> 2;
+		ptype = (cqe_t_le & 0xfc00) >> 10;
+	else {
+        mcqe_t_le = rte_le_to_cpu_16(mcqe->hdr_type);
+		ptype = mcqe_t_le >> 2;
+    }
 	/*
 	 * The index to the array should have:
 	 * bit[1:0] = l3_hdr_type

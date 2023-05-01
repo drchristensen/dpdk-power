@@ -123,9 +123,16 @@ rte_fbk_hash_add_key_with_bucket(struct rte_fbk_hash_table *ht,
 	 * corrupted due to race conditions, but it's still possible to
 	 * overwrite entries that have just been made valid.
 	 */
+#if RTE_BYTE_ORDER == RTE_LITTLE_ENDIAN
 	const uint64_t new_entry = ((uint64_t)(key) << 32) |
 			((uint64_t)(value) << 16) |
 			1;  /* 1 = is_entry bit. */
+	#else
+	const uint64_t new_entry =
+			((uint64_t)(1) << 48) | /* 1 = is_entry bit. */
+			((uint64_t)(value) << 32) |
+			(uint64_t)(key);
+	#endif
 	uint32_t i;
 
 	for (i = 0; i < ht->entries_per_bucket; i++) {

@@ -157,6 +157,12 @@ typedef union octtx_wqe_s {
 			uint64_t	lbptr : 8;
 			uint64_t	laptr : 8;
 		} w4;
+
+		struct {
+			uint64_t	size  :16;
+			uint64_t	dwd   : 1;
+			uint64_t	rsvd0 :47;
+		} w5;
 #endif
 	} s;
 

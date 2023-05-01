@@ -73,6 +73,8 @@ if arch_subdir == 'x86'
     endif
 elif arch_subdir == 'ppc'
        sources += files('i40e_rxtx_vec_altivec.c')
+elif arch_subdir == 's390x'
+       sources += files('i40e_rxtx_vec_s390x.c')
 elif arch_subdir == 'arm'
        sources += files('i40e_rxtx_vec_neon.c')
 endif

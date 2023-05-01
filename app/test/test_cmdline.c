@@ -10,21 +10,21 @@
 static int
 test_cmdline(void)
 {
-	printf("Testind parsing ethernet addresses...\n");
+	printf("Testing parsing ethernet addresses...\n");
 	if (test_parse_etheraddr_valid() < 0)
 		return -1;
 	if (test_parse_etheraddr_invalid_data() < 0)
 		return -1;
 	if (test_parse_etheraddr_invalid_param() < 0)
 		return -1;
-	printf("Testind parsing port lists...\n");
+	printf("Testing parsing port lists...\n");
 	if (test_parse_portlist_valid() < 0)
 		return -1;
 	if (test_parse_portlist_invalid_data() < 0)
 		return -1;
 	if (test_parse_portlist_invalid_param() < 0)
 		return -1;
-	printf("Testind parsing numbers...\n");
+	printf("Testing parsing numbers...\n");
 	if (test_parse_num_valid() < 0)
 		return -1;
 	if (test_parse_num_invalid_data() < 0)
