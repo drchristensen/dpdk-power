@@ -83,6 +83,11 @@ New Features
     without having to do a full handshake over a Unix Domain Socket
     with the Device Plugin.
 
+* **Updated Intel ice driver.**
+
+  * Added support for configuring the Forward Error Correction (FEC) mode,
+    querying FEC capabilities and current FEC mode from a device.
+
 * **Updated Intel i40e driver.**
 
   * Added support for configuring the Forward Error Correction (FEC) mode,
