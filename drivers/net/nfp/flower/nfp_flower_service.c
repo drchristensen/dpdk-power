@@ -22,7 +22,7 @@ struct nfp_flower_service {
 	/** Flower service info */
 	struct nfp_service_info info;
 	/** Store flower cards' information */
-	struct nfp_app_fw_flower *slots[MAX_FLOWER_SERVICE_SLOT];
+	struct nfp_net_hw_priv *slots[MAX_FLOWER_SERVICE_SLOT];
 	/** Spinlock for sync slots when add/remove card */
 	rte_spinlock_t spinlock;
 };
@@ -34,28 +34,25 @@ nfp_flower_service_handle_get(struct nfp_net_hw_priv *hw_priv)
 }
 
 static int
-nfp_flower_service_loop(void *arg)
+nfp_flower_service_func(void *arg)
 {
 	uint16_t slot;
-	struct nfp_app_fw_flower *app;
+	struct nfp_net_hw_priv *hw_priv;
 	struct nfp_flower_service *service_handle;
 
 	service_handle = arg;
-	/* Waiting for enabling service */
-	while (!service_handle->enabled)
-		rte_delay_ms(1);
+	if (!service_handle->enabled)
+		return 0;
 
-	while (rte_service_runstate_get(service_handle->info.id) != 0) {
-		rte_spinlock_lock(&service_handle->spinlock);
-		for (slot = 0; slot < MAX_FLOWER_SERVICE_SLOT; slot++) {
-			app = service_handle->slots[slot];
-			if (app == NULL)
-				continue;
+	rte_spinlock_lock(&service_handle->spinlock);
+	for (slot = 0; slot < MAX_FLOWER_SERVICE_SLOT; slot++) {
+		hw_priv = service_handle->slots[slot];
+		if (hw_priv == NULL)
+			continue;
 
-			nfp_flower_ctrl_vnic_process(app);
-		}
-		rte_spinlock_unlock(&service_handle->spinlock);
+		nfp_flower_ctrl_vnic_process(hw_priv);
 	}
+	rte_spinlock_unlock(&service_handle->spinlock);
 
 	return 0;
 }
@@ -67,7 +64,7 @@ nfp_flower_service_enable(struct nfp_flower_service *service_handle)
 
 	const struct rte_service_spec flower_service = {
 		.name              = "flower_ctrl_vnic_service",
-		.callback          = nfp_flower_service_loop,
+		.callback          = nfp_flower_service_func,
 		.callback_userdata = (void *)service_handle,
 	};
 
@@ -82,7 +79,7 @@ nfp_flower_service_enable(struct nfp_flower_service *service_handle)
 }
 
 static uint16_t
-nfp_flower_service_insert(struct nfp_app_fw_flower *app,
+nfp_flower_service_insert(struct nfp_net_hw_priv *hw_priv,
 		struct nfp_flower_service *service_handle)
 {
 	uint16_t slot;
@@ -90,7 +87,7 @@ nfp_flower_service_insert(struct nfp_app_fw_flower *app,
 	rte_spinlock_lock(&service_handle->spinlock);
 	for (slot = 0; slot < MAX_FLOWER_SERVICE_SLOT; slot++) {
 		if (service_handle->slots[slot] == NULL) {
-			service_handle->slots[slot] = app;
+			service_handle->slots[slot] = hw_priv;
 			break;
 		}
 	}
@@ -100,8 +97,7 @@ nfp_flower_service_insert(struct nfp_app_fw_flower *app,
 }
 
 int
-nfp_flower_service_start(void *app_fw_flower,
-		struct nfp_net_hw_priv *hw_priv)
+nfp_flower_service_start(struct nfp_net_hw_priv *hw_priv)
 {
 	int ret;
 	struct nfp_flower_service *service_handle;
@@ -122,7 +118,7 @@ nfp_flower_service_start(void *app_fw_flower,
 	}
 
 	/* Insert the NIC to flower service slot */
-	ret = nfp_flower_service_insert(app_fw_flower, service_handle);
+	ret = nfp_flower_service_insert(hw_priv, service_handle);
 	if (ret == MAX_FLOWER_SERVICE_SLOT) {
 		PMD_DRV_LOG(ERR, "Flower ctrl vnic service slot over %u",
 				MAX_FLOWER_SERVICE_SLOT);
@@ -133,8 +129,7 @@ nfp_flower_service_start(void *app_fw_flower,
 }
 
 void
-nfp_flower_service_stop(void *app_fw_flower,
-		struct nfp_net_hw_priv *hw_priv)
+nfp_flower_service_stop(struct nfp_net_hw_priv *hw_priv)
 {
 	uint16_t slot;
 	uint16_t count;
@@ -149,7 +144,7 @@ nfp_flower_service_stop(void *app_fw_flower,
 	rte_spinlock_lock(&service_handle->spinlock);
 	for (slot = 0; slot < MAX_FLOWER_SERVICE_SLOT; slot++) {
 		/* The app only in one slot */
-		if (service_handle->slots[slot] != app_fw_flower)
+		if (service_handle->slots[slot] != hw_priv)
 			continue;
 
 		service_handle->slots[slot] = NULL;

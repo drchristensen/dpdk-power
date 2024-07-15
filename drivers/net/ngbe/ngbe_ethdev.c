@@ -406,6 +406,7 @@ eth_ngbe_dev_init(struct rte_eth_dev *eth_dev, void *init_params __rte_unused)
 
 	/* Unlock any pending hardware semaphore */
 	ngbe_swfw_lock_reset(hw);
+	ngbe_set_ncsi_status(hw);
 
 	/* Get Hardware Flow Control setting */
 	hw->fc.requested_mode = ngbe_fc_full;
@@ -546,7 +547,7 @@ static int eth_ngbe_pci_remove(struct rte_pci_device *pci_dev)
 	if (ethdev == NULL)
 		return 0;
 
-	return rte_eth_dev_destroy(ethdev, eth_ngbe_dev_uninit);
+	return rte_eth_dev_pci_generic_remove(pci_dev, eth_ngbe_dev_uninit);
 }
 
 static struct rte_pci_driver rte_ngbe_pmd = {
@@ -1092,10 +1093,12 @@ ngbe_dev_start(struct rte_eth_dev *dev)
 			speed |= NGBE_LINK_SPEED_10M_FULL;
 	}
 
-	err = hw->phy.init_hw(hw);
-	if (err != 0) {
-		PMD_INIT_LOG(ERR, "PHY init failed");
-		goto error;
+	if (!hw->ncsi_enabled) {
+		err = hw->phy.init_hw(hw);
+		if (err != 0) {
+			PMD_INIT_LOG(ERR, "PHY init failed");
+			goto error;
+		}
 	}
 	err = hw->mac.setup_link(hw, speed, link_up);
 	if (err != 0)
@@ -1218,7 +1221,8 @@ ngbe_dev_stop(struct rte_eth_dev *dev)
 
 out:
 	/* close phy to prevent reset in dev_close from restarting physical link */
-	hw->phy.set_phy_power(hw, false);
+	if (!(hw->wol_enabled || hw->ncsi_enabled))
+		hw->phy.set_phy_power(hw, false);
 
 	return 0;
 }
@@ -1231,7 +1235,8 @@ ngbe_dev_set_link_up(struct rte_eth_dev *dev)
 {
 	struct ngbe_hw *hw = ngbe_dev_hw(dev);
 
-	hw->phy.set_phy_power(hw, true);
+	if (!(hw->ncsi_enabled || hw->wol_enabled))
+		hw->phy.set_phy_power(hw, true);
 
 	return 0;
 }
@@ -1244,7 +1249,8 @@ ngbe_dev_set_link_down(struct rte_eth_dev *dev)
 {
 	struct ngbe_hw *hw = ngbe_dev_hw(dev);
 
-	hw->phy.set_phy_power(hw, false);
+	if (!(hw->ncsi_enabled || hw->wol_enabled))
+		hw->phy.set_phy_power(hw, false);
 
 	return 0;
 }
@@ -1812,7 +1818,9 @@ ngbe_dev_info_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 	dev_info->max_rx_queues = (uint16_t)hw->mac.max_rx_queues;
 	dev_info->max_tx_queues = (uint16_t)hw->mac.max_tx_queues;
 	dev_info->min_rx_bufsize = 1024;
-	dev_info->max_rx_pktlen = 15872;
+	dev_info->max_rx_pktlen = NGBE_MAX_MTU + NGBE_ETH_OVERHEAD;
+	dev_info->min_mtu = RTE_ETHER_MIN_MTU;
+	dev_info->max_mtu = NGBE_MAX_MTU;
 	dev_info->max_mac_addrs = hw->mac.num_rar_entries;
 	dev_info->max_hash_mac_addrs = NGBE_VMDQ_NUM_UC_MAC;
 	dev_info->max_vfs = pci_dev->max_vfs;
@@ -2735,6 +2743,35 @@ ngbe_uc_all_hash_table_set(struct rte_eth_dev *dev, uint8_t on)
 	return 0;
 }
 
+static int
+ngbe_dev_rx_queue_intr_enable(struct rte_eth_dev *dev, uint16_t queue_id)
+{
+	struct rte_pci_device *pci_dev = RTE_ETH_DEV_TO_PCI(dev);
+	struct rte_intr_handle *intr_handle = pci_dev->intr_handle;
+	struct ngbe_hw *hw = ngbe_dev_hw(dev);
+	uint32_t mask;
+
+	mask = rd32(hw, NGBE_IMC(0));
+	mask |= (1 << queue_id);
+	wr32(hw, NGBE_IMC(0), mask);
+	rte_intr_enable(intr_handle);
+
+	return 0;
+}
+
+static int
+ngbe_dev_rx_queue_intr_disable(struct rte_eth_dev *dev, uint16_t queue_id)
+{
+	struct ngbe_hw *hw = ngbe_dev_hw(dev);
+	uint32_t mask;
+
+	mask = rd32(hw, NGBE_IMS(0));
+	mask |= (1 << queue_id);
+	wr32(hw, NGBE_IMS(0), mask);
+
+	return 0;
+}
+
 /**
  * Set the IVAR registers, mapping interrupt causes to vectors
  * @param hw
@@ -2762,7 +2799,7 @@ ngbe_set_ivar_map(struct ngbe_hw *hw, int8_t direction,
 		wr32(hw, NGBE_IVARMISC, tmp);
 	} else {
 		/* rx or tx causes */
-		/* Workaround for ICR lost */
+		msix_vector |= NGBE_IVAR_VLD; /* Workaround for ICR lost */
 		idx = ((16 * (queue & 1)) + (8 * direction));
 		tmp = rd32(hw, NGBE_IVAR(queue >> 1));
 		tmp &= ~(0xFF << idx);
@@ -3194,6 +3231,8 @@ static const struct eth_dev_ops ngbe_eth_dev_ops = {
 	.rx_queue_release           = ngbe_dev_rx_queue_release,
 	.tx_queue_setup             = ngbe_dev_tx_queue_setup,
 	.tx_queue_release           = ngbe_dev_tx_queue_release,
+	.rx_queue_intr_enable       = ngbe_dev_rx_queue_intr_enable,
+	.rx_queue_intr_disable      = ngbe_dev_rx_queue_intr_disable,
 	.dev_led_on                 = ngbe_dev_led_on,
 	.dev_led_off                = ngbe_dev_led_off,
 	.flow_ctrl_get              = ngbe_flow_ctrl_get,

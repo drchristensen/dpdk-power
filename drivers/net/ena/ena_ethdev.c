@@ -22,7 +22,7 @@
 #include <ena_eth_io_defs.h>
 
 #define DRV_MODULE_VER_MAJOR	2
-#define DRV_MODULE_VER_MINOR	9
+#define DRV_MODULE_VER_MINOR	10
 #define DRV_MODULE_VER_SUBMINOR	0
 
 #define __MERGE_64B_H_L(h, l) (((uint64_t)h << 32) | l)
@@ -52,8 +52,6 @@
  * RTE_MEMPOOL_CACHE_MAX_SIZE, so we can fit this in mempool local cache.
  */
 #define ENA_CLEANUP_BUF_THRESH	256
-
-#define ENA_PTYPE_HAS_HASH	(RTE_PTYPE_L4_TCP | RTE_PTYPE_L4_UDP)
 
 struct ena_stats {
 	char name[ETH_GSTRING_LEN];
@@ -280,8 +278,8 @@ static int ena_infos_get(struct rte_eth_dev *dev,
 static void ena_control_path_handler(void *cb_arg);
 static void ena_control_path_poll_handler(void *cb_arg);
 static void ena_timer_wd_callback(struct rte_timer *timer, void *arg);
-static void ena_destroy_device(struct rte_eth_dev *eth_dev);
 static int eth_ena_dev_init(struct rte_eth_dev *eth_dev);
+static int eth_ena_dev_uninit(struct rte_eth_dev *eth_dev);
 static int ena_xstats_get_names(struct rte_eth_dev *dev,
 				struct rte_eth_xstat_name *xstats_names,
 				unsigned int n);
@@ -645,19 +643,14 @@ static inline void ena_trigger_reset(struct ena_adapter *adapter,
 
 static inline void ena_rx_mbuf_prepare(struct ena_ring *rx_ring,
 				       struct rte_mbuf *mbuf,
-				       struct ena_com_rx_ctx *ena_rx_ctx,
-				       bool fill_hash)
+				       struct ena_com_rx_ctx *ena_rx_ctx)
 {
 	struct ena_stats_rx *rx_stats = &rx_ring->rx_stats;
 	uint64_t ol_flags = 0;
 	uint32_t packet_type = 0;
 
-	if (ena_rx_ctx->l4_proto == ENA_ETH_IO_L4_PROTO_TCP)
-		packet_type |= RTE_PTYPE_L4_TCP;
-	else if (ena_rx_ctx->l4_proto == ENA_ETH_IO_L4_PROTO_UDP)
-		packet_type |= RTE_PTYPE_L4_UDP;
-
-	if (ena_rx_ctx->l3_proto == ENA_ETH_IO_L3_PROTO_IPV4) {
+	switch (ena_rx_ctx->l3_proto) {
+	case ENA_ETH_IO_L3_PROTO_IPV4:
 		packet_type |= RTE_PTYPE_L3_IPV4;
 		if (unlikely(ena_rx_ctx->l3_csum_err)) {
 			++rx_stats->l3_csum_bad;
@@ -665,32 +658,45 @@ static inline void ena_rx_mbuf_prepare(struct ena_ring *rx_ring,
 		} else {
 			ol_flags |= RTE_MBUF_F_RX_IP_CKSUM_GOOD;
 		}
-	} else if (ena_rx_ctx->l3_proto == ENA_ETH_IO_L3_PROTO_IPV6) {
+		break;
+	case ENA_ETH_IO_L3_PROTO_IPV6:
 		packet_type |= RTE_PTYPE_L3_IPV6;
+		break;
+	default:
+		break;
 	}
 
-	if (!ena_rx_ctx->l4_csum_checked || ena_rx_ctx->frag) {
-		ol_flags |= RTE_MBUF_F_RX_L4_CKSUM_UNKNOWN;
-	} else {
-		if (unlikely(ena_rx_ctx->l4_csum_err)) {
-			++rx_stats->l4_csum_bad;
-			/*
-			 * For the L4 Rx checksum offload the HW may indicate
-			 * bad checksum although it's valid. Because of that,
-			 * we're setting the UNKNOWN flag to let the app
-			 * re-verify the checksum.
-			 */
-			ol_flags |= RTE_MBUF_F_RX_L4_CKSUM_UNKNOWN;
+	switch (ena_rx_ctx->l4_proto) {
+	case ENA_ETH_IO_L4_PROTO_TCP:
+		packet_type |= RTE_PTYPE_L4_TCP;
+		break;
+	case ENA_ETH_IO_L4_PROTO_UDP:
+		packet_type |= RTE_PTYPE_L4_UDP;
+		break;
+	default:
+		break;
+	}
+
+	/* L4 csum is relevant only for TCP/UDP packets */
+	if ((packet_type & (RTE_PTYPE_L4_TCP | RTE_PTYPE_L4_UDP)) && !ena_rx_ctx->frag) {
+		if (ena_rx_ctx->l4_csum_checked) {
+			if (likely(!ena_rx_ctx->l4_csum_err)) {
+				++rx_stats->l4_csum_good;
+				ol_flags |= RTE_MBUF_F_RX_L4_CKSUM_GOOD;
+			} else {
+				++rx_stats->l4_csum_bad;
+				ol_flags |= RTE_MBUF_F_RX_L4_CKSUM_BAD;
+			}
 		} else {
-			++rx_stats->l4_csum_good;
-			ol_flags |= RTE_MBUF_F_RX_L4_CKSUM_GOOD;
+			ol_flags |= RTE_MBUF_F_RX_L4_CKSUM_UNKNOWN;
 		}
-	}
 
-	if (fill_hash &&
-	    likely((packet_type & ENA_PTYPE_HAS_HASH) && !ena_rx_ctx->frag)) {
-		ol_flags |= RTE_MBUF_F_RX_RSS_HASH;
-		mbuf->hash.rss = ena_rx_ctx->hash;
+		if (rx_ring->offloads & RTE_ETH_RX_OFFLOAD_RSS_HASH) {
+			ol_flags |= RTE_MBUF_F_RX_RSS_HASH;
+			mbuf->hash.rss = ena_rx_ctx->hash;
+		}
+	} else {
+		ol_flags |= RTE_MBUF_F_RX_L4_CKSUM_UNKNOWN;
 	}
 
 	mbuf->ol_flags = ol_flags;
@@ -818,7 +824,7 @@ static void ena_config_host_info(struct ena_com_dev *ena_dev)
 
 	rc = ena_com_set_host_attributes(ena_dev);
 	if (rc) {
-		if (rc == -ENA_COM_UNSUPPORTED)
+		if (rc == ENA_COM_UNSUPPORTED)
 			PMD_DRV_LOG(WARNING, "Cannot set host attributes\n");
 		else
 			PMD_DRV_LOG(ERR, "Cannot set host attributes\n");
@@ -862,7 +868,7 @@ static void ena_config_debug_area(struct ena_adapter *adapter)
 
 	rc = ena_com_set_host_attributes(&adapter->ena_dev);
 	if (rc) {
-		if (rc == -ENA_COM_UNSUPPORTED)
+		if (rc == ENA_COM_UNSUPPORTED)
 			PMD_DRV_LOG(WARNING, "Cannot set host attributes\n");
 		else
 			PMD_DRV_LOG(ERR, "Cannot set host attributes\n");
@@ -880,10 +886,14 @@ static int ena_close(struct rte_eth_dev *dev)
 	struct rte_pci_device *pci_dev = RTE_ETH_DEV_TO_PCI(dev);
 	struct rte_intr_handle *intr_handle = pci_dev->intr_handle;
 	struct ena_adapter *adapter = dev->data->dev_private;
+	struct ena_com_dev *ena_dev = &adapter->ena_dev;
 	int ret = 0;
 	int rc;
 
 	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
+		return 0;
+
+	if (adapter->state == ENA_ADAPTER_STATE_CLOSED)
 		return 0;
 
 	if (adapter->state == ENA_ADAPTER_STATE_RUNNING)
@@ -905,6 +915,19 @@ static int ena_close(struct rte_eth_dev *dev)
 	rte_free(adapter->drv_stats);
 	adapter->drv_stats = NULL;
 
+	ena_com_set_admin_running_state(ena_dev, false);
+
+	ena_com_rss_destroy(ena_dev);
+
+	ena_com_delete_debug_area(ena_dev);
+	ena_com_delete_host_info(ena_dev);
+
+	ena_com_abort_admin_commands(ena_dev);
+	ena_com_wait_for_abort_completion(ena_dev);
+	ena_com_admin_destroy(ena_dev);
+	ena_com_mmio_reg_read_request_destroy(ena_dev);
+	ena_com_delete_customer_metrics_buffer(ena_dev);
+
 	/*
 	 * MAC is not allocated dynamically. Setting NULL should prevent from
 	 * release of the resource in the rte_eth_dev_release_port().
@@ -925,7 +948,12 @@ ena_dev_reset(struct rte_eth_dev *dev)
 		return -EPERM;
 	}
 
-	ena_destroy_device(dev);
+	rc = eth_ena_dev_uninit(dev);
+	if (rc) {
+		PMD_INIT_LOG(CRIT, "Failed to un-initialize device\n");
+		return rc;
+	}
+
 	rc = eth_ena_dev_init(dev);
 	if (rc)
 		PMD_INIT_LOG(CRIT, "Cannot initialize device\n");
@@ -2434,39 +2462,12 @@ err:
 	return rc;
 }
 
-static void ena_destroy_device(struct rte_eth_dev *eth_dev)
-{
-	struct ena_adapter *adapter = eth_dev->data->dev_private;
-	struct ena_com_dev *ena_dev = &adapter->ena_dev;
-
-	if (adapter->state == ENA_ADAPTER_STATE_FREE)
-		return;
-
-	ena_com_set_admin_running_state(ena_dev, false);
-
-	if (adapter->state != ENA_ADAPTER_STATE_CLOSED)
-		ena_close(eth_dev);
-
-	ena_com_rss_destroy(ena_dev);
-
-	ena_com_delete_debug_area(ena_dev);
-	ena_com_delete_host_info(ena_dev);
-
-	ena_com_abort_admin_commands(ena_dev);
-	ena_com_wait_for_abort_completion(ena_dev);
-	ena_com_admin_destroy(ena_dev);
-	ena_com_mmio_reg_read_request_destroy(ena_dev);
-	ena_com_delete_customer_metrics_buffer(ena_dev);
-
-	adapter->state = ENA_ADAPTER_STATE_FREE;
-}
-
 static int eth_ena_dev_uninit(struct rte_eth_dev *eth_dev)
 {
 	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
 		return 0;
 
-	ena_destroy_device(eth_dev);
+	ena_close(eth_dev);
 
 	return 0;
 }
@@ -2775,7 +2776,6 @@ static uint16_t eth_ena_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 	uint16_t completed;
 	struct ena_com_rx_ctx ena_rx_ctx;
 	int i, rc = 0;
-	bool fill_hash;
 
 #ifdef RTE_ETHDEV_DEBUG_RX
 	/* Check adapter state */
@@ -2785,8 +2785,6 @@ static uint16_t eth_ena_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 		return 0;
 	}
 #endif
-
-	fill_hash = rx_ring->offloads & RTE_ETH_RX_OFFLOAD_RSS_HASH;
 
 	descs_in_use = rx_ring->ring_size -
 		ena_com_free_q_entries(rx_ring->ena_com_io_sq) - 1;
@@ -2833,7 +2831,7 @@ static uint16_t eth_ena_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 		}
 
 		/* fill mbuf attributes if any */
-		ena_rx_mbuf_prepare(rx_ring, mbuf, &ena_rx_ctx, fill_hash);
+		ena_rx_mbuf_prepare(rx_ring, mbuf, &ena_rx_ctx);
 
 		if (unlikely(mbuf->ol_flags &
 				(RTE_MBUF_F_RX_IP_CKSUM_BAD | RTE_MBUF_F_RX_L4_CKSUM_BAD)))
@@ -3124,7 +3122,7 @@ static int ena_xmit_mbuf(struct ena_ring *tx_ring, struct rte_mbuf *mbuf)
 	 */
 	if (!ena_com_sq_have_enough_space(tx_ring->ena_com_io_sq,
 					  mbuf->nb_segs + 2)) {
-		PMD_DRV_LOG(DEBUG, "Not enough space in the tx queue\n");
+		PMD_TX_LOG(DEBUG, "Not enough space in the tx queue\n");
 		return ENA_COM_NO_MEM;
 	}
 

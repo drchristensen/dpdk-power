@@ -52,6 +52,7 @@ Alexander Chernavin <achernavin@netgate.com>
 Alexander Guy <alexander@andern.org>
 Alexander Kozyrev <akozyrev@nvidia.com> <akozyrev@mellanox.com>
 Alexander Matushevsky <matua@amazon.com>
+Alexander Skorichenko <askorichenko@netgate.com>
 Alexander Solganik <solganik@gmail.com>
 Alexander V Gutkin <alexander.v.gutkin@intel.com>
 Alexandre Ferrieux <alexandre.ferrieux@orange.com>
@@ -515,7 +516,7 @@ Harold Huang <baymaxhuang@gmail.com>
 Harrison McCullough <harrison_mccullough@labs.att.com>
 Harry van Haaren <harry.van.haaren@intel.com>
 Harshad Narayane <harshad.suresh.narayane@intel.com>
-Harshitha Ramamurthy <harshitha.ramamurthy@intel.com>
+Harshitha Ramamurthy <hramamurthy@google.com> <harshitha.ramamurthy@intel.com>
 Hasan Alayli <halayli@gmail.com>
 Hayato Momma <h-momma@ce.jp.nec.com>
 Heinrich Kuhn <heinrich.kuhn@corigine.com> <heinrich.kuhn@netronome.com>
@@ -1162,6 +1163,7 @@ Piotr Kwapulinski <piotr.kwapulinski@intel.com>
 Piotr Pietruszewski <piotr.pietruszewski@intel.com>
 Piotr Raczynski <piotr.raczynski@intel.com>
 Piotr Skajewski <piotrx.skajewski@intel.com>
+Potnuri Bharat Teja <bharat@chelsio.com>
 Pradeep Satyanarayana <pradeep@us.ibm.com>
 Prashant Bhole <bhole_prashant_q7@lab.ntt.co.jp>
 Prashant Upadhyaya <prashant.upadhyaya@aricent.com> <praupadhyaya@gmail.com>
@@ -1355,6 +1357,7 @@ Shiyang He <shiyangx.he@intel.com>
 Shlomi Gridish <sgridish@marvell.com>
 Shougang Wang <shougangx.wang@intel.com>
 Shraddha Joshi <jshraddha@vmware.com>
+Shreesh Adiga <16567adigashreesh@gmail.com>
 Shreyansh Jain <shreyansh.jain@nxp.com>
 Shrikrishna Khare <skhare@vmware.com>
 Shuai Zhu <shuaix.zhu@intel.com>
@@ -1397,6 +1400,7 @@ Sriharsha Basavapatna <sriharsha.basavapatna@broadcom.com>
 Srikanth Jampala <jsrikanth@marvell.com>
 Srikanth Yalavarthi <syalavarthi@marvell.com>
 Srinivas Narayan <srinivas.narayan@att.com>
+Sriram Yagnaraman <sriram.yagnaraman@ericsson.com>
 Srisivasubramanian Srinivasan <srinivasan@marvell.com> <ssrinivasan@caviumnetworks.com>
 Srujana Challa <schalla@marvell.com>
 Stanislaw Grzeszczak <stanislaw.a.grzeszczak@intel.com>

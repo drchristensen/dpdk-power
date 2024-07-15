@@ -10,6 +10,7 @@
 #include <eal_firmware.h>
 #include <rte_alarm.h>
 #include <rte_kvargs.h>
+#include <rte_pci.h>
 
 #include "flower/nfp_flower.h"
 #include "nfd3/nfp_nfd3.h"
@@ -27,12 +28,15 @@
 #include "nfp_ipsec.h"
 #include "nfp_logs.h"
 #include "nfp_net_flow.h"
+#include "nfp_rxtx_vec.h"
 
 /* 64-bit per app capabilities */
 #define NFP_NET_APP_CAP_SP_INDIFF       RTE_BIT64(0) /* Indifferent to port speed */
 
 #define NFP_PF_DRIVER_NAME net_nfp_pf
 #define NFP_PF_FORCE_RELOAD_FW   "force_reload_fw"
+#define NFP_CPP_SERVICE_ENABLE   "cpp_service_enable"
+#define NFP_QUEUE_PER_VF     1
 
 struct nfp_net_init {
 	/** Sequential physical port number, only valid for CoreNIC firmware */
@@ -66,46 +70,69 @@ nfp_devarg_handle_int(const char *key,
 	return 0;
 }
 
-static void
-nfp_devarg_parse_force_reload_fw(struct rte_kvargs *kvlist,
-		bool *force_reload_fw)
+static int
+nfp_devarg_parse_bool_para(struct rte_kvargs *kvlist,
+		const char *key_match,
+		bool *value_ret)
 {
 	int ret;
+	uint32_t count;
 	uint64_t value;
 
+	count = rte_kvargs_count(kvlist, key_match);
+	if (count == 0)
+		return 0;
 
-	if (rte_kvargs_count(kvlist, NFP_PF_FORCE_RELOAD_FW) != 1)
-		return;
+	if (count > 1) {
+		PMD_DRV_LOG(ERR, "Too much bool arguments: %s", key_match);
+		return -EINVAL;
+	}
 
-	ret = rte_kvargs_process(kvlist, NFP_PF_FORCE_RELOAD_FW, &nfp_devarg_handle_int, &value);
+	ret = rte_kvargs_process(kvlist, key_match, &nfp_devarg_handle_int, &value);
 	if (ret != 0)
-		return;
+		return -EINVAL;
 
-	if (value == 1)
-		*force_reload_fw = true;
-	else if (value == 0)
-		*force_reload_fw = false;
-	else
+	if (value == 1) {
+		*value_ret = true;
+	} else if (value == 0) {
+		*value_ret = false;
+	} else {
 		PMD_DRV_LOG(ERR, "The param does not work, the format is %s=0/1",
-				NFP_PF_FORCE_RELOAD_FW);
+				key_match);
+		return -EINVAL;
+	}
+
+	return 0;
 }
 
-static void
+static int
 nfp_devargs_parse(struct nfp_devargs *nfp_devargs_param,
 		const struct rte_devargs *devargs)
 {
+	int ret;
 	struct rte_kvargs *kvlist;
 
 	if (devargs == NULL)
-		return;
+		return 0;
 
 	kvlist = rte_kvargs_parse(devargs->args, NULL);
 	if (kvlist == NULL)
-		return;
+		return -EINVAL;
 
-	nfp_devarg_parse_force_reload_fw(kvlist, &nfp_devargs_param->force_reload_fw);
+	ret = nfp_devarg_parse_bool_para(kvlist, NFP_PF_FORCE_RELOAD_FW,
+			&nfp_devargs_param->force_reload_fw);
+	if (ret != 0)
+		goto exit;
 
+	ret = nfp_devarg_parse_bool_para(kvlist, NFP_CPP_SERVICE_ENABLE,
+			&nfp_devargs_param->cpp_service_enable);
+	if (ret != 0)
+		goto exit;
+
+exit:
 	rte_kvargs_free(kvlist);
+
+	return ret;
 }
 
 static void
@@ -194,11 +221,67 @@ nfp_net_nfp4000_speed_configure_check(uint16_t port_id,
 }
 
 static int
+nfp_net_speed_autoneg_set(struct nfp_net_hw_priv *hw_priv,
+		struct nfp_eth_table_port *eth_port)
+{
+	int ret;
+	struct nfp_nsp *nsp;
+
+	nsp = nfp_eth_config_start(hw_priv->pf_dev->cpp, eth_port->index);
+	if (nsp == NULL) {
+		PMD_DRV_LOG(ERR, "Could not get NSP.");
+		return -EIO;
+	}
+
+	ret = nfp_eth_set_aneg(nsp, NFP_ANEG_AUTO);
+	if (ret != 0) {
+		PMD_DRV_LOG(ERR, "Failed to set ANEG enable.");
+		nfp_eth_config_cleanup_end(nsp);
+		return ret;
+	}
+
+	return nfp_eth_config_commit_end(nsp);
+}
+
+static int
+nfp_net_speed_fixed_set(struct nfp_net_hw_priv *hw_priv,
+		struct nfp_eth_table_port *eth_port,
+		uint32_t configure_speed)
+{
+	int ret;
+	struct nfp_nsp *nsp;
+
+	nsp = nfp_eth_config_start(hw_priv->pf_dev->cpp, eth_port->index);
+	if (nsp == NULL) {
+		PMD_DRV_LOG(ERR, "Could not get NSP.");
+		return -EIO;
+	}
+
+	ret = nfp_eth_set_aneg(nsp, NFP_ANEG_DISABLED);
+	if (ret != 0) {
+		PMD_DRV_LOG(ERR, "Failed to set ANEG disable.");
+		goto config_cleanup;
+	}
+
+	ret = nfp_eth_set_speed(nsp, configure_speed);
+	if (ret != 0) {
+		PMD_DRV_LOG(ERR, "Failed to set speed.");
+		goto config_cleanup;
+	}
+
+	return nfp_eth_config_commit_end(nsp);
+
+config_cleanup:
+	nfp_eth_config_cleanup_end(nsp);
+
+	return ret;
+}
+
+static int
 nfp_net_speed_configure(struct rte_eth_dev *dev)
 {
 	int ret;
 	uint32_t speed_capa;
-	struct nfp_nsp *nsp;
 	uint32_t link_speeds;
 	uint32_t configure_speed;
 	struct nfp_eth_table_port *eth_port;
@@ -233,40 +316,32 @@ nfp_net_speed_configure(struct rte_eth_dev *dev)
 		}
 	}
 
-	nsp = nfp_eth_config_start(hw_priv->pf_dev->cpp, eth_port->index);
-	if (nsp == NULL) {
-		PMD_DRV_LOG(ERR, "Couldn't get NSP.");
-		return -EIO;
-	}
+	if (configure_speed == RTE_ETH_LINK_SPEED_AUTONEG) {
+		if (!eth_port->supp_aneg)
+			return 0;
 
-	if (link_speeds == RTE_ETH_LINK_SPEED_AUTONEG) {
-		if (eth_port->supp_aneg) {
-			ret = nfp_eth_set_aneg(nsp, NFP_ANEG_AUTO);
-			if (ret != 0) {
-				PMD_DRV_LOG(ERR, "Failed to set ANEG enable.");
-				goto config_cleanup;
-			}
+		if (eth_port->aneg == NFP_ANEG_AUTO)
+			return 0;
+
+		ret = nfp_net_speed_autoneg_set(hw_priv, eth_port);
+		if (ret != 0) {
+			PMD_DRV_LOG(ERR, "Failed to set speed autoneg.");
+			return ret;
 		}
 	} else {
-		ret = nfp_eth_set_aneg(nsp, NFP_ANEG_DISABLED);
-		if (ret != 0) {
-			PMD_DRV_LOG(ERR, "Failed to set ANEG disable.");
-			goto config_cleanup;
-		}
+		if (eth_port->aneg == NFP_ANEG_DISABLED && configure_speed == eth_port->speed)
+			return 0;
 
-		ret = nfp_eth_set_speed(nsp, configure_speed);
+		ret = nfp_net_speed_fixed_set(hw_priv, eth_port, configure_speed);
 		if (ret != 0) {
-			PMD_DRV_LOG(ERR, "Failed to set speed.");
-			goto config_cleanup;
+			PMD_DRV_LOG(ERR, "Failed to set speed fixed.");
+			return ret;
 		}
 	}
 
-	return nfp_eth_config_commit_end(nsp);
+	hw_priv->pf_dev->speed_updated = true;
 
-config_cleanup:
-	nfp_eth_config_cleanup_end(nsp);
-
-	return ret;
+	return 0;
 }
 
 static int
@@ -283,6 +358,7 @@ nfp_net_start(struct rte_eth_dev *dev)
 	struct nfp_net_hw *net_hw;
 	struct nfp_pf_dev *pf_dev;
 	struct rte_eth_rxmode *rxmode;
+	struct rte_eth_txmode *txmode;
 	struct nfp_net_hw_priv *hw_priv;
 	struct nfp_app_fw_nic *app_fw_nic;
 	struct rte_pci_device *pci_dev = RTE_ETH_DEV_TO_PCI(dev);
@@ -353,7 +429,7 @@ nfp_net_start(struct rte_eth_dev *dev)
 	nfp_net_params_setup(net_hw);
 
 	rxmode = &dev->data->dev_conf.rxmode;
-	if ((rxmode->mq_mode & RTE_ETH_MQ_RX_RSS) != 0) {
+	if ((rxmode->offloads & RTE_ETH_RX_OFFLOAD_RSS_HASH) != 0) {
 		nfp_net_rss_config_default(dev);
 		update |= NFP_NET_CFG_UPDATE_RSS;
 		new_ctrl |= nfp_net_cfg_ctrl_rss(hw->cap);
@@ -364,10 +440,13 @@ nfp_net_start(struct rte_eth_dev *dev)
 
 	update |= NFP_NET_CFG_UPDATE_GEN | NFP_NET_CFG_UPDATE_RING;
 
+	txmode = &dev->data->dev_conf.txmode;
 	/* Enable vxlan */
-	if ((hw->cap & NFP_NET_CFG_CTRL_VXLAN) != 0) {
-		new_ctrl |= NFP_NET_CFG_CTRL_VXLAN;
-		update |= NFP_NET_CFG_UPDATE_VXLAN;
+	if ((txmode->offloads & RTE_ETH_TX_OFFLOAD_VXLAN_TNL_TSO) != 0) {
+		if ((hw->cap & NFP_NET_CFG_CTRL_VXLAN) != 0) {
+			new_ctrl |= NFP_NET_CFG_CTRL_VXLAN;
+			update |= NFP_NET_CFG_UPDATE_VXLAN;
+		}
 	}
 
 	if ((hw->cap & NFP_NET_CFG_CTRL_RINGCFG) != 0)
@@ -386,10 +465,13 @@ nfp_net_start(struct rte_eth_dev *dev)
 	if ((cap_extend & NFP_NET_CFG_CTRL_PKT_TYPE) != 0)
 		ctrl_extend = NFP_NET_CFG_CTRL_PKT_TYPE;
 
-	if ((cap_extend & NFP_NET_CFG_CTRL_IPSEC) != 0)
-		ctrl_extend |= NFP_NET_CFG_CTRL_IPSEC |
-				NFP_NET_CFG_CTRL_IPSEC_SM_LOOKUP |
-				NFP_NET_CFG_CTRL_IPSEC_LM_LOOKUP;
+	if ((rxmode->offloads & RTE_ETH_RX_OFFLOAD_SECURITY) != 0 ||
+			(txmode->offloads & RTE_ETH_TX_OFFLOAD_SECURITY) != 0) {
+		if ((cap_extend & NFP_NET_CFG_CTRL_IPSEC) != 0)
+			ctrl_extend |= NFP_NET_CFG_CTRL_IPSEC |
+					NFP_NET_CFG_CTRL_IPSEC_SM_LOOKUP |
+					NFP_NET_CFG_CTRL_IPSEC_LM_LOOKUP;
+	}
 
 	/* Enable flow steer by extend ctrl word1. */
 	if ((cap_extend & NFP_NET_CFG_CTRL_FLOW_STEER) != 0)
@@ -463,16 +545,6 @@ nfp_net_set_link_down(struct rte_eth_dev *dev)
 	hw_priv = dev->process_private;
 
 	return nfp_eth_set_configured(hw_priv->pf_dev->cpp, hw->nfp_idx, 0);
-}
-
-static uint8_t
-nfp_function_id_get(const struct nfp_pf_dev *pf_dev,
-		uint8_t phy_port)
-{
-	if (pf_dev->multi_pf.enabled)
-		return pf_dev->multi_pf.function_id;
-
-	return phy_port;
 }
 
 static void
@@ -610,11 +682,24 @@ nfp_uninit_app_fw_nic(struct nfp_pf_dev *pf_dev)
 	rte_free(pf_dev->app_fw_priv);
 }
 
+static void
+nfp_net_vf_config_uninit(struct nfp_pf_dev *pf_dev)
+{
+	if (pf_dev->sriov_vf == 0)
+		return;
+
+	nfp_cpp_area_release_free(pf_dev->vf_cfg_tbl_area);
+	nfp_cpp_area_release_free(pf_dev->vf_area);
+}
+
 void
 nfp_pf_uninit(struct nfp_net_hw_priv *hw_priv)
 {
 	struct nfp_pf_dev *pf_dev = hw_priv->pf_dev;
 
+	if (pf_dev->devargs.cpp_service_enable)
+		nfp_disable_cpp_service(pf_dev);
+	nfp_net_vf_config_uninit(pf_dev);
 	nfp_cpp_area_release_free(pf_dev->mac_stats_area);
 	nfp_cpp_area_release_free(pf_dev->qc_area);
 	free(pf_dev->sym_tbl);
@@ -700,7 +785,7 @@ nfp_net_close(struct rte_eth_dev *dev)
 
 	nfp_cleanup_port_app_fw_nic(pf_dev, hw->idx, dev);
 
-	for (i = 0; i < app_fw_nic->total_phyports; i++) {
+	for (i = 0; i < pf_dev->total_phyports; i++) {
 		id = nfp_function_id_get(pf_dev, i);
 
 		/* Check to see if ports are still in use */
@@ -856,8 +941,10 @@ static const struct eth_dev_ops nfp_net_eth_dev_ops = {
 	.rss_hash_conf_get      = nfp_net_rss_hash_conf_get,
 	.rx_queue_setup         = nfp_net_rx_queue_setup,
 	.rx_queue_release       = nfp_net_rx_queue_release,
+	.rxq_info_get           = nfp_net_rx_queue_info_get,
 	.tx_queue_setup         = nfp_net_tx_queue_setup,
 	.tx_queue_release       = nfp_net_tx_queue_release,
+	.txq_info_get           = nfp_net_tx_queue_info_get,
 	.rx_queue_intr_enable   = nfp_rx_queue_intr_enable,
 	.rx_queue_intr_disable  = nfp_rx_queue_intr_disable,
 	.udp_tunnel_port_add    = nfp_udp_tunnel_port_add,
@@ -878,11 +965,11 @@ nfp_net_ethdev_ops_mount(struct nfp_net_hw *hw,
 	if (hw->ver.extend == NFP_NET_CFG_VERSION_DP_NFD3)
 		eth_dev->tx_pkt_burst = nfp_net_nfd3_xmit_pkts;
 	else
-		eth_dev->tx_pkt_burst = nfp_net_nfdk_xmit_pkts;
+		nfp_net_nfdk_xmit_pkts_set(eth_dev);
 
 	eth_dev->dev_ops = &nfp_net_eth_dev_ops;
 	eth_dev->rx_queue_count = nfp_net_rx_queue_count;
-	eth_dev->rx_pkt_burst = &nfp_net_recv_pkts;
+	nfp_net_recv_pkts_set(eth_dev);
 }
 
 static int
@@ -992,6 +1079,14 @@ nfp_net_init(struct rte_eth_dev *eth_dev,
 	/* Initializing spinlock for reconfigs */
 	rte_spinlock_init(&hw->reconfig_lock);
 
+	if ((port == 0 || pf_dev->multi_pf.enabled)) {
+		err = nfp_net_vf_config_app_init(net_hw, pf_dev);
+		if (err != 0) {
+			PMD_INIT_LOG(ERR, "Failed to init sriov module");
+			goto xstats_free;
+		}
+	}
+
 	/* Allocating memory for mac addr */
 	eth_dev->data->mac_addrs = rte_zmalloc("mac_addr", RTE_ETHER_ADDR_LEN, 0);
 	if (eth_dev->data->mac_addrs == NULL) {
@@ -1061,20 +1156,45 @@ ipsec_exit:
 	return err;
 }
 
+static int
+nfp_net_device_activate(struct nfp_cpp *cpp,
+		struct nfp_multi_pf *multi_pf)
+{
+	int ret;
+	struct nfp_nsp *nsp;
+
+	if (multi_pf->enabled && multi_pf->function_id != 0) {
+		nsp = nfp_nsp_open(cpp);
+		if (nsp == NULL) {
+			PMD_DRV_LOG(ERR, "NFP error when obtaining NSP handle");
+			return -EIO;
+		}
+
+		ret = nfp_nsp_device_activate(nsp);
+		nfp_nsp_close(nsp);
+		if (ret != 0 && ret != -EOPNOTSUPP)
+			return ret;
+	}
+
+	return 0;
+}
+
 #define DEFAULT_FW_PATH       "/lib/firmware/netronome"
 
 static int
 nfp_fw_get_name(struct rte_pci_device *dev,
-		struct nfp_nsp *nsp,
-		char *card,
+		struct nfp_cpp *cpp,
+		struct nfp_eth_table *nfp_eth_table,
+		struct nfp_hwinfo *hwinfo,
 		char *fw_name,
 		size_t fw_size)
 {
 	char serial[40];
 	uint16_t interface;
+	char card_desc[100];
 	uint32_t cpp_serial_len;
+	const char *nfp_fw_model;
 	const uint8_t *cpp_serial;
-	struct nfp_cpp *cpp = nfp_nsp_cpp(nsp);
 
 	cpp_serial_len = nfp_cpp_serial(cpp, &cpp_serial);
 	if (cpp_serial_len != NFP_SERIAL_LEN)
@@ -1103,8 +1223,27 @@ nfp_fw_get_name(struct rte_pci_device *dev,
 	if (access(fw_name, F_OK) == 0)
 		return 0;
 
+	nfp_fw_model = nfp_hwinfo_lookup(hwinfo, "nffw.partno");
+	if (nfp_fw_model == NULL) {
+		nfp_fw_model = nfp_hwinfo_lookup(hwinfo, "assembly.partno");
+		if (nfp_fw_model == NULL) {
+			PMD_DRV_LOG(ERR, "firmware model NOT found");
+			return -EIO;
+		}
+	}
+
+	/* And then try the model name */
+	snprintf(card_desc, sizeof(card_desc), "%s.nffw", nfp_fw_model);
+	snprintf(fw_name, fw_size, "%s/%s", DEFAULT_FW_PATH, card_desc);
+	PMD_DRV_LOG(DEBUG, "Trying with fw file: %s", fw_name);
+	if (access(fw_name, F_OK) == 0)
+		return 0;
+
 	/* Finally try the card type and media */
-	snprintf(fw_name, fw_size, "%s/%s", DEFAULT_FW_PATH, card);
+	snprintf(card_desc, sizeof(card_desc), "nic_%s_%dx%d.nffw",
+			nfp_fw_model, nfp_eth_table->count,
+			nfp_eth_table->ports[0].speed / 1000);
+	snprintf(fw_name, fw_size, "%s/%s", DEFAULT_FW_PATH, card_desc);
 	PMD_DRV_LOG(DEBUG, "Trying with fw file: %s", fw_name);
 	if (access(fw_name, F_OK) == 0)
 		return 0;
@@ -1348,47 +1487,18 @@ nfp_fw_setup(struct rte_pci_device *dev,
 {
 	int err;
 	char fw_name[125];
-	char card_desc[100];
 	struct nfp_nsp *nsp;
-	const char *nfp_fw_model;
 
-	nfp_fw_model = nfp_hwinfo_lookup(hwinfo, "nffw.partno");
-	if (nfp_fw_model == NULL)
-		nfp_fw_model = nfp_hwinfo_lookup(hwinfo, "assembly.partno");
-
-	if (nfp_fw_model != NULL) {
-		PMD_DRV_LOG(INFO, "firmware model found: %s", nfp_fw_model);
-	} else {
-		PMD_DRV_LOG(ERR, "firmware model NOT found");
-		return -EIO;
+	err = nfp_fw_get_name(dev, cpp, nfp_eth_table, hwinfo, fw_name, sizeof(fw_name));
+	if (err != 0) {
+		PMD_DRV_LOG(ERR, "Can't find suitable firmware.");
+		return err;
 	}
-
-	if (nfp_eth_table->count == 0 || nfp_eth_table->count > 8) {
-		PMD_DRV_LOG(ERR, "NFP ethernet table reports wrong ports: %u",
-				nfp_eth_table->count);
-		return -EIO;
-	}
-
-	PMD_DRV_LOG(INFO, "NFP ethernet port table reports %u ports",
-			nfp_eth_table->count);
-
-	PMD_DRV_LOG(INFO, "Port speed: %u", nfp_eth_table->ports[0].speed);
-
-	snprintf(card_desc, sizeof(card_desc), "nic_%s_%dx%d.nffw",
-			nfp_fw_model, nfp_eth_table->count,
-			nfp_eth_table->ports[0].speed / 1000);
 
 	nsp = nfp_nsp_open(cpp);
 	if (nsp == NULL) {
 		PMD_DRV_LOG(ERR, "NFP error when obtaining NSP handle");
 		return -EIO;
-	}
-
-	err = nfp_fw_get_name(dev, nsp, card_desc, fw_name, sizeof(fw_name));
-	if (err != 0) {
-		PMD_DRV_LOG(ERR, "Can't find suitable firmware.");
-		nfp_nsp_close(nsp);
-		return err;
 	}
 
 	if (multi_pf->enabled)
@@ -1442,6 +1552,9 @@ nfp_enable_multi_pf(struct nfp_pf_dev *pf_dev)
 	struct nfp_cpp_area *area;
 	char name[RTE_ETH_NAME_MAX_LEN];
 
+	if (!pf_dev->multi_pf.enabled)
+		return 0;
+
 	memset(&net_hw, 0, sizeof(struct nfp_net_hw));
 
 	/* Map the symbol table */
@@ -1474,18 +1587,52 @@ end:
 	return err;
 }
 
+static bool
+nfp_app_fw_nic_total_phyports_check(struct nfp_pf_dev *pf_dev)
+{
+	int ret;
+	uint8_t id;
+	uint8_t total_phyports;
+	char vnic_name[RTE_ETH_NAME_MAX_LEN];
+
+	/* Read the number of vNIC's created for the PF */
+	id = nfp_function_id_get(pf_dev, 0);
+	snprintf(vnic_name, sizeof(vnic_name), "nfd_cfg_pf%u_num_ports", id);
+	total_phyports = nfp_rtsym_read_le(pf_dev->sym_tbl, vnic_name, &ret);
+	if (ret != 0 || total_phyports == 0 || total_phyports > 8) {
+		PMD_INIT_LOG(ERR, "%s symbol with wrong value", vnic_name);
+		return false;
+	}
+
+	if (pf_dev->multi_pf.enabled) {
+		if (!nfp_check_multi_pf_from_fw(total_phyports)) {
+			PMD_INIT_LOG(ERR, "NSP report multipf, but FW report not multipf");
+			return false;
+		}
+	} else {
+		/*
+		 * For single PF the number of vNICs exposed should be the same as the
+		 * number of physical ports.
+		 */
+		if (total_phyports != pf_dev->nfp_eth_table->count) {
+			PMD_INIT_LOG(ERR, "Total physical ports do not match number of vNICs");
+			return false;
+		}
+	}
+
+	return true;
+}
+
 static int
 nfp_init_app_fw_nic(struct nfp_net_hw_priv *hw_priv)
 {
 	uint8_t i;
 	uint8_t id;
 	int ret = 0;
-	uint32_t total_vnics;
 	struct nfp_app_fw_nic *app_fw_nic;
 	struct nfp_eth_table *nfp_eth_table;
 	char bar_name[RTE_ETH_NAME_MAX_LEN];
 	char port_name[RTE_ETH_NAME_MAX_LEN];
-	char vnic_name[RTE_ETH_NAME_MAX_LEN];
 	struct nfp_pf_dev *pf_dev = hw_priv->pf_dev;
 	struct nfp_net_init hw_init = {
 		.hw_priv = hw_priv,
@@ -1503,42 +1650,20 @@ nfp_init_app_fw_nic(struct nfp_net_hw_priv *hw_priv)
 	/* Point the app_fw_priv pointer in the PF to the coreNIC app */
 	pf_dev->app_fw_priv = app_fw_nic;
 
-	/* Read the number of vNIC's created for the PF */
-	snprintf(vnic_name, sizeof(vnic_name), "nfd_cfg_pf%u_num_ports", id);
-	total_vnics = nfp_rtsym_read_le(pf_dev->sym_tbl, vnic_name, &ret);
-	if (ret != 0 || total_vnics == 0 || total_vnics > 8) {
-		PMD_INIT_LOG(ERR, "%s symbol with wrong value", vnic_name);
+	/* Check the number of vNIC's created for the PF */
+	if (!nfp_app_fw_nic_total_phyports_check(pf_dev)) {
 		ret = -ENODEV;
 		goto app_cleanup;
 	}
 
-	if (pf_dev->multi_pf.enabled) {
-		if (!nfp_check_multi_pf_from_fw(total_vnics)) {
-			PMD_INIT_LOG(ERR, "NSP report multipf, but FW report not multipf");
-			ret = -ENODEV;
-			goto app_cleanup;
-		}
-	} else {
-		/*
-		 * For coreNIC the number of vNICs exposed should be the same as the
-		 * number of physical ports.
-		 */
-		if (total_vnics != nfp_eth_table->count) {
-			PMD_INIT_LOG(ERR, "Total physical ports do not match number of vNICs");
-			ret = -ENODEV;
-			goto app_cleanup;
-		}
-	}
-
 	/* Populate coreNIC app properties */
-	app_fw_nic->total_phyports = total_vnics;
-	if (total_vnics > 1)
+	if (pf_dev->total_phyports > 1)
 		app_fw_nic->multiport = true;
 
 	/* Map the symbol table */
 	snprintf(bar_name, sizeof(bar_name), "_pf%u_net_bar0", id);
 	pf_dev->ctrl_bar = nfp_rtsym_map(pf_dev->sym_tbl, bar_name,
-			app_fw_nic->total_phyports * NFP_NET_CFG_BAR_SZ,
+			pf_dev->total_phyports * NFP_NET_CFG_BAR_SZ,
 			&pf_dev->ctrl_area);
 	if (pf_dev->ctrl_bar == NULL) {
 		PMD_INIT_LOG(ERR, "nfp_rtsym_map fails for %s", bar_name);
@@ -1549,7 +1674,7 @@ nfp_init_app_fw_nic(struct nfp_net_hw_priv *hw_priv)
 	PMD_INIT_LOG(DEBUG, "ctrl bar: %p", pf_dev->ctrl_bar);
 
 	/* Loop through all physical ports on PF */
-	for (i = 0; i < app_fw_nic->total_phyports; i++) {
+	for (i = 0; i < pf_dev->total_phyports; i++) {
 		if (pf_dev->multi_pf.enabled)
 			snprintf(port_name, sizeof(port_name), "%s",
 					pf_dev->pci_dev->device.name);
@@ -1571,7 +1696,7 @@ nfp_init_app_fw_nic(struct nfp_net_hw_priv *hw_priv)
 	return 0;
 
 port_cleanup:
-	for (i = 0; i < app_fw_nic->total_phyports; i++) {
+	for (i = 0; i < pf_dev->total_phyports; i++) {
 		struct rte_eth_dev *eth_dev;
 
 		if (pf_dev->multi_pf.enabled)
@@ -1713,7 +1838,7 @@ nfp_net_speed_capa_get_real(struct nfp_eth_media_buf *media_buf,
 }
 
 static int
-nfp_net_speed_capa_get(struct nfp_pf_dev *pf_dev,
+nfp_net_speed_cap_get_one(struct nfp_pf_dev *pf_dev,
 		uint32_t port_id)
 {
 	int ret;
@@ -1746,14 +1871,229 @@ nfp_net_speed_capa_get(struct nfp_pf_dev *pf_dev,
 }
 
 static int
+nfp_net_speed_cap_get(struct nfp_pf_dev *pf_dev)
+{
+	int ret;
+	uint32_t i;
+	uint32_t id;
+	uint32_t count;
+
+	count = nfp_net_get_port_num(pf_dev, pf_dev->nfp_eth_table);
+	for (i = 0; i < count; i++) {
+		id = nfp_function_id_get(pf_dev, i);
+		ret = nfp_net_speed_cap_get_one(pf_dev, id);
+		if (ret != 0) {
+			PMD_INIT_LOG(ERR, "Failed to get port %d speed capability.", id);
+			return ret;
+		}
+	}
+
+	return 0;
+}
+
+/* Force the physical port down to clear the possible DMA error */
+static int
+nfp_net_force_port_down(struct nfp_pf_dev *pf_dev,
+		struct nfp_eth_table *nfp_eth_table,
+		struct nfp_cpp *cpp)
+{
+	int ret;
+	uint32_t i;
+	uint32_t id;
+	uint32_t index;
+	uint32_t count;
+
+	count = nfp_net_get_port_num(pf_dev, nfp_eth_table);
+	for (i = 0; i < count; i++) {
+		id = nfp_function_id_get(pf_dev, i);
+		index = nfp_eth_table->ports[id].index;
+		ret = nfp_eth_set_configured(cpp, index, 0);
+		if (ret < 0)
+			return ret;
+	}
+
+	return 0;
+}
+
+static int
+nfp_fw_app_primary_init(struct nfp_net_hw_priv *hw_priv)
+{
+	int ret;
+	struct nfp_pf_dev *pf_dev = hw_priv->pf_dev;
+
+	switch (pf_dev->app_fw_id) {
+	case NFP_APP_FW_CORE_NIC:
+		PMD_INIT_LOG(INFO, "Initializing coreNIC");
+		ret = nfp_init_app_fw_nic(hw_priv);
+		if (ret != 0) {
+			PMD_INIT_LOG(ERR, "Could not initialize coreNIC!");
+			return ret;
+		}
+		break;
+	case NFP_APP_FW_FLOWER_NIC:
+		PMD_INIT_LOG(INFO, "Initializing Flower");
+		ret = nfp_init_app_fw_flower(hw_priv);
+		if (ret != 0) {
+			PMD_INIT_LOG(ERR, "Could not initialize Flower!");
+			return ret;
+		}
+		break;
+	default:
+		PMD_INIT_LOG(ERR, "Unsupported Firmware loaded");
+		ret = -EINVAL;
+		return ret;
+	}
+
+	return 0;
+}
+
+static int
+nfp_pf_get_max_vf(struct nfp_pf_dev *pf_dev)
+{
+	int ret;
+	uint32_t max_vfs;
+
+	max_vfs = nfp_rtsym_read_le(pf_dev->sym_tbl, "nfd_vf_cfg_max_vfs", &ret);
+	if (ret != 0)
+		return ret;
+
+	pf_dev->max_vfs = max_vfs;
+
+	return 0;
+}
+
+static int
+nfp_pf_get_sriov_vf(struct nfp_pf_dev *pf_dev,
+		const struct nfp_dev_info *dev_info)
+{
+	int ret;
+	off_t pos;
+	uint16_t offset;
+	uint16_t sriov_vf;
+
+	/* For 3800 single-PF and 4000 card */
+	if (!pf_dev->multi_pf.enabled) {
+		pf_dev->sriov_vf = pf_dev->max_vfs;
+		return 0;
+	}
+
+	pos = rte_pci_find_ext_capability(pf_dev->pci_dev, RTE_PCI_EXT_CAP_ID_SRIOV);
+	if (pos == 0) {
+		PMD_INIT_LOG(ERR, "Can not get the pci sriov cap");
+		return -EIO;
+	}
+
+	/*
+	 * Management firmware ensures that sriov capability registers
+	 * are initialized correctly.
+	 */
+	ret = rte_pci_read_config(pf_dev->pci_dev, &sriov_vf, sizeof(sriov_vf),
+			pos + RTE_PCI_SRIOV_TOTAL_VF);
+	if (ret < 0) {
+		PMD_INIT_LOG(ERR, "Can not read the sriov toatl VF");
+		return -EIO;
+	}
+
+	/* Offset of first VF is relative to its PF. */
+	ret = rte_pci_read_config(pf_dev->pci_dev, &offset, sizeof(offset),
+			pos + RTE_PCI_SRIOV_VF_OFFSET);
+	if (ret < 0) {
+		PMD_INIT_LOG(ERR, "Can not get the VF offset");
+		return -EIO;
+	}
+
+	offset += pf_dev->multi_pf.function_id;
+	if (offset < dev_info->pf_num_per_unit)
+		return -ERANGE;
+
+	offset -= dev_info->pf_num_per_unit;
+	if (offset >= pf_dev->max_vfs || offset + sriov_vf > pf_dev->max_vfs) {
+		PMD_INIT_LOG(ERR, "The pci allocate VF is more than the MAX VF");
+		return -ERANGE;
+	}
+
+	pf_dev->vf_base_id = offset;
+	pf_dev->sriov_vf = sriov_vf;
+
+	return 0;
+}
+
+static int
+nfp_net_get_vf_info(struct nfp_pf_dev *pf_dev,
+		const struct nfp_dev_info *dev_info)
+{
+	int ret;
+
+	ret = nfp_pf_get_max_vf(pf_dev);
+	if (ret != 0) {
+		if (ret != -ENOENT) {
+			PMD_INIT_LOG(ERR, "Read max VFs failed");
+			return ret;
+		}
+
+		PMD_INIT_LOG(WARNING, "The firmware can not support read max VFs");
+		return 0;
+	}
+
+	if (pf_dev->max_vfs == 0)
+		return 0;
+
+	ret = nfp_pf_get_sriov_vf(pf_dev, dev_info);
+	if (ret < 0)
+		return ret;
+
+	pf_dev->queue_per_vf = NFP_QUEUE_PER_VF;
+
+	return 0;
+}
+
+static int
+nfp_net_vf_config_init(struct nfp_pf_dev *pf_dev)
+{
+	int ret = 0;
+	uint32_t min_size;
+	char vf_bar_name[RTE_ETH_NAME_MAX_LEN];
+	char vf_cfg_name[RTE_ETH_NAME_MAX_LEN];
+
+	if (pf_dev->sriov_vf == 0)
+		return 0;
+
+	min_size = NFP_NET_CFG_BAR_SZ * pf_dev->sriov_vf;
+	snprintf(vf_bar_name, sizeof(vf_bar_name), "_pf%d_net_vf_bar",
+			pf_dev->multi_pf.function_id);
+	pf_dev->vf_bar = nfp_rtsym_map_offset(pf_dev->sym_tbl, vf_bar_name,
+			NFP_NET_CFG_BAR_SZ * pf_dev->vf_base_id,
+			min_size, &pf_dev->vf_area);
+	if (pf_dev->vf_bar == NULL) {
+		PMD_INIT_LOG(ERR, "Failed to get vf cfg.");
+		return -EIO;
+	}
+
+	min_size = NFP_NET_VF_CFG_SZ * pf_dev->sriov_vf + NFP_NET_VF_CFG_MB_SZ;
+	snprintf(vf_cfg_name, sizeof(vf_cfg_name), "_pf%d_net_vf_cfg2",
+			pf_dev->multi_pf.function_id);
+	pf_dev->vf_cfg_tbl_bar = nfp_rtsym_map(pf_dev->sym_tbl, vf_cfg_name,
+			min_size, &pf_dev->vf_cfg_tbl_area);
+	if (pf_dev->vf_cfg_tbl_bar == NULL) {
+		PMD_INIT_LOG(ERR, "Failed to get vf configure table.");
+		ret = -EIO;
+		goto vf_bar_cleanup;
+	}
+
+	return 0;
+
+vf_bar_cleanup:
+	nfp_cpp_area_release_free(pf_dev->vf_area);
+
+	return ret;
+}
+
+static int
 nfp_pf_init(struct rte_pci_device *pci_dev)
 {
 	void *sync;
-	uint32_t i;
-	uint32_t id;
 	int ret = 0;
 	uint64_t addr;
-	uint32_t index;
 	uint32_t cpp_id;
 	uint8_t function_id;
 	struct nfp_cpp *cpp;
@@ -1837,17 +2177,36 @@ nfp_pf_init(struct rte_pci_device *pci_dev)
 		goto hwinfo_cleanup;
 	}
 
+	if (nfp_eth_table->count == 0 || nfp_eth_table->count > 8) {
+		PMD_INIT_LOG(ERR, "NFP ethernet table reports wrong ports: %u",
+				nfp_eth_table->count);
+		ret = -EIO;
+		goto eth_table_cleanup;
+	}
+
 	pf_dev->multi_pf.enabled = nfp_check_multi_pf_from_nsp(pci_dev, cpp);
 	pf_dev->multi_pf.function_id = function_id;
 
-	/* Force the physical port down to clear the possible DMA error */
-	for (i = 0; i < nfp_eth_table->count; i++) {
-		id = nfp_function_id_get(pf_dev, i);
-		index = nfp_eth_table->ports[id].index;
-		nfp_eth_set_configured(cpp, index, 0);
+	ret = nfp_net_force_port_down(pf_dev, nfp_eth_table, cpp);
+	if (ret != 0) {
+		PMD_INIT_LOG(ERR, "Failed to force port down");
+		ret = -EIO;
+		goto eth_table_cleanup;
 	}
 
-	nfp_devargs_parse(&pf_dev->devargs, pci_dev->device.devargs);
+	ret = nfp_devargs_parse(&pf_dev->devargs, pci_dev->device.devargs);
+	if (ret != 0) {
+		PMD_INIT_LOG(ERR, "Error when parsing device args");
+		ret = -EINVAL;
+		goto eth_table_cleanup;
+	}
+
+	ret = nfp_net_device_activate(cpp, &pf_dev->multi_pf);
+	if (ret != 0) {
+		PMD_INIT_LOG(ERR, "Failed to activate the NFP device");
+		ret = -EIO;
+		goto eth_table_cleanup;
+	}
 
 	if (nfp_fw_setup(pci_dev, cpp, nfp_eth_table, hwinfo,
 			dev_info, &pf_dev->multi_pf, pf_dev->devargs.force_reload_fw) != 0) {
@@ -1889,16 +2248,22 @@ nfp_pf_init(struct rte_pci_device *pci_dev)
 	pf_dev->pci_dev = pci_dev;
 	pf_dev->nfp_eth_table = nfp_eth_table;
 	pf_dev->sync = sync;
+	pf_dev->total_phyports = nfp_net_get_port_num(pf_dev, nfp_eth_table);
+	pf_dev->speed_updated = false;
 
-	/* Get the speed capability */
-	for (i = 0; i < nfp_eth_table->count; i++) {
-		id = nfp_function_id_get(pf_dev, i);
-		ret = nfp_net_speed_capa_get(pf_dev, id);
-		if (ret != 0) {
-			PMD_INIT_LOG(ERR, "Failed to get speed capability.");
-			ret = -EIO;
-			goto sym_tbl_cleanup;
-		}
+	ret = nfp_net_speed_cap_get(pf_dev);
+	if (ret != 0) {
+		PMD_INIT_LOG(ERR, "Failed to get speed capability.");
+		ret = -EIO;
+		goto sym_tbl_cleanup;
+	}
+
+	/* Get the VF info */
+	ret = nfp_net_get_vf_info(pf_dev, dev_info);
+	if (ret != 0) {
+		PMD_INIT_LOG(ERR, "Failed to get VF info.");
+		ret = -EIO;
+		goto sym_tbl_cleanup;
 	}
 
 	/* Configure access to tx/rx vNIC BARs */
@@ -1923,6 +2288,16 @@ nfp_pf_init(struct rte_pci_device *pci_dev)
 		goto hwqueues_cleanup;
 	}
 
+	ret = nfp_net_vf_config_init(pf_dev);
+	if (ret != 0) {
+		PMD_INIT_LOG(ERR, "Failed to init VF config.");
+		goto mac_stats_cleanup;
+	}
+
+	ret = nfp_enable_multi_pf(pf_dev);
+	if (ret != 0)
+		goto vf_cfg_tbl_cleanup;
+
 	hw_priv->pf_dev = pf_dev;
 	hw_priv->dev_info = dev_info;
 
@@ -1930,42 +2305,25 @@ nfp_pf_init(struct rte_pci_device *pci_dev)
 	 * PF initialization has been done at this point. Call app specific
 	 * init code now.
 	 */
-	switch (pf_dev->app_fw_id) {
-	case NFP_APP_FW_CORE_NIC:
-		if (pf_dev->multi_pf.enabled) {
-			ret = nfp_enable_multi_pf(pf_dev);
-			if (ret != 0)
-				goto mac_stats_cleanup;
-		}
-
-		PMD_INIT_LOG(INFO, "Initializing coreNIC");
-		ret = nfp_init_app_fw_nic(hw_priv);
-		if (ret != 0) {
-			PMD_INIT_LOG(ERR, "Could not initialize coreNIC!");
-			goto mac_stats_cleanup;
-		}
-		break;
-	case NFP_APP_FW_FLOWER_NIC:
-		PMD_INIT_LOG(INFO, "Initializing Flower");
-		ret = nfp_init_app_fw_flower(hw_priv);
-		if (ret != 0) {
-			PMD_INIT_LOG(ERR, "Could not initialize Flower!");
-			goto mac_stats_cleanup;
-		}
-		break;
-	default:
-		PMD_INIT_LOG(ERR, "Unsupported Firmware loaded");
-		ret = -EINVAL;
-		goto mac_stats_cleanup;
+	ret = nfp_fw_app_primary_init(hw_priv);
+	if (ret != 0) {
+		PMD_INIT_LOG(ERR, "Failed to init hw app primary.");
+		goto vf_cfg_tbl_cleanup;
 	}
 
 	/* Register the CPP bridge service here for primary use */
-	ret = nfp_enable_cpp_service(pf_dev);
-	if (ret != 0)
-		PMD_INIT_LOG(INFO, "Enable cpp service failed.");
+	if (pf_dev->devargs.cpp_service_enable) {
+		ret = nfp_enable_cpp_service(pf_dev);
+		if (ret != 0) {
+			PMD_INIT_LOG(ERR, "Enable CPP service failed.");
+			goto vf_cfg_tbl_cleanup;
+		}
+	}
 
 	return 0;
 
+vf_cfg_tbl_cleanup:
+	nfp_net_vf_config_uninit(pf_dev);
 mac_stats_cleanup:
 	nfp_cpp_area_release_free(pf_dev->mac_stats_area);
 hwqueues_cleanup:
@@ -1974,9 +2332,11 @@ sym_tbl_cleanup:
 	free(sym_tbl);
 fw_cleanup:
 	nfp_fw_unload(cpp);
-	nfp_net_keepalive_stop(&pf_dev->multi_pf);
-	nfp_net_keepalive_clear(pf_dev->multi_pf.beat_addr, pf_dev->multi_pf.function_id);
-	nfp_net_keepalive_uninit(&pf_dev->multi_pf);
+	if (pf_dev->multi_pf.enabled) {
+		nfp_net_keepalive_stop(&pf_dev->multi_pf);
+		nfp_net_keepalive_clear(pf_dev->multi_pf.beat_addr, pf_dev->multi_pf.function_id);
+		nfp_net_keepalive_uninit(&pf_dev->multi_pf);
+	}
 eth_table_cleanup:
 	free(nfp_eth_table);
 hwinfo_cleanup:
@@ -2048,6 +2408,38 @@ nfp_secondary_init_app_fw_nic(struct nfp_net_hw_priv *hw_priv)
 	}
 
 	return ret;
+}
+
+static int
+nfp_fw_app_secondary_init(struct nfp_net_hw_priv *hw_priv)
+{
+	int ret;
+	struct nfp_pf_dev *pf_dev = hw_priv->pf_dev;
+
+	switch (pf_dev->app_fw_id) {
+	case NFP_APP_FW_CORE_NIC:
+		PMD_INIT_LOG(INFO, "Initializing coreNIC");
+		ret = nfp_secondary_init_app_fw_nic(hw_priv);
+		if (ret != 0) {
+			PMD_INIT_LOG(ERR, "Could not initialize coreNIC!");
+			return ret;
+		}
+		break;
+	case NFP_APP_FW_FLOWER_NIC:
+		PMD_INIT_LOG(INFO, "Initializing Flower");
+		ret = nfp_secondary_init_app_fw_flower(hw_priv);
+		if (ret != 0) {
+			PMD_INIT_LOG(ERR, "Could not initialize Flower!");
+			return ret;
+		}
+		break;
+	default:
+		PMD_INIT_LOG(ERR, "Unsupported Firmware loaded");
+		ret = -EINVAL;
+		return ret;
+	}
+
+	return 0;
 }
 
 /*
@@ -2156,26 +2548,9 @@ nfp_pf_secondary_init(struct rte_pci_device *pci_dev)
 	hw_priv->dev_info = dev_info;
 
 	/* Call app specific init code now */
-	switch (app_fw_id) {
-	case NFP_APP_FW_CORE_NIC:
-		PMD_INIT_LOG(INFO, "Initializing coreNIC");
-		ret = nfp_secondary_init_app_fw_nic(hw_priv);
-		if (ret != 0) {
-			PMD_INIT_LOG(ERR, "Could not initialize coreNIC!");
-			goto sym_tbl_cleanup;
-		}
-		break;
-	case NFP_APP_FW_FLOWER_NIC:
-		PMD_INIT_LOG(INFO, "Initializing Flower");
-		ret = nfp_secondary_init_app_fw_flower(hw_priv);
-		if (ret != 0) {
-			PMD_INIT_LOG(ERR, "Could not initialize Flower!");
-			goto sym_tbl_cleanup;
-		}
-		break;
-	default:
-		PMD_INIT_LOG(ERR, "Unsupported Firmware loaded");
-		ret = -EINVAL;
+	ret = nfp_fw_app_secondary_init(hw_priv);
+	if (ret != 0) {
+		PMD_INIT_LOG(ERR, "Failed to init hw app primary.");
 		goto sym_tbl_cleanup;
 	}
 
@@ -2269,4 +2644,6 @@ static struct rte_pci_driver rte_nfp_net_pf_pmd = {
 RTE_PMD_REGISTER_PCI(NFP_PF_DRIVER_NAME, rte_nfp_net_pf_pmd);
 RTE_PMD_REGISTER_PCI_TABLE(NFP_PF_DRIVER_NAME, pci_id_nfp_pf_net_map);
 RTE_PMD_REGISTER_KMOD_DEP(NFP_PF_DRIVER_NAME, "* igb_uio | uio_pci_generic | vfio");
-RTE_PMD_REGISTER_PARAM_STRING(NFP_PF_DRIVER_NAME, NFP_PF_FORCE_RELOAD_FW "=<0|1>");
+RTE_PMD_REGISTER_PARAM_STRING(NFP_PF_DRIVER_NAME,
+		NFP_PF_FORCE_RELOAD_FW "=<0|1>"
+		NFP_CPP_SERVICE_ENABLE "=<0|1>");

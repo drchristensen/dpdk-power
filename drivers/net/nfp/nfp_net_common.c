@@ -193,8 +193,53 @@ nfp_net_notify_port_speed(struct nfp_net_hw *hw,
 			nfp_net_link_speed_rte2nfp(link->link_speed));
 }
 
-/* The length of firmware version string */
-#define FW_VER_LEN        32
+/**
+ * Reconfigure the firmware of VF configure
+ *
+ * @param net_hw
+ *   Device to reconfigure
+ * @param pf_dev
+ *   Get the Device info
+ * @param update
+ *   The value for the mailbox VF command
+ * @param value
+ *   The value of update
+ * @param offset
+ *   The offset in the VF configure table
+ *
+ * @return
+ *   - (0) if OK to reconfigure vf configure.
+ *   - (-EIO) if I/O err and fail to configure the vf configure
+ */
+static int
+nfp_net_vf_reconfig(struct nfp_net_hw *net_hw,
+		struct nfp_pf_dev *pf_dev,
+		uint16_t update,
+		uint8_t value,
+		uint32_t offset)
+{
+	int ret;
+	struct nfp_hw *hw;
+
+	hw = &net_hw->super;
+	rte_spinlock_lock(&hw->reconfig_lock);
+
+	/* Write update info to mailbox in VF config symbol */
+	nn_writeb(value, pf_dev->vf_cfg_tbl_bar + offset);
+	nn_writew(update, pf_dev->vf_cfg_tbl_bar + NFP_NET_VF_CFG_MB_UPD);
+	nn_cfg_writel(hw, NFP_NET_CFG_UPDATE, NFP_NET_CFG_UPDATE_VF);
+
+	rte_wmb();
+
+	ret = nfp_reconfig_real(hw, NFP_NET_CFG_UPDATE_VF);
+
+	rte_spinlock_unlock(&hw->reconfig_lock);
+
+	if (ret != 0)
+		return -EIO;
+
+	return nn_readw(pf_dev->vf_cfg_tbl_bar + NFP_NET_VF_CFG_MB_RET);
+}
 
 /**
  * Reconfigure the firmware via the mailbox
@@ -682,7 +727,7 @@ nfp_net_allmulticast_disable(struct rte_eth_dev *dev)
 	return nfp_net_set_allmulticast_mode(dev, false);
 }
 
-static int
+static void
 nfp_net_speed_aneg_update(struct rte_eth_dev *dev,
 		struct nfp_net_hw *hw,
 		struct nfp_net_hw_priv *hw_priv,
@@ -690,22 +735,27 @@ nfp_net_speed_aneg_update(struct rte_eth_dev *dev,
 {
 	uint32_t i;
 	uint32_t speed;
+	enum nfp_eth_aneg aneg;
+	struct nfp_pf_dev *pf_dev;
 	struct nfp_eth_table *nfp_eth_table;
 	struct nfp_eth_table_port *eth_port;
 
-	/* Compare whether the current status has changed. */
-	if (dev->data->dev_link.link_status != link->link_status) {
-		nfp_eth_table = nfp_eth_read_ports(hw_priv->pf_dev->cpp);
-		if (nfp_eth_table == NULL) {
-			PMD_DRV_LOG(DEBUG, "Error reading NFP ethernet table.");
-			return -EIO;
-		}
+	pf_dev = hw_priv->pf_dev;
+	aneg = pf_dev->nfp_eth_table->ports[hw->idx].aneg;
 
-		hw_priv->pf_dev->nfp_eth_table->ports[hw->idx] = nfp_eth_table->ports[hw->idx];
-		free(nfp_eth_table);
+	/* Compare whether the current status has changed. */
+	if (pf_dev->speed_updated || aneg == NFP_ANEG_AUTO) {
+		nfp_eth_table = nfp_eth_read_ports(pf_dev->cpp);
+		if (nfp_eth_table == NULL) {
+			PMD_DRV_LOG(WARNING, "Failed to update port speed.");
+		} else {
+			pf_dev->nfp_eth_table->ports[hw->idx] = nfp_eth_table->ports[hw->idx];
+			free(nfp_eth_table);
+			pf_dev->speed_updated = false;
+		}
 	}
 
-	nfp_eth_table = hw_priv->pf_dev->nfp_eth_table;
+	nfp_eth_table = pf_dev->nfp_eth_table;
 	eth_port = &nfp_eth_table->ports[hw->idx];
 	speed = eth_port->speed;
 
@@ -719,8 +769,6 @@ nfp_net_speed_aneg_update(struct rte_eth_dev *dev,
 	if (dev->data->dev_conf.link_speeds == RTE_ETH_LINK_SPEED_AUTONEG &&
 			eth_port->supp_aneg)
 		link->link_autoneg = RTE_ETH_LINK_AUTONEG;
-
-	return 0;
 }
 
 int
@@ -736,11 +784,7 @@ nfp_net_link_update_common(struct rte_eth_dev *dev,
 	hw_priv = dev->process_private;
 	if (link->link_status == RTE_ETH_LINK_UP) {
 		if (hw_priv->pf_dev != NULL) {
-			ret = nfp_net_speed_aneg_update(dev, hw, hw_priv, link);
-			if (ret != 0) {
-				PMD_DRV_LOG(DEBUG, "Failed to update speed and aneg.");
-				return ret;
-			}
+			nfp_net_speed_aneg_update(dev, hw, hw_priv, link);
 		} else {
 			/*
 			 * Shift and mask nn_link_status so that it is effectively the value
@@ -1221,6 +1265,8 @@ nfp_net_infos_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 
 	hw = nfp_net_get_hw(dev);
 	hw_priv = dev->process_private;
+	if (hw_priv == NULL)
+		return -EINVAL;
 
 	nfp_net_rx_desc_limits(hw_priv, &min_rx_desc, &max_rx_desc);
 	nfp_net_tx_desc_limits(hw, hw_priv, &min_tx_desc, &max_tx_desc);
@@ -1320,7 +1366,7 @@ nfp_net_infos_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 	}
 
 	/* Only PF supports getting speed capability. */
-	if (hw_priv != NULL && hw_priv->pf_dev != NULL)
+	if (hw_priv->pf_dev != NULL)
 		dev_info->speed_capa = hw_priv->pf_dev->speed_capa;
 
 	return 0;
@@ -1409,7 +1455,7 @@ nfp_net_supported_ptypes_get(struct rte_eth_dev *dev, size_t *no_of_elements)
 		RTE_PTYPE_INNER_L4_SCTP,
 	};
 
-	if (dev->rx_pkt_burst != nfp_net_recv_pkts)
+	if (dev->rx_pkt_burst == NULL)
 		return NULL;
 
 	net_hw = dev->data->dev_private;
@@ -2203,17 +2249,22 @@ nfp_net_firmware_version_get(struct rte_eth_dev *dev,
 		size_t fw_size)
 {
 	struct nfp_net_hw *hw;
-	char mip_name[FW_VER_LEN];
-	char app_name[FW_VER_LEN];
-	char nsp_version[FW_VER_LEN];
-	char vnic_version[FW_VER_LEN];
 	struct nfp_net_hw_priv *hw_priv;
+	char app_name[FW_VER_LEN] = {0};
+	char mip_name[FW_VER_LEN] = {0};
+	char nsp_version[FW_VER_LEN] = {0};
+	char vnic_version[FW_VER_LEN] = {0};
 
 	if (fw_size < FW_VER_LEN)
 		return FW_VER_LEN;
 
 	hw = nfp_net_get_hw(dev);
 	hw_priv = dev->process_private;
+
+	if (hw->fw_version[0] != 0) {
+		snprintf(fw_version, FW_VER_LEN, "%s", hw->fw_version);
+		return 0;
+	}
 
 	if (!rte_eth_dev_is_repr(dev)) {
 		snprintf(vnic_version, FW_VER_LEN, "%d.%d.%d.%d",
@@ -2227,8 +2278,16 @@ nfp_net_firmware_version_get(struct rte_eth_dev *dev,
 	nfp_net_get_mip_name(hw_priv, mip_name);
 	nfp_net_get_app_name(hw_priv, app_name);
 
-	snprintf(fw_version, FW_VER_LEN, "%s %s %s %s",
+	if (nsp_version[0] == 0 || mip_name[0] == 0) {
+		snprintf(fw_version, FW_VER_LEN, "%s %s %s %s",
 			vnic_version, nsp_version, mip_name, app_name);
+		return 0;
+	}
+
+	snprintf(hw->fw_version, FW_VER_LEN, "%s %s %s %s",
+			vnic_version, nsp_version, mip_name, app_name);
+
+	snprintf(fw_version, FW_VER_LEN, "%s", hw->fw_version);
 
 	return 0;
 }
@@ -2553,4 +2612,139 @@ nfp_net_fec_set(struct rte_eth_dev *dev,
 	}
 
 	return nfp_eth_set_fec(hw_priv->pf_dev->cpp, eth_port->index, fec);
+}
+
+uint32_t
+nfp_net_get_port_num(struct nfp_pf_dev *pf_dev,
+		struct nfp_eth_table *nfp_eth_table)
+{
+	if (pf_dev->multi_pf.enabled)
+		return 1;
+	else
+		return nfp_eth_table->count;
+}
+
+uint8_t
+nfp_function_id_get(const struct nfp_pf_dev *pf_dev,
+		uint8_t port_id)
+{
+	if (pf_dev->multi_pf.enabled)
+		return pf_dev->multi_pf.function_id;
+
+	return port_id;
+}
+
+static int
+nfp_net_sriov_check(struct nfp_pf_dev *pf_dev,
+		uint16_t cap)
+{
+	uint16_t cap_vf;
+
+	cap_vf = nn_readw(pf_dev->vf_cfg_tbl_bar + NFP_NET_VF_CFG_MB_CAP);
+	if ((cap_vf & cap) != cap)
+		return -ENOTSUP;
+
+	return 0;
+}
+
+static int
+nfp_net_sriov_update(struct nfp_net_hw *net_hw,
+		struct nfp_pf_dev *pf_dev,
+		uint16_t update)
+{
+	int ret;
+
+	/* Reuse NFP_NET_VF_CFG_MB_VF_NUM to pass vf_base_id to FW. */
+	ret = nfp_net_vf_reconfig(net_hw, pf_dev, update, pf_dev->vf_base_id,
+			NFP_NET_VF_CFG_MB_VF_NUM);
+	if (ret != 0) {
+		PMD_INIT_LOG(ERR, "Error nfp VF reconfig");
+		return ret;
+	}
+
+	return 0;
+}
+
+static int
+nfp_net_vf_queues_config(struct nfp_net_hw *net_hw,
+		struct nfp_pf_dev *pf_dev)
+{
+	int ret;
+	uint32_t i;
+	uint32_t offset;
+
+	ret = nfp_net_sriov_check(pf_dev, NFP_NET_VF_CFG_MB_CAP_QUEUE_CONFIG);
+	if (ret != 0) {
+		if (ret == -ENOTSUP) {
+			PMD_INIT_LOG(WARNING, "Set VF max queue not supported");
+			return 0;
+		}
+
+		PMD_INIT_LOG(ERR, "Set VF max queue failed");
+		return ret;
+	}
+
+	offset = NFP_NET_VF_CFG_MB_SZ + pf_dev->max_vfs * NFP_NET_VF_CFG_SZ;
+	for (i = 0; i < pf_dev->sriov_vf; i++) {
+		ret = nfp_net_vf_reconfig(net_hw, pf_dev, NFP_NET_VF_CFG_MB_UPD_QUEUE_CONFIG,
+				pf_dev->queue_per_vf, pf_dev->vf_base_id + offset + i);
+		if (ret != 0) {
+			PMD_INIT_LOG(ERR, "Set VF max_queue failed");
+			return ret;
+		}
+	}
+
+	return 0;
+}
+
+static int
+nfp_net_sriov_init(struct nfp_net_hw *net_hw,
+		struct nfp_pf_dev *pf_dev)
+{
+	int ret;
+
+	ret = nfp_net_sriov_check(pf_dev, NFP_NET_VF_CFG_MB_CAP_SPLIT);
+	if (ret != 0) {
+		if (ret == -ENOTSUP) {
+			PMD_INIT_LOG(WARNING, "Set VF split not supported");
+			return 0;
+		}
+
+		PMD_INIT_LOG(ERR, "Set VF split failed");
+		return ret;
+	}
+
+	nn_writeb(pf_dev->sriov_vf, pf_dev->vf_cfg_tbl_bar + NFP_NET_VF_CFG_MB_VF_CNT);
+
+	ret = nfp_net_sriov_update(net_hw, pf_dev, NFP_NET_VF_CFG_MB_UPD_SPLIT);
+	if (ret != 0) {
+		PMD_INIT_LOG(ERR, "The nfp sriov update spilt failed");
+		return ret;
+	}
+
+	return 0;
+}
+
+int
+nfp_net_vf_config_app_init(struct nfp_net_hw *net_hw,
+		struct nfp_pf_dev *pf_dev)
+{
+	int ret;
+
+	if (pf_dev->sriov_vf == 0)
+		return 0;
+
+	ret = nfp_net_sriov_init(net_hw, pf_dev);
+	if (ret != 0) {
+		PMD_INIT_LOG(ERR, "Failed to init sriov module");
+		return ret;
+	}
+
+	ret = nfp_net_vf_queues_config(net_hw, pf_dev);
+	if (ret != 0) {
+		PMD_INIT_LOG(ERR, "Failed to config vf queue");
+		return ret;
+	}
+
+	return 0;
 }

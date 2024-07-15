@@ -415,29 +415,39 @@ nfp_flower_cmsg_rx_qos_stats(struct nfp_mtr_priv *mtr_priv,
 }
 
 static int
-nfp_flower_cmsg_port_mod_rx(struct nfp_app_fw_flower *app_fw_flower,
+nfp_flower_cmsg_port_mod_rx(struct nfp_net_hw_priv *hw_priv,
 		struct rte_mbuf *pkt_burst)
 {
 	uint32_t port;
+	uint32_t index;
 	struct nfp_flower_representor *repr;
 	struct nfp_flower_cmsg_port_mod *msg;
+	struct nfp_app_fw_flower *app_fw_flower;
 
+	app_fw_flower = hw_priv->pf_dev->app_fw_priv;
 	msg = rte_pktmbuf_mtod_offset(pkt_burst, struct nfp_flower_cmsg_port_mod *,
 			NFP_FLOWER_CMSG_HLEN);
 	port = rte_be_to_cpu_32(msg->portnum);
 
 	switch (NFP_FLOWER_CMSG_PORT_TYPE(port)) {
 	case NFP_FLOWER_CMSG_PORT_TYPE_PHYS_PORT:
-		repr = app_fw_flower->phy_reprs[NFP_FLOWER_CMSG_PORT_PHYS_PORT_NUM(port)];
+		index = NFP_FLOWER_CMSG_PORT_PHYS_PORT_NUM(port);
+		repr = app_fw_flower->phy_reprs[index];
 		break;
 	case NFP_FLOWER_CMSG_PORT_TYPE_PCIE_PORT:
+		index = NFP_FLOWER_CMSG_PORT_VNIC_OFFSET(port, hw_priv->pf_dev->vf_base_id);
 		if (NFP_FLOWER_CMSG_PORT_VNIC_TYPE(port) == NFP_FLOWER_CMSG_PORT_VNIC_TYPE_VF)
-			repr =  app_fw_flower->vf_reprs[NFP_FLOWER_CMSG_PORT_VNIC(port)];
+			repr =  app_fw_flower->vf_reprs[index];
 		else
 			repr = app_fw_flower->pf_repr;
 		break;
 	default:
 		PMD_DRV_LOG(ERR, "ctrl msg for unknown port %#x", port);
+		return -EINVAL;
+	}
+
+	if (repr == NULL) {
+		PMD_DRV_LOG(ERR, "Can not get 'repr' for port %#x", port);
 		return -EINVAL;
 	}
 
@@ -451,7 +461,7 @@ nfp_flower_cmsg_port_mod_rx(struct nfp_app_fw_flower *app_fw_flower,
 }
 
 static void
-nfp_flower_cmsg_rx(struct nfp_app_fw_flower *app_fw_flower,
+nfp_flower_cmsg_rx(struct nfp_net_hw_priv *hw_priv,
 		struct rte_mbuf **pkts_burst,
 		uint16_t count)
 {
@@ -462,7 +472,9 @@ nfp_flower_cmsg_rx(struct nfp_app_fw_flower *app_fw_flower,
 	struct nfp_mtr_priv *mtr_priv;
 	struct nfp_flow_priv *flow_priv;
 	struct nfp_flower_cmsg_hdr *cmsg_hdr;
+	struct nfp_app_fw_flower *app_fw_flower;
 
+	app_fw_flower = hw_priv->pf_dev->app_fw_priv;
 	mtr_priv = app_fw_flower->mtr_priv;
 	flow_priv = app_fw_flower->flow_priv;
 
@@ -494,7 +506,7 @@ nfp_flower_cmsg_rx(struct nfp_app_fw_flower *app_fw_flower,
 			nfp_flower_cmsg_rx_qos_stats(mtr_priv, pkts_burst[i]);
 		} else if (cmsg_hdr->type == NFP_FLOWER_CMSG_TYPE_PORT_MOD) {
 			/* Handle changes to port configuration/status */
-			nfp_flower_cmsg_port_mod_rx(app_fw_flower, pkts_burst[i]);
+			nfp_flower_cmsg_port_mod_rx(hw_priv, pkts_burst[i]);
 		}
 
 		rte_pktmbuf_free(pkts_burst[i]);
@@ -502,13 +514,15 @@ nfp_flower_cmsg_rx(struct nfp_app_fw_flower *app_fw_flower,
 }
 
 void
-nfp_flower_ctrl_vnic_process(struct nfp_app_fw_flower *app_fw_flower)
+nfp_flower_ctrl_vnic_process(struct nfp_net_hw_priv *hw_priv)
 {
 	uint16_t count;
 	struct nfp_net_rxq *rxq;
 	struct rte_eth_dev *ctrl_eth_dev;
+	struct nfp_app_fw_flower *app_fw_flower;
 	struct rte_mbuf *pkts_burst[MAX_PKT_BURST];
 
+	app_fw_flower = hw_priv->pf_dev->app_fw_priv;
 	ctrl_eth_dev = app_fw_flower->ctrl_ethdev;
 
 	/* Ctrl vNIC only has a single Rx queue */
@@ -517,6 +531,6 @@ nfp_flower_ctrl_vnic_process(struct nfp_app_fw_flower *app_fw_flower)
 	if (count != 0) {
 		app_fw_flower->ctrl_vnic_rx_count += count;
 		/* Process cmsgs here */
-		nfp_flower_cmsg_rx(app_fw_flower, pkts_burst, count);
+		nfp_flower_cmsg_rx(hw_priv, pkts_burst, count);
 	}
 }

@@ -83,8 +83,15 @@ New Features
     without having to do a full handshake over a Unix Domain Socket
     with the Device Plugin.
 
+* **Updated Amazon ena (Elastic Network Adapter) driver.**
+
+  * Reworked the driver logger usage in order to improve Tx performance.
+  * Reworked the device uninitialization flow to ensure complete resource cleanup
+    and lay the groundwork for hot-unplug support.
+
 * **Updated Intel ice driver.**
 
+  * Added support of E830 device family.
   * Added support for configuring the Forward Error Correction (FEC) mode,
     querying FEC capabilities and current FEC mode from a device.
 

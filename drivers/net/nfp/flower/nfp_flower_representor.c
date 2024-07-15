@@ -19,6 +19,11 @@ enum nfp_repr_type {
 	NFP_REPR_TYPE_MAX,          /*<< Number of representor types */
 };
 
+struct nfp_repr_init {
+	struct nfp_flower_representor *flower_repr;
+	struct nfp_net_hw_priv *hw_priv;
+};
+
 static int
 nfp_flower_repr_link_update(struct rte_eth_dev *dev,
 		__rte_unused int wait_to_complete)
@@ -455,10 +460,7 @@ nfp_flower_repr_dev_close(struct rte_eth_dev *dev)
 		return 0;
 
 	/* Stop flower service first */
-	nfp_flower_service_stop(app_fw_flower, hw_priv);
-
-	/* Disable cpp service */
-	nfp_service_disable(&pf_dev->cpp_service_info);
+	nfp_flower_service_stop(hw_priv);
 
 	/* Now it is safe to free all PF resources */
 	nfp_uninit_app_fw_flower(hw_priv);
@@ -606,6 +608,7 @@ nfp_flower_repr_init(struct rte_eth_dev *eth_dev,
 	int ret;
 	uint16_t index;
 	unsigned int numa_node;
+	struct nfp_repr_init *repr_init;
 	struct nfp_net_hw_priv *hw_priv;
 	char ring_name[RTE_ETH_NAME_MAX_LEN];
 	struct nfp_app_fw_flower *app_fw_flower;
@@ -613,12 +616,13 @@ nfp_flower_repr_init(struct rte_eth_dev *eth_dev,
 	struct nfp_flower_representor *init_repr_data;
 
 	/* Cast the input representor data to the correct struct here */
-	init_repr_data = init_params;
+	repr_init = init_params;
+	init_repr_data = repr_init->flower_repr;
 	app_fw_flower = init_repr_data->app_fw_flower;
 
 	/* Memory has been allocated in the eth_dev_create() function */
 	repr = eth_dev->data->dev_private;
-	hw_priv = eth_dev->process_private;
+	hw_priv = repr_init->hw_priv;
 
 	/*
 	 * We need multiproduce rings as we can have multiple PF ports.
@@ -786,8 +790,11 @@ nfp_flower_repr_alloc(struct nfp_app_fw_flower *app_fw_flower,
 {
 	int i;
 	int ret;
+	uint8_t id;
 	const char *pci_name;
+	struct nfp_pf_dev *pf_dev;
 	struct rte_pci_device *pci_dev;
+	struct nfp_repr_init repr_init;
 	struct nfp_eth_table *nfp_eth_table;
 	struct nfp_eth_table_port *eth_port;
 	struct nfp_flower_representor flower_repr = {
@@ -795,10 +802,12 @@ nfp_flower_repr_alloc(struct nfp_app_fw_flower *app_fw_flower,
 		.app_fw_flower    = app_fw_flower,
 	};
 
-	nfp_eth_table = hw_priv->pf_dev->nfp_eth_table;
+	pf_dev = hw_priv->pf_dev;
+	nfp_eth_table = pf_dev->nfp_eth_table;
+	repr_init.hw_priv = hw_priv;
 
 	/* Send a NFP_FLOWER_CMSG_TYPE_MAC_REPR cmsg to hardware */
-	ret = nfp_flower_cmsg_mac_repr(app_fw_flower, nfp_eth_table);
+	ret = nfp_flower_cmsg_mac_repr(app_fw_flower, pf_dev);
 	if (ret != 0) {
 		PMD_INIT_LOG(ERR, "Cloud not send mac repr cmsgs");
 		return ret;
@@ -810,11 +819,15 @@ nfp_flower_repr_alloc(struct nfp_app_fw_flower *app_fw_flower,
 	/* PF vNIC reprs get a random MAC address */
 	rte_eth_random_addr(flower_repr.mac_addr.addr_bytes);
 
-	pci_dev = hw_priv->pf_dev->pci_dev;
+	pci_dev = pf_dev->pci_dev;
 
 	pci_name = strchr(pci_dev->name, ':') + 1;
 
-	snprintf(flower_repr.name, sizeof(flower_repr.name),
+	if (pf_dev->multi_pf.enabled)
+		snprintf(flower_repr.name, sizeof(flower_repr.name),
+			"%s_repr_pf%d", pci_name, pf_dev->multi_pf.function_id);
+	else
+		snprintf(flower_repr.name, sizeof(flower_repr.name),
 			"%s_repr_pf", pci_name);
 
 	/* Create a eth_dev for this representor */
@@ -828,24 +841,26 @@ nfp_flower_repr_alloc(struct nfp_app_fw_flower *app_fw_flower,
 
 	/* Create a rte_eth_dev for every phyport representor */
 	for (i = 0; i < app_fw_flower->num_phyport_reprs; i++) {
-		eth_port = &nfp_eth_table->ports[i];
+		id = nfp_function_id_get(pf_dev, i);
+		eth_port = &nfp_eth_table->ports[id];
 		flower_repr.repr_type = NFP_REPR_TYPE_PHYS_PORT;
 		flower_repr.port_id = nfp_flower_get_phys_port_id(eth_port->index);
-		flower_repr.nfp_idx = eth_port->eth_index;
+		flower_repr.nfp_idx = eth_port->index;
 		flower_repr.vf_id = i + 1;
 
 		/* Copy the real mac of the interface to the representor struct */
 		rte_ether_addr_copy(&eth_port->mac_addr, &flower_repr.mac_addr);
 		snprintf(flower_repr.name, sizeof(flower_repr.name),
-				"%s_repr_p%d", pci_name, i);
+				"%s_repr_p%d", pci_name, id);
 
 		/*
 		 * Create a eth_dev for this representor.
 		 * This will also allocate private memory for the device.
 		 */
+		repr_init.flower_repr = &flower_repr;
 		ret = rte_eth_dev_create(&pci_dev->device, flower_repr.name,
 				sizeof(struct nfp_flower_representor),
-				NULL, NULL, nfp_flower_repr_init, &flower_repr);
+				NULL, NULL, nfp_flower_repr_init, &repr_init);
 		if (ret != 0) {
 			PMD_INIT_LOG(ERR, "Cloud not create eth_dev for repr");
 			break;
@@ -861,8 +876,8 @@ nfp_flower_repr_alloc(struct nfp_app_fw_flower *app_fw_flower,
 	 */
 	for (i = 0; i < app_fw_flower->num_vf_reprs; i++) {
 		flower_repr.repr_type = NFP_REPR_TYPE_VF;
-		flower_repr.port_id = nfp_get_pcie_port_id(hw_priv->pf_dev->cpp,
-				NFP_FLOWER_CMSG_PORT_VNIC_TYPE_VF, i, 0);
+		flower_repr.port_id = nfp_get_pcie_port_id(pf_dev->cpp,
+				NFP_FLOWER_CMSG_PORT_VNIC_TYPE_VF, i + pf_dev->vf_base_id, 0);
 		flower_repr.nfp_idx = 0;
 		flower_repr.vf_id = i;
 
@@ -871,10 +886,11 @@ nfp_flower_repr_alloc(struct nfp_app_fw_flower *app_fw_flower,
 		snprintf(flower_repr.name, sizeof(flower_repr.name),
 				"%s_repr_vf%d", pci_name, i);
 
+		repr_init.flower_repr = &flower_repr;
 		/* This will also allocate private memory for the device */
 		ret = rte_eth_dev_create(&pci_dev->device, flower_repr.name,
 				sizeof(struct nfp_flower_representor),
-				NULL, NULL, nfp_flower_repr_init, &flower_repr);
+				NULL, NULL, nfp_flower_repr_init, &repr_init);
 		if (ret != 0) {
 			PMD_INIT_LOG(ERR, "Cloud not create eth_dev for repr");
 			break;
@@ -901,7 +917,6 @@ nfp_flower_repr_create(struct nfp_app_fw_flower *app_fw_flower,
 	int ret;
 	struct nfp_pf_dev *pf_dev;
 	struct rte_pci_device *pci_dev;
-	struct nfp_eth_table *nfp_eth_table;
 	struct rte_eth_devargs eth_da = {
 		.nb_representor_ports = 0
 	};
@@ -910,10 +925,9 @@ nfp_flower_repr_create(struct nfp_app_fw_flower *app_fw_flower,
 	pci_dev = pf_dev->pci_dev;
 
 	/* Allocate a switch domain for the flower app */
-	if (app_fw_flower->switch_domain_id == RTE_ETH_DEV_SWITCH_DOMAIN_ID_INVALID &&
-			rte_eth_switch_domain_alloc(&app_fw_flower->switch_domain_id) != 0) {
+	ret = rte_eth_switch_domain_alloc(&app_fw_flower->switch_domain_id);
+	if (ret != 0)
 		PMD_INIT_LOG(WARNING, "failed to allocate switch domain for device");
-	}
 
 	/* Now parse PCI device args passed for representor info */
 	if (pci_dev->device.devargs != NULL) {
@@ -930,8 +944,7 @@ nfp_flower_repr_create(struct nfp_app_fw_flower *app_fw_flower,
 	}
 
 	/* There always exist phy repr */
-	nfp_eth_table = pf_dev->nfp_eth_table;
-	if (eth_da.nb_representor_ports < nfp_eth_table->count + 1) {
+	if (eth_da.nb_representor_ports < pf_dev->total_phyports + 1) {
 		PMD_INIT_LOG(ERR, "Should also create repr port for phy port and PF vNIC.");
 		return -ERANGE;
 	}
@@ -943,9 +956,14 @@ nfp_flower_repr_create(struct nfp_app_fw_flower *app_fw_flower,
 	}
 
 	/* Fill in flower app with repr counts */
-	app_fw_flower->num_phyport_reprs = (uint8_t)nfp_eth_table->count;
+	app_fw_flower->num_phyport_reprs = pf_dev->total_phyports;
 	app_fw_flower->num_vf_reprs = eth_da.nb_representor_ports -
-			nfp_eth_table->count - 1;
+			pf_dev->total_phyports - 1;
+	if (pf_dev->max_vfs != 0 && pf_dev->sriov_vf < app_fw_flower->num_vf_reprs) {
+		PMD_INIT_LOG(ERR, "The VF repr nums %d is bigger than VF nums %d",
+				app_fw_flower->num_vf_reprs, pf_dev->sriov_vf);
+		return -ERANGE;
+	}
 
 	PMD_INIT_LOG(INFO, "%d number of VF reprs", app_fw_flower->num_vf_reprs);
 	PMD_INIT_LOG(INFO, "%d number of phyport reprs", app_fw_flower->num_phyport_reprs);

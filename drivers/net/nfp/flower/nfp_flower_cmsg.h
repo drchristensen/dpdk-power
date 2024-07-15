@@ -422,6 +422,7 @@ enum nfp_flower_cmsg_port_vnic_type {
 #define NFP_FLOWER_CMSG_PORT_PCI(x)             (((x) >> 14) & 0x3)  /* [14,15] */
 #define NFP_FLOWER_CMSG_PORT_VNIC_TYPE(x)       (((x) >> 12) & 0x3)  /* [12,13] */
 #define NFP_FLOWER_CMSG_PORT_VNIC(x)            (((x) >> 6) & 0x3f)  /* [6,11] */
+#define NFP_FLOWER_CMSG_PORT_VNIC_OFFSET(x, offset)    (NFP_FLOWER_CMSG_PORT_VNIC(x) - (offset))
 #define NFP_FLOWER_CMSG_PORT_PCIE_Q(x)          ((x) & 0x3f)         /* [0,5] */
 #define NFP_FLOWER_CMSG_PORT_PHYS_PORT_NUM(x)   ((x) & 0xff)         /* [0,7] */
 
@@ -975,8 +976,32 @@ struct nfp_fl_act_mark {
 	rte_be32_t mark;
 };
 
+/*
+ * Partial
+ *    3                   2                   1
+ *  1 0 9 8 7 6 5 4 3 2 1 0 9 8 7 6 5 4 3 2 1 0 9 8 7 6 5 4 3 2 1 0
+ * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+ * | res |  opcode |  res  | len_lw|     flag       |     resv1    |
+ * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+ * |                         Mark                                  |
+ * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+ * |           queue_id            |              resv2            |
+ * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+ * flag = 0x0: only mark action
+ * flag = 0x1: only queue action
+ * flag = 0x2: mark and queue action
+ */
+struct nfp_fl_act_partial {
+	struct nfp_fl_act_head head;
+	uint8_t flag;
+	uint8_t resv1;
+	rte_be32_t mark;
+	rte_be16_t queue_id;
+	rte_be16_t resv2;
+};
+
 int nfp_flower_cmsg_mac_repr(struct nfp_app_fw_flower *app_fw_flower,
-		struct nfp_eth_table *nfp_eth_table);
+		struct nfp_pf_dev *pf_dev);
 int nfp_flower_cmsg_repr_reify(struct nfp_app_fw_flower *app_fw_flower,
 		struct nfp_flower_representor *repr);
 int nfp_flower_cmsg_port_mod(struct nfp_app_fw_flower *app_fw_flower,

@@ -116,7 +116,7 @@ nfp_flower_get_repr(struct nfp_net_hw_priv *hw_priv,
 		port =  NFP_FLOWER_CMSG_PORT_PHYS_PORT_NUM(port_id);
 		return app_fw_flower->phy_reprs[port];
 	case NFP_FLOWER_CMSG_PORT_TYPE_PCIE_PORT:
-		port = NFP_FLOWER_CMSG_PORT_VNIC(port_id);
+		port = NFP_FLOWER_CMSG_PORT_VNIC_OFFSET(port_id, hw_priv->pf_dev->vf_base_id);
 		return app_fw_flower->vf_reprs[port];
 	default:
 		break;
@@ -533,6 +533,8 @@ nfp_flower_cleanup_ctrl_vnic(struct nfp_app_fw_flower *app_fw_flower,
 
 	pci_name = strchr(hw_priv->pf_dev->pci_dev->name, ':') + 1;
 
+	nfp_net_disable_queues(eth_dev);
+
 	snprintf(ctrl_txring_name, sizeof(ctrl_txring_name), "%s_cttx_ring", pci_name);
 	for (i = 0; i < hw->max_tx_queues; i++) {
 		txq = eth_dev->data->tx_queues[i];
@@ -645,14 +647,18 @@ nfp_init_app_fw_flower(struct nfp_net_hw_priv *hw_priv)
 {
 	int ret;
 	int err;
+	uint8_t id;
 	uint64_t ext_features;
 	unsigned int numa_node;
 	struct nfp_net_hw *pf_hw;
 	struct nfp_net_hw *ctrl_hw;
+	char bar_name[RTE_ETH_NAME_MAX_LEN];
+	char ctrl_name[RTE_ETH_NAME_MAX_LEN];
 	struct nfp_app_fw_flower *app_fw_flower;
 	struct nfp_pf_dev *pf_dev = hw_priv->pf_dev;
 
 	numa_node = rte_socket_id();
+	id = nfp_function_id_get(pf_dev, 0);
 
 	/* Allocate memory for the Flower app */
 	app_fw_flower = rte_zmalloc_socket("nfp_app_fw_flower", sizeof(*app_fw_flower),
@@ -686,7 +692,8 @@ nfp_init_app_fw_flower(struct nfp_net_hw_priv *hw_priv)
 	}
 
 	/* Map the PF ctrl bar */
-	pf_dev->ctrl_bar = nfp_rtsym_map(pf_dev->sym_tbl, "_pf0_net_bar0",
+	snprintf(bar_name, sizeof(bar_name), "_pf%u_net_bar0", id);
+	pf_dev->ctrl_bar = nfp_rtsym_map(pf_dev->sym_tbl, bar_name,
 			NFP_NET_CFG_BAR_SZ, &pf_dev->ctrl_area);
 	if (pf_dev->ctrl_bar == NULL) {
 		PMD_INIT_LOG(ERR, "Cloud not map the PF vNIC ctrl bar");
@@ -709,10 +716,17 @@ nfp_init_app_fw_flower(struct nfp_net_hw_priv *hw_priv)
 	/* Fill in the PF vNIC and populate app struct */
 	app_fw_flower->pf_hw = pf_hw;
 	pf_hw->super.ctrl_bar = pf_dev->ctrl_bar;
+	pf_hw->nfp_idx = pf_dev->nfp_eth_table->ports[id].index;
 
 	ret = nfp_flower_init_vnic_common(hw_priv, pf_hw, "pf_vnic");
 	if (ret != 0) {
 		PMD_INIT_LOG(ERR, "Could not initialize flower PF vNIC");
+		goto pf_cpp_area_cleanup;
+	}
+
+	ret = nfp_net_vf_config_app_init(pf_hw, pf_dev);
+	if (ret != 0) {
+		PMD_INIT_LOG(ERR, "Failed to init sriov module");
 		goto pf_cpp_area_cleanup;
 	}
 
@@ -723,7 +737,8 @@ nfp_init_app_fw_flower(struct nfp_net_hw_priv *hw_priv)
 	ctrl_hw = app_fw_flower->ctrl_hw;
 
 	/* Map the ctrl vNIC ctrl bar */
-	ctrl_hw->super.ctrl_bar = nfp_rtsym_map(pf_dev->sym_tbl, "_pf0_net_ctrl_bar",
+	snprintf(ctrl_name, sizeof(ctrl_name), "_pf%u_net_ctrl_bar", id);
+	ctrl_hw->super.ctrl_bar = nfp_rtsym_map(pf_dev->sym_tbl, ctrl_name,
 			NFP_NET_CFG_BAR_SZ, &ctrl_hw->ctrl_area);
 	if (ctrl_hw->super.ctrl_bar == NULL) {
 		PMD_INIT_LOG(ERR, "Cloud not map the ctrl vNIC ctrl bar");
@@ -745,7 +760,7 @@ nfp_init_app_fw_flower(struct nfp_net_hw_priv *hw_priv)
 	}
 
 	/* Start up flower services */
-	ret = nfp_flower_service_start(app_fw_flower, hw_priv);
+	ret = nfp_flower_service_start(hw_priv);
 	if (ret != 0) {
 		PMD_INIT_LOG(ERR, "Could not enable flower services");
 		ret = -ESRCH;
@@ -761,7 +776,7 @@ nfp_init_app_fw_flower(struct nfp_net_hw_priv *hw_priv)
 	return 0;
 
 ctrl_vnic_service_stop:
-	nfp_flower_service_stop(app_fw_flower, hw_priv);
+	nfp_flower_service_stop(hw_priv);
 ctrl_vnic_cleanup:
 	nfp_flower_cleanup_ctrl_vnic(app_fw_flower, hw_priv);
 ctrl_cpp_area_cleanup:

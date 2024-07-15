@@ -69,9 +69,12 @@ struct __rte_aligned(64) nfp_net_txq {
 	/** Used by NFDk only */
 	uint16_t data_pending;
 
+	/** Used by NFDk vector xmit only */
+	bool simple_always;
+
 	/**
 	 * At this point 58 bytes have been used for all the fields in the
-	 * TX critical path. We have room for 6 bytes and still all placed
+	 * TX critical path. We have room for 5 bytes and still all placed
 	 * in a cache line.
 	 */
 	uint64_t dma;
@@ -235,5 +238,15 @@ int nfp_net_tx_queue_setup(struct rte_eth_dev *dev,
 		unsigned int socket_id,
 		const struct rte_eth_txconf *tx_conf);
 uint32_t nfp_net_tx_free_bufs(struct nfp_net_txq *txq);
+void nfp_net_rx_queue_info_get(struct rte_eth_dev *dev,
+		uint16_t queue_id,
+		struct rte_eth_rxq_info *qinfo);
+void nfp_net_tx_queue_info_get(struct rte_eth_dev *dev,
+		uint16_t queue_id,
+		struct rte_eth_txq_info *qinfo);
+void nfp_net_recv_pkts_set(struct rte_eth_dev *eth_dev);
+void nfp_net_parse_ptype(struct nfp_net_rxq *rxq,
+		struct nfp_net_rx_desc *rxds,
+		struct rte_mbuf *mb);
 
 #endif /* __NFP_RXTX_H__ */

@@ -50,6 +50,9 @@
 				RTE_ETH_RSS_NONFRAG_IPV6_UDP  | \
 				RTE_ETH_RSS_NONFRAG_IPV6_SCTP)
 
+/* The length of firmware version string */
+#define FW_VER_LEN        32
+
 /*
  * Each PF has corresponding word to beat:
  * Offset | Usage
@@ -94,6 +97,9 @@ struct nfp_process_share {
 struct nfp_devargs {
 	/** Force reload firmware */
 	bool force_reload_fw;
+
+	/** Enable CPP bridge service */
+	bool cpp_service_enable;
 };
 
 struct nfp_pf_dev {
@@ -113,6 +119,15 @@ struct nfp_pf_dev {
 	struct nfp_cpp *cpp;
 	struct nfp_cpp_area *ctrl_area;
 	struct nfp_cpp_area *qc_area;
+
+	/** Pointer to the CPP area for the VF configuration BAR */
+	struct nfp_cpp_area *vf_area;
+	/** Pointer to mapped VF configuration area */
+	uint8_t *vf_bar;
+	/** Pointer to the CPP area for the VF config table */
+	struct nfp_cpp_area *vf_cfg_tbl_area;
+	/** Pointer to mapped VF config table */
+	uint8_t *vf_cfg_tbl_bar;
 
 	uint8_t *qc_bar;
 
@@ -137,14 +152,43 @@ struct nfp_pf_dev {
 
 	/** NFP devarg param */
 	struct nfp_devargs devargs;
+
+	/** Number of VFs supported by firmware shared by all PFs */
+	uint16_t max_vfs;
+	/** Number of VFs supported by firmware for this PF */
+	uint16_t sriov_vf;
+
+	uint8_t total_phyports;
+	/** Id of first VF that belongs to this PF */
+	uint8_t vf_base_id;
+	/** Number of queues per VF */
+	uint32_t queue_per_vf;
+
+	/** Record the speed uptade */
+	bool speed_updated;
 };
 
-#define NFP_NET_FLOW_LIMIT    1024
+#define NFP_NET_ETH_FLOW_LIMIT    8
+#define NFP_NET_IPV4_FLOW_LIMIT   1024
+#define NFP_NET_IPV6_FLOW_LIMIT   1024
+
+#define NFP_NET_FLOW_LIMIT    ((NFP_NET_ETH_FLOW_LIMIT) +   \
+				(NFP_NET_IPV4_FLOW_LIMIT) + \
+				(NFP_NET_IPV6_FLOW_LIMIT))
+
+struct nfp_net_flow_count {
+	uint16_t eth_count;
+	uint16_t ipv4_count;
+	uint16_t ipv6_count;
+};
+
+#define NFP_NET_HASH_REDUNDANCE (1.2)
+#define NFP_NET_FLOW_HASH_TBALE_SIZE ((NFP_NET_FLOW_LIMIT) * (NFP_NET_HASH_REDUNDANCE))
 
 struct nfp_net_priv {
 	uint32_t hash_seed; /**< Hash seed for hash tables in this structure. */
 	struct rte_hash *flow_table; /**< Hash table to store flow rules. */
-	uint16_t flow_count; /**< Flow count in hash table */
+	struct nfp_net_flow_count flow_count; /**< Flow count in hash table */
 	bool flow_position[NFP_NET_FLOW_LIMIT]; /**< Flow position array */
 };
 
@@ -156,7 +200,6 @@ struct nfp_app_fw_nic {
 	struct nfp_net_hw *ports[NFP_MAX_PHYPORTS];
 
 	bool multiport;
-	uint8_t total_phyports;
 };
 
 struct nfp_net_hw_priv {
@@ -215,6 +258,9 @@ struct nfp_net_hw {
 
 	/** Used for rte_flow of CoreNIC firmware */
 	struct nfp_net_priv *priv;
+
+	/** Used for firmware version */
+	char fw_version[FW_VER_LEN];
 };
 
 static inline uint32_t
@@ -323,6 +369,12 @@ void nfp_net_get_fw_version(struct nfp_cpp *cpp,
 		uint32_t *fw_version);
 int nfp_net_txrwb_alloc(struct rte_eth_dev *eth_dev);
 void nfp_net_txrwb_free(struct rte_eth_dev *eth_dev);
+uint32_t nfp_net_get_port_num(struct nfp_pf_dev *pf_dev,
+		struct nfp_eth_table *nfp_eth_table);
+uint8_t nfp_function_id_get(const struct nfp_pf_dev *pf_dev,
+		uint8_t port_id);
+int nfp_net_vf_config_app_init(struct nfp_net_hw *net_hw,
+		struct nfp_pf_dev *pf_dev);
 
 #define NFP_PRIV_TO_APP_FW_NIC(app_fw_priv)\
 	((struct nfp_app_fw_nic *)app_fw_priv)
