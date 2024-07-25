@@ -104,6 +104,16 @@ New Features
 
   * Updated base code with E610 device family support.
 
+* **Added Napatech ntnic net driver [EXPERIMENTAL].**
+
+  * Added the PMD driver for Napatech smartNIC
+
+    - Ability to initialize the NIC (NT200A02)
+    - Supporting only one FPGA firmware (9563.55.39)
+    - Ability to bring up the 100G link
+    - Supporting QSFP/QSFP+/QSFP28 NIM
+    - Does not support datapath
+
 * **Updated Marvell cnxk net driver.**
 
   * Added support disabling custom meta aura
@@ -193,6 +203,11 @@ Removed Items
 
   BPF is not supported and the librte-bpf test fails on 32-bit x86 kernels.
   So disable the library and the pmd.
+
+* **Removed hisilicon DMA support for HIP09 platform.**
+
+  The DMA for HIP09 is no longer available,
+  so the support is removed from hisilicon driver for HIP09 platform.
 
 
 API Changes

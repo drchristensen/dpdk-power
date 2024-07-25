@@ -6806,8 +6806,6 @@ mlx5_hw_validate_action_mark(struct rte_eth_dev *dev,
 					      &attr, error);
 }
 
-#define MLX5_FLOW_DEFAULT_INGRESS_QUEUE 0
-
 static int
 mlx5_hw_validate_action_queue(struct rte_eth_dev *dev,
 			      const struct rte_flow_action *template_action,
@@ -6817,22 +6815,22 @@ mlx5_hw_validate_action_queue(struct rte_eth_dev *dev,
 			      struct rte_flow_error *error)
 {
 	const struct rte_flow_action_queue *queue_mask = template_mask->conf;
-	const struct rte_flow_action *action =
-		queue_mask && queue_mask->index ? template_action :
-		&(const struct rte_flow_action) {
-		.type = RTE_FLOW_ACTION_TYPE_QUEUE,
-		.conf = &(const struct rte_flow_action_queue) {
-			.index = MLX5_FLOW_DEFAULT_INGRESS_QUEUE
-		}
-	};
 	const struct rte_flow_attr attr = {
 		.ingress = template_attr->ingress,
 		.egress = template_attr->egress,
 		.transfer = template_attr->transfer
 	};
+	bool masked = queue_mask != NULL && queue_mask->index;
 
-	return mlx5_flow_validate_action_queue(action, action_flags,
-					       dev, &attr, error);
+	if (template_attr->egress || template_attr->transfer)
+		return rte_flow_error_set(error, EINVAL,
+					  RTE_FLOW_ERROR_TYPE_ATTR, NULL,
+					  "QUEUE action supported for ingress only");
+	if (masked)
+		return mlx5_flow_validate_action_queue(template_action, action_flags, dev,
+						       &attr, error);
+	else
+		return 0;
 }
 
 static int
@@ -6844,22 +6842,15 @@ mlx5_hw_validate_action_rss(struct rte_eth_dev *dev,
 			      struct rte_flow_error *error)
 {
 	const struct rte_flow_action_rss *mask = template_mask->conf;
-	const struct rte_flow_action *action = mask ? template_action :
-		&(const struct rte_flow_action) {
-		.type = RTE_FLOW_ACTION_TYPE_RSS,
-		.conf = &(const struct rte_flow_action_rss) {
-			.queue_num = 1,
-			.queue = (uint16_t [1]) {
-				MLX5_FLOW_DEFAULT_INGRESS_QUEUE
-			}
-		}
-	};
 
 	if (template_attr->egress || template_attr->transfer)
 		return rte_flow_error_set(error, EINVAL,
 					  RTE_FLOW_ERROR_TYPE_ATTR, NULL,
 					  "RSS action supported for ingress only");
-	return mlx5_validate_action_rss(dev, action, error);
+	if (mask != NULL)
+		return mlx5_validate_action_rss(dev, template_action, error);
+	else
+		return 0;
 }
 
 static int
@@ -8228,7 +8219,8 @@ mlx5_hw_flow_tunnel_ip_check(uint64_t last_item, uint64_t *item_flags)
 	if (last_item == MLX5_FLOW_LAYER_OUTER_L3_IPV4) {
 		tunnel = true;
 		*item_flags |= MLX5_FLOW_LAYER_IPIP;
-	} else if (last_item == MLX5_FLOW_LAYER_OUTER_L3_IPV6) {
+	} else if (last_item == MLX5_FLOW_LAYER_OUTER_L3_IPV6 ||
+		   last_item == MLX5_FLOW_ITEM_OUTER_IPV6_ROUTING_EXT) {
 		tunnel = true;
 		*item_flags |= MLX5_FLOW_LAYER_IPV6_ENCAP;
 	} else {
@@ -10579,6 +10571,7 @@ flow_hw_create_ctrl_tables(struct rte_eth_dev *dev, struct rte_flow_error *error
 	struct mlx5_flow_hw_ctrl_fdb *hw_ctrl_fdb;
 	uint32_t xmeta = priv->sh->config.dv_xmeta_en;
 	uint32_t repr_matching = priv->sh->config.repr_matching;
+	uint32_t fdb_def_rule = priv->sh->config.fdb_def_rule;
 
 	MLX5_ASSERT(priv->hw_ctrl_fdb == NULL);
 	hw_ctrl_fdb = mlx5_malloc(MLX5_MEM_ZERO, sizeof(*hw_ctrl_fdb), 0, SOCKET_ID_ANY);
@@ -10589,70 +10582,79 @@ flow_hw_create_ctrl_tables(struct rte_eth_dev *dev, struct rte_flow_error *error
 		goto err;
 	}
 	priv->hw_ctrl_fdb = hw_ctrl_fdb;
-	/* Create templates and table for default SQ miss flow rules - root table. */
-	hw_ctrl_fdb->esw_mgr_items_tmpl = flow_hw_create_ctrl_esw_mgr_pattern_template(dev, error);
-	if (!hw_ctrl_fdb->esw_mgr_items_tmpl) {
-		DRV_LOG(ERR, "port %u failed to create E-Switch Manager item"
-			" template for control flows", dev->data->port_id);
-		goto err;
-	}
-	hw_ctrl_fdb->regc_jump_actions_tmpl = flow_hw_create_ctrl_regc_jump_actions_template
-			(dev, error);
-	if (!hw_ctrl_fdb->regc_jump_actions_tmpl) {
-		DRV_LOG(ERR, "port %u failed to create REG_C set and jump action template"
-			" for control flows", dev->data->port_id);
-		goto err;
-	}
-	hw_ctrl_fdb->hw_esw_sq_miss_root_tbl = flow_hw_create_ctrl_sq_miss_root_table
-			(dev, hw_ctrl_fdb->esw_mgr_items_tmpl, hw_ctrl_fdb->regc_jump_actions_tmpl,
-			 error);
-	if (!hw_ctrl_fdb->hw_esw_sq_miss_root_tbl) {
-		DRV_LOG(ERR, "port %u failed to create table for default sq miss (root table)"
-			" for control flows", dev->data->port_id);
-		goto err;
-	}
-	/* Create templates and table for default SQ miss flow rules - non-root table. */
-	hw_ctrl_fdb->regc_sq_items_tmpl = flow_hw_create_ctrl_regc_sq_pattern_template(dev, error);
-	if (!hw_ctrl_fdb->regc_sq_items_tmpl) {
-		DRV_LOG(ERR, "port %u failed to create SQ item template for"
-			" control flows", dev->data->port_id);
-		goto err;
-	}
-	hw_ctrl_fdb->port_actions_tmpl = flow_hw_create_ctrl_port_actions_template(dev, error);
-	if (!hw_ctrl_fdb->port_actions_tmpl) {
-		DRV_LOG(ERR, "port %u failed to create port action template"
-			" for control flows", dev->data->port_id);
-		goto err;
-	}
-	hw_ctrl_fdb->hw_esw_sq_miss_tbl = flow_hw_create_ctrl_sq_miss_table
-			(dev, hw_ctrl_fdb->regc_sq_items_tmpl, hw_ctrl_fdb->port_actions_tmpl,
-			 error);
-	if (!hw_ctrl_fdb->hw_esw_sq_miss_tbl) {
-		DRV_LOG(ERR, "port %u failed to create table for default sq miss (non-root table)"
-			" for control flows", dev->data->port_id);
-		goto err;
-	}
-	/* Create templates and table for default FDB jump flow rules. */
-	hw_ctrl_fdb->port_items_tmpl = flow_hw_create_ctrl_port_pattern_template(dev, error);
-	if (!hw_ctrl_fdb->port_items_tmpl) {
-		DRV_LOG(ERR, "port %u failed to create SQ item template for"
-			" control flows", dev->data->port_id);
-		goto err;
-	}
-	hw_ctrl_fdb->jump_one_actions_tmpl = flow_hw_create_ctrl_jump_actions_template
-			(dev, MLX5_HW_LOWEST_USABLE_GROUP, error);
-	if (!hw_ctrl_fdb->jump_one_actions_tmpl) {
-		DRV_LOG(ERR, "port %u failed to create jump action template"
-			" for control flows", dev->data->port_id);
-		goto err;
-	}
-	hw_ctrl_fdb->hw_esw_zero_tbl = flow_hw_create_ctrl_jump_table
-			(dev, hw_ctrl_fdb->port_items_tmpl, hw_ctrl_fdb->jump_one_actions_tmpl,
-			 error);
-	if (!hw_ctrl_fdb->hw_esw_zero_tbl) {
-		DRV_LOG(ERR, "port %u failed to create table for default jump to group 1"
-			" for control flows", dev->data->port_id);
-		goto err;
+	if (fdb_def_rule) {
+		/* Create templates and table for default SQ miss flow rules - root table. */
+		hw_ctrl_fdb->esw_mgr_items_tmpl =
+				flow_hw_create_ctrl_esw_mgr_pattern_template(dev, error);
+		if (!hw_ctrl_fdb->esw_mgr_items_tmpl) {
+			DRV_LOG(ERR, "port %u failed to create E-Switch Manager item"
+				" template for control flows", dev->data->port_id);
+			goto err;
+		}
+		hw_ctrl_fdb->regc_jump_actions_tmpl =
+				flow_hw_create_ctrl_regc_jump_actions_template(dev, error);
+		if (!hw_ctrl_fdb->regc_jump_actions_tmpl) {
+			DRV_LOG(ERR, "port %u failed to create REG_C set and jump action template"
+				" for control flows", dev->data->port_id);
+			goto err;
+		}
+		hw_ctrl_fdb->hw_esw_sq_miss_root_tbl =
+				flow_hw_create_ctrl_sq_miss_root_table
+					(dev, hw_ctrl_fdb->esw_mgr_items_tmpl,
+					 hw_ctrl_fdb->regc_jump_actions_tmpl, error);
+		if (!hw_ctrl_fdb->hw_esw_sq_miss_root_tbl) {
+			DRV_LOG(ERR, "port %u failed to create table for default sq miss (root table)"
+				" for control flows", dev->data->port_id);
+			goto err;
+		}
+		/* Create templates and table for default SQ miss flow rules - non-root table. */
+		hw_ctrl_fdb->regc_sq_items_tmpl =
+				flow_hw_create_ctrl_regc_sq_pattern_template(dev, error);
+		if (!hw_ctrl_fdb->regc_sq_items_tmpl) {
+			DRV_LOG(ERR, "port %u failed to create SQ item template for"
+				" control flows", dev->data->port_id);
+			goto err;
+		}
+		hw_ctrl_fdb->port_actions_tmpl =
+				flow_hw_create_ctrl_port_actions_template(dev, error);
+		if (!hw_ctrl_fdb->port_actions_tmpl) {
+			DRV_LOG(ERR, "port %u failed to create port action template"
+				" for control flows", dev->data->port_id);
+			goto err;
+		}
+		hw_ctrl_fdb->hw_esw_sq_miss_tbl =
+				flow_hw_create_ctrl_sq_miss_table
+					(dev, hw_ctrl_fdb->regc_sq_items_tmpl,
+					 hw_ctrl_fdb->port_actions_tmpl, error);
+		if (!hw_ctrl_fdb->hw_esw_sq_miss_tbl) {
+			DRV_LOG(ERR, "port %u failed to create table for default sq miss (non-root table)"
+				" for control flows", dev->data->port_id);
+			goto err;
+		}
+		/* Create templates and table for default FDB jump flow rules. */
+		hw_ctrl_fdb->port_items_tmpl =
+				flow_hw_create_ctrl_port_pattern_template(dev, error);
+		if (!hw_ctrl_fdb->port_items_tmpl) {
+			DRV_LOG(ERR, "port %u failed to create SQ item template for"
+				" control flows", dev->data->port_id);
+			goto err;
+		}
+		hw_ctrl_fdb->jump_one_actions_tmpl =
+				flow_hw_create_ctrl_jump_actions_template
+					(dev, MLX5_HW_LOWEST_USABLE_GROUP, error);
+		if (!hw_ctrl_fdb->jump_one_actions_tmpl) {
+			DRV_LOG(ERR, "port %u failed to create jump action template"
+				" for control flows", dev->data->port_id);
+			goto err;
+		}
+		hw_ctrl_fdb->hw_esw_zero_tbl = flow_hw_create_ctrl_jump_table
+				(dev, hw_ctrl_fdb->port_items_tmpl,
+				 hw_ctrl_fdb->jump_one_actions_tmpl, error);
+		if (!hw_ctrl_fdb->hw_esw_zero_tbl) {
+			DRV_LOG(ERR, "port %u failed to create table for default jump to group 1"
+				" for control flows", dev->data->port_id);
+			goto err;
+		}
 	}
 	/* Create templates and table for default Tx metadata copy flow rule. */
 	if (!repr_matching && xmeta == MLX5_XMETA_MODE_META32_HWS) {
@@ -14747,11 +14749,9 @@ flow_hw_table_resize(struct rte_eth_dev *dev,
 		return rte_flow_error_set(error, EINVAL,
 					  RTE_FLOW_ERROR_TYPE_UNSPECIFIED,
 					  table, "shrinking table is not supported");
-	ret = mlx5_ipool_resize(table->flow, nb_flows);
+	ret = mlx5_ipool_resize(table->flow, nb_flows, error);
 	if (ret)
-		return rte_flow_error_set(error, EINVAL,
-					  RTE_FLOW_ERROR_TYPE_UNSPECIFIED,
-					  table, "cannot resize flows pool");
+		return ret;
 	/*
 	 * A resizable matcher doesn't support rule update. In this case, the ipool
 	 * for the resource is not created and there is no need to resize it.
@@ -15384,6 +15384,8 @@ mlx5_flow_hw_esw_destroy_sq_miss_flow(struct rte_eth_dev *dev, uint32_t sqn)
 	}
 	proxy_dev = &rte_eth_devices[proxy_port_id];
 	proxy_priv = proxy_dev->data->dev_private;
+	/* FDB default flow rules must be enabled. */
+	MLX5_ASSERT(proxy_priv->sh->config.fdb_def_rule);
 	if (!proxy_priv->dr_ctx)
 		return 0;
 	if (!proxy_priv->hw_ctrl_fdb ||
@@ -15448,6 +15450,8 @@ mlx5_flow_hw_esw_create_default_jump_flow(struct rte_eth_dev *dev)
 	}
 	proxy_dev = &rte_eth_devices[proxy_port_id];
 	proxy_priv = proxy_dev->data->dev_private;
+	/* FDB default flow rules must be enabled. */
+	MLX5_ASSERT(proxy_priv->sh->config.fdb_def_rule);
 	if (!proxy_priv->dr_ctx) {
 		DRV_LOG(DEBUG, "Transfer proxy port (port %u) of port %u must be configured "
 			       "for HWS to create default FDB jump rule. Default rule will "
@@ -16375,10 +16379,11 @@ flow_hw_validate_rule_actions(struct rte_eth_dev *dev,
 		user_action = &actions[act_data->action_src];
 
 		/* Skip actions which do not require conf. */
-		switch ((int)user_action->type) {
+		switch ((int)act_data->type) {
 		case RTE_FLOW_ACTION_TYPE_COUNT:
 		case MLX5_RTE_FLOW_ACTION_TYPE_COUNT:
 		case MLX5_RTE_FLOW_ACTION_TYPE_METER_MARK:
+		case MLX5_RTE_FLOW_ACTION_TYPE_RSS:
 			continue;
 		default:
 			break;

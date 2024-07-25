@@ -515,7 +515,8 @@ mlx5dr_cmd_stc_modify_set_stc_param(struct mlx5dr_cmd_stc_modify_attr *stc_attr,
 			 stc_attr->vport.vport_num);
 		MLX5_SET(stc_ste_param_vport, stc_param, eswitch_owner_vhca_id,
 			 stc_attr->vport.esw_owner_vhca_id);
-		MLX5_SET(stc_ste_param_vport, stc_param, eswitch_owner_vhca_id_valid, 1);
+		MLX5_SET(stc_ste_param_vport, stc_param, eswitch_owner_vhca_id_valid,
+			 stc_attr->vport.eswitch_owner_vhca_id_valid);
 		break;
 	case MLX5_IFC_STC_ACTION_TYPE_DROP:
 	case MLX5_IFC_STC_ACTION_TYPE_NOP:
@@ -1032,7 +1033,8 @@ int mlx5dr_cmd_generate_wqe(struct ibv_context *ctx,
 
 	ret = mlx5_glue->devx_general_cmd(ctx, in, sizeof(in), out, sizeof(out));
 	if (ret) {
-		DR_LOG(ERR, "Failed to write GTA WQE using FW");
+		DR_LOG(ERR, "Failed to write GTA WQE using FW (syndrome: %#x)",
+		       mlx5dr_cmd_get_syndrome(out));
 		rte_errno = errno;
 		return rte_errno;
 	}

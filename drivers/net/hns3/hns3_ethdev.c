@@ -2738,6 +2738,7 @@ hns3_get_capability(struct hns3_hw *hw)
 		hw->rss_info.ipv6_sctp_offload_supported = false;
 		hw->udp_cksum_mode = HNS3_SPECIAL_PORT_SW_CKSUM_MODE;
 		pf->support_multi_tc_pause = false;
+		hw->rx_dma_addr_align = HNS3_RX_DMA_ADDR_ALIGN_64;
 		return 0;
 	}
 
@@ -2758,6 +2759,7 @@ hns3_get_capability(struct hns3_hw *hw)
 	hw->rss_info.ipv6_sctp_offload_supported = true;
 	hw->udp_cksum_mode = HNS3_SPECIAL_PORT_HW_CKSUM_MODE;
 	pf->support_multi_tc_pause = true;
+	hw->rx_dma_addr_align = HNS3_RX_DMA_ADDR_ALIGN_128;
 
 	return 0;
 }
@@ -6044,7 +6046,7 @@ hns3_fec_get_internal(struct hns3_hw *hw, uint32_t *fec_capa)
 {
 	struct hns3_sfp_info_cmd *resp;
 	uint32_t tmp_fec_capa;
-	uint8_t auto_state;
+	uint8_t auto_state = 0;
 	struct hns3_cmd_desc desc;
 	int ret;
 
