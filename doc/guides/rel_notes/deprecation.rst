@@ -61,6 +61,57 @@ Deprecation Notices
   us extending existing enum/define.
   One solution can be using a fixed size array instead of ``.*MAX.*`` value.
 
+* net: A new IPv6 address structure will be introduced in DPDK 24.11.
+  It will replace all ad-hoc ``uint8_t[16]`` arrays in all public APIs and structures.
+  The following libraries and symbols are expected to be affected:
+
+  ethdev
+    - ``struct rte_flow_item_icmp6_nd_ns``
+    - ``struct rte_flow_item_icmp6_nd_na``
+    - ``struct rte_flow_action_set_ipv6``
+    - ``struct rte_flow_tunnel``
+  fib
+    - ``rte_fib6_add()``
+    - ``rte_fib6_delete()``
+    - ``rte_fib6_lookup_bulk()``
+  gro
+    - ``struct tcp6_flow_key``
+  hash
+    - ``struct rte_ipv6_tuple``
+  ipsec
+    - ``struct rte_ipsec_sadv6_key``
+  lpm
+    - ``rte_lpm6_add()``
+    - ``rte_lpm6_is_rule_present()``
+    - ``rte_lpm6_delete()``
+    - ``rte_lpm6_delete_bulk_func()``
+    - ``rte_lpm6_lookup()``
+    - ``rte_lpm6_lookup_bulk_func()``
+  net
+    - ``struct rte_ipv6_hdr``
+  node
+    - ``rte_node_ip6_route_add()``
+  pipeline
+    - ``struct rte_table_action_ipv6_header``
+  rib
+    - ``rte_rib6_lookup()``
+    - ``rte_rib6_lookup_exact()``
+    - ``rte_rib6_get_nxt()``
+    - ``rte_rib6_insert()``
+    - ``rte_rib6_remove()``
+    - ``rte_rib6_get_ip()``
+  table
+    - ``struct rte_table_lpm_ipv6_key``
+
+* net, ethdev: The flow item ``RTE_FLOW_ITEM_TYPE_VXLAN_GPE``
+  is replaced with ``RTE_FLOW_ITEM_TYPE_VXLAN``.
+  The struct ``rte_flow_item_vxlan_gpe`` and its mask ``rte_flow_item_vxlan_gpe_mask``
+  are replaced with ``rte_flow_item_vxlan`` and ``rte_flow_item_vxlan_mask``.
+  The flow item ``RTE_FLOW_ITEM_TYPE_VXLAN_GPE``,
+  the structs ``rte_flow_item_vxlan_gpe``, ``rte_flow_item_vxlan_gpe_mask``,
+  and the header struct ``rte_vxlan_gpe_hdr`` with the macro ``RTE_ETHER_VXLAN_GPE_HLEN``
+  will be removed in DPDK 25.11.
+
 * ethdev: The flow API matching pattern structures, ``struct rte_flow_item_*``,
   should start with relevant protocol header structure from lib/net/.
   The individual protocol header fields and the protocol header struct
@@ -115,15 +166,41 @@ Deprecation Notices
   The legacy actions should be removed
   once ``MODIFY_FIELD`` alternative is implemented in drivers.
 
+* fib: A new flag field will be introduced in ``rte_fib_conf`` structure
+  in DPDK 24.11. This field will be used to pass extra configuration settings.
+
 * cryptodev: The function ``rte_cryptodev_cb_fn`` will be updated
   to have another parameter ``qp_id`` to return the queue pair ID
   which got error interrupt to the application,
   so that application can reset that particular queue pair.
 
+* cryptodev: The structure ``rte_cryptodev_qp_conf`` will be updated
+  to have a new parameter to set priority of that particular queue pair.
+
+* cryptodev: The enum ``rte_crypto_asym_xform_type`` and struct ``rte_crypto_asym_op``
+  will be extended to include new values to support EDDSA.
+  This will break ABI compatibility with existing applications that use these data types.
+
+* cryptodev: The ``rte_crypto_rsa_xform`` struct member to hold private key
+  in either exponent or quintuple format is changed from union to struct data type.
+  This change is to support ASN.1 syntax (RFC 3447 Appendix A.1.2).
+  This change will not break existing applications.
+
+* cryptodev: Some changes may happen to manage RSA padding for virtio-crypto.
+
 * cryptodev: The Intel IPsec Multi-Buffer version will be bumped
   to a minimum version of v1.4.
   This will effect the KASUMI, SNOW3G, ZUC, AESNI GCM, AESNI MB and CHACHAPOLY
   SW PMDs.
+
+* ipsec: The IPsec library is updated to support sequence number provided
+  by application. To allow the same, two new API functions are being introduced:
+  ``rte_ipsec_pkt_crypto_sqn_assign`` and ``rte_ipsec_pkt_crypto_xprepare``.
+  It separates the sequence number update functionality
+  from the existing ``rte_ipsec_pkt_crypto_prepare`` function.
+  Corresponding configure structure changes are being made for the new API.
+  Additionally a new flag ``RTE_IPSEC_SAFLAG_SQN_ASSIGN_DISABLE``
+  is introduced to disable sequence number assignment in IPsec library.
 
 * eventdev: The single-event (non-burst) enqueue and dequeue operations,
   used by static inline burst enqueue and dequeue functions in ``rte_eventdev.h``,
@@ -147,3 +224,9 @@ Deprecation Notices
   will be deprecated and subsequently removed in DPDK 24.11 release.
   Before this, the new port library API (functions rte_swx_port_*)
   will gradually transition from experimental to stable status.
+
+* graph: The graph library data structures will be modified
+  to support node specific errors.
+  The structures ``rte_node``, ``rte_node_register``
+  and ``rte_graph_cluster_node_stats`` will be extended
+  to include node error counters and error description.

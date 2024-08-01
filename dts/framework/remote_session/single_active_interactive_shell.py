@@ -27,8 +27,12 @@ from typing import ClassVar
 from paramiko import Channel, channel  # type: ignore[import-untyped]
 from typing_extensions import Self
 
-from framework.exception import InteractiveCommandExecutionError
-from framework.logger import DTSLogger
+from framework.exception import (
+    InteractiveCommandExecutionError,
+    InteractiveSSHSessionDeadError,
+    InteractiveSSHTimeoutError,
+)
+from framework.logger import DTSLogger, get_dts_logger
 from framework.params import Params
 from framework.settings import SETTINGS
 from framework.testbed_model.node import Node
@@ -71,7 +75,10 @@ class SingleActiveInteractiveShell(ABC):
 
     #: Extra characters to add to the end of every command
     #: before sending them. This is often overridden by subclasses and is
-    #: most commonly an additional newline character.
+    #: most commonly an additional newline character. This additional newline
+    #: character is used to force the line that is currently awaiting input
+    #: into the stdout buffer so that it can be consumed and checked against
+    #: the expected prompt.
     _command_extra_chars: ClassVar[str] = ""
 
     #: Path to the executable to start the interactive application.
@@ -85,6 +92,7 @@ class SingleActiveInteractiveShell(ABC):
         privileged: bool = False,
         timeout: float = SETTINGS.timeout,
         app_params: Params = Params(),
+        name: str | None = None,
     ) -> None:
         """Create an SSH channel during initialization.
 
@@ -95,9 +103,13 @@ class SingleActiveInteractiveShell(ABC):
                 shell. This timeout is for collecting output, so if reading from the buffer
                 and no output is gathered within the timeout, an exception is thrown.
             app_params: The command line parameters to be passed to the application on startup.
+            name: Name for the interactive shell to use for logging. This name will be appended to
+                the name of the underlying node which it is running on.
         """
         self._node = node
-        self._logger = node._logger
+        if name is None:
+            name = type(self).__name__
+        self._logger = get_dts_logger(f"{node.name}.{name}")
         self._app_params = app_params
         self._privileged = privileged
         self._timeout = timeout
@@ -138,7 +150,7 @@ class SingleActiveInteractiveShell(ABC):
             try:
                 self.send_command(start_command)
                 break
-            except TimeoutError:
+            except InteractiveSSHTimeoutError:
                 self._logger.info(
                     f"Interactive shell failed to start (attempt {attempt+1} out of "
                     f"{self._init_attempts})"
@@ -175,6 +187,9 @@ class SingleActiveInteractiveShell(ABC):
         Raises:
             InteractiveCommandExecutionError: If attempting to send a command to a shell that is
                 not currently running.
+            InteractiveSSHSessionDeadError: The session died while executing the command.
+            InteractiveSSHTimeoutError: If command was sent but prompt could not be found in
+                the output before the timeout.
         """
         if not self.is_alive:
             raise InteractiveCommandExecutionError(
@@ -183,19 +198,30 @@ class SingleActiveInteractiveShell(ABC):
         self._logger.info(f"Sending: '{command}'")
         if prompt is None:
             prompt = self._default_prompt
-        self._stdin.write(f"{command}{self._command_extra_chars}\n")
-        self._stdin.flush()
         out: str = ""
-        for line in self._stdout:
-            if skip_first_line:
-                skip_first_line = False
-                continue
-            if prompt in line and not line.rstrip().endswith(
-                command.rstrip()
-            ):  # ignore line that sent command
-                break
-            out += line
-        self._logger.debug(f"Got output: {out}")
+        try:
+            self._stdin.write(f"{command}{self._command_extra_chars}\n")
+            self._stdin.flush()
+            for line in self._stdout:
+                if skip_first_line:
+                    skip_first_line = False
+                    continue
+                if line.rstrip().endswith(prompt):
+                    break
+                out += line
+        except TimeoutError as e:
+            self._logger.exception(e)
+            self._logger.debug(
+                f"Prompt ({prompt}) was not found in output from command before timeout."
+            )
+            raise InteractiveSSHTimeoutError(command) from e
+        except OSError as e:
+            self._logger.exception(e)
+            raise InteractiveSSHSessionDeadError(
+                self._node.main_session.interactive_session.hostname
+            ) from e
+        finally:
+            self._logger.debug(f"Got output: {out}")
         return out
 
     def _close(self) -> None:
