@@ -574,7 +574,7 @@ mlx5dr_definer_flex_parser_set(struct mlx5dr_definer_fc *fc,
 	idx = fc->fname - MLX5DR_DEFINER_FNAME_FLEX_PARSER_0;
 	byte_off -= idx * sizeof(uint32_t);
 	ret = mlx5_flex_get_parser_value_per_byte_off(flex, flex->handle, byte_off,
-						      false, is_inner, &val);
+						      is_inner, &val);
 	if (ret == -1 || !val)
 		return;
 
@@ -2825,7 +2825,7 @@ mlx5dr_definer_conv_item_flex_parser(struct mlx5dr_definer_conv_data *cd,
 	for (i = 0; i < MLX5_GRAPH_NODE_SAMPLE_NUM; i++) {
 		byte_off = base_off - i * sizeof(uint32_t);
 		ret = mlx5_flex_get_parser_value_per_byte_off(m, v->handle, byte_off,
-							      true, is_inner, &mask);
+							      is_inner, &mask);
 		if (ret == -1) {
 			rte_errno = EINVAL;
 			return rte_errno;
@@ -3267,8 +3267,17 @@ mlx5dr_definer_conv_items_to_hl(struct mlx5dr_context *ctx,
 			break;
 		case RTE_FLOW_ITEM_TYPE_FLEX:
 			ret = mlx5dr_definer_conv_item_flex_parser(&cd, items, i);
-			item_flags |= cd.tunnel ? MLX5_FLOW_ITEM_INNER_FLEX :
-						  MLX5_FLOW_ITEM_OUTER_FLEX;
+			if (ret == 0) {
+				enum rte_flow_item_flex_tunnel_mode tunnel_mode =
+								FLEX_TUNNEL_MODE_SINGLE;
+
+				ret = mlx5_flex_get_tunnel_mode(items, &tunnel_mode);
+				if (tunnel_mode == FLEX_TUNNEL_MODE_TUNNEL)
+					item_flags |= MLX5_FLOW_ITEM_FLEX_TUNNEL;
+				else
+					item_flags |= cd.tunnel ? MLX5_FLOW_ITEM_INNER_FLEX :
+								  MLX5_FLOW_ITEM_OUTER_FLEX;
+			}
 			break;
 		case RTE_FLOW_ITEM_TYPE_MPLS:
 			ret = mlx5dr_definer_conv_item_mpls(&cd, items, i);

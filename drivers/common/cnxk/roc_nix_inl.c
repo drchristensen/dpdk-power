@@ -406,6 +406,8 @@ nix_inl_inb_sa_tbl_setup(struct roc_nix *roc_nix)
 	/* CN9K SA size is different */
 	if (roc_model_is_cn9k())
 		inb_sa_sz = ROC_NIX_INL_ON_IPSEC_INB_SA_SZ;
+	else if (roc_nix->custom_inb_sa)
+		inb_sa_sz = ROC_NIX_INL_INB_CUSTOM_SA_SZ;
 	else
 		inb_sa_sz = ROC_NIX_INL_OT_IPSEC_INB_SA_SZ;
 
@@ -910,6 +912,11 @@ roc_nix_inl_inb_init(struct roc_nix *roc_nix)
 		cfg.param1 = u.u16;
 		cfg.param2 = 0;
 		cfg.opcode = (ROC_IE_OT_MAJOR_OP_PROCESS_INBOUND_IPSEC | (1 << 6));
+
+		if (roc_nix->custom_inb_sa) {
+			cfg.param1 = roc_nix->inb_cfg_param1;
+			cfg.param2 = roc_nix->inb_cfg_param2;
+		}
 		rc = roc_nix_bpids_alloc(roc_nix, ROC_NIX_INTF_TYPE_CPT_NIX, 1, bpids);
 		if (rc > 0) {
 			nix->cpt_nixbpid = bpids[0];
@@ -1385,6 +1392,8 @@ roc_nix_inl_dev_rq_get(struct roc_nix_rq *rq, bool enable)
 	mbox = mbox_get(dev->mbox);
 	if (roc_model_is_cn9k())
 		rc = nix_rq_cn9k_cfg(dev, inl_rq, inl_dev->qints, false, enable);
+	else if (roc_model_is_cn10k())
+		rc = nix_rq_cn10k_cfg(dev, inl_rq, inl_dev->qints, false, enable);
 	else
 		rc = nix_rq_cfg(dev, inl_rq, inl_dev->qints, false, enable);
 	if (rc) {
@@ -1685,6 +1694,7 @@ roc_nix_inl_sa_sync(struct roc_nix *roc_nix, void *sa, bool inb,
 	struct roc_cpt_lf *outb_lf = NULL;
 	union cpt_lf_ctx_reload reload;
 	union cpt_lf_ctx_flush flush;
+	union cpt_lf_ctx_err err;
 	bool get_inl_lf = true;
 	uintptr_t rbase;
 	struct nix *nix;
@@ -1726,6 +1736,14 @@ roc_nix_inl_sa_sync(struct roc_nix *roc_nix, void *sa, bool inb,
 		case ROC_NIX_INL_SA_OP_FLUSH:
 			flush.s.cptr = ((uintptr_t)sa) >> 7;
 			plt_write64(flush.u, rbase + CPT_LF_CTX_FLUSH);
+			plt_atomic_thread_fence(__ATOMIC_ACQ_REL);
+			/* Read a CSR to ensure that the FLUSH operation is complete */
+			err.u = plt_read64(rbase + CPT_LF_CTX_ERR);
+
+			if (err.s.flush_st_flt) {
+				plt_warn("CTX flush could not complete");
+				return -EIO;
+			}
 			break;
 		case ROC_NIX_INL_SA_OP_RELOAD:
 			reload.s.cptr = ((uintptr_t)sa) >> 7;
@@ -1748,6 +1766,7 @@ roc_nix_inl_ctx_write(struct roc_nix *roc_nix, void *sa_dptr, void *sa_cptr,
 	struct nix_inl_dev *inl_dev = NULL;
 	struct roc_cpt_lf *outb_lf = NULL;
 	union cpt_lf_ctx_flush flush;
+	union cpt_lf_ctx_err err;
 	bool get_inl_lf = true;
 	uintptr_t rbase;
 	struct nix *nix;
@@ -1757,7 +1776,6 @@ roc_nix_inl_ctx_write(struct roc_nix *roc_nix, void *sa_dptr, void *sa_cptr,
 	if (roc_model_is_cn9k()) {
 		return 0;
 	}
-
 	if (idev)
 		inl_dev = idev->nix_inl_dev;
 
@@ -1765,6 +1783,11 @@ roc_nix_inl_ctx_write(struct roc_nix *roc_nix, void *sa_dptr, void *sa_cptr,
 		return -EINVAL;
 
 	if (roc_nix) {
+		if (inb && roc_nix->custom_inb_sa && sa_len > ROC_NIX_INL_INB_CUSTOM_SA_SZ) {
+			plt_nix_dbg("SA length: %u is more than allocated length: %u", sa_len,
+				    ROC_NIX_INL_INB_CUSTOM_SA_SZ);
+			return -EINVAL;
+		}
 		nix = roc_nix_to_nix_priv(roc_nix);
 		outb_lf = nix->cpt_lf_base;
 
@@ -1789,10 +1812,84 @@ roc_nix_inl_ctx_write(struct roc_nix *roc_nix, void *sa_dptr, void *sa_cptr,
 		flush.s.cptr = ((uintptr_t)sa_cptr) >> 7;
 		plt_write64(flush.u, rbase + CPT_LF_CTX_FLUSH);
 
+		plt_atomic_thread_fence(__ATOMIC_ACQ_REL);
+
+		/* Read a CSR to ensure that the FLUSH operation is complete */
+		err.u = plt_read64(rbase + CPT_LF_CTX_ERR);
+
+		if (err.s.flush_st_flt)
+			plt_warn("CTX flush could not complete");
 		return 0;
 	}
 	plt_nix_dbg("Could not get CPT LF for CTX write");
 	return -ENOTSUP;
+}
+
+static inline int
+nix_inl_dev_cpt_lf_stats_get(struct roc_nix *roc_nix, struct roc_nix_cpt_lf_stats *stats,
+			     uint16_t idx)
+{
+	struct idev_cfg *idev = idev_get_cfg();
+	struct nix_inl_dev *inl_dev = NULL;
+	struct roc_cpt_lf *lf = NULL;
+
+	PLT_SET_USED(roc_nix);
+	if (idev)
+		inl_dev = idev->nix_inl_dev;
+
+	if (inl_dev && inl_dev->attach_cptlf) {
+		if (idx >= inl_dev->nb_cptlf) {
+			plt_err("Invalid idx: %u total lfs: %d", idx, inl_dev->nb_cptlf);
+			return -EINVAL;
+		}
+		lf = &inl_dev->cpt_lf[idx];
+	} else {
+		plt_err("No CPT LF(s) are found for Inline Device");
+		return -EINVAL;
+	}
+	stats->enc_pkts = plt_read64(lf->rbase + CPT_LF_CTX_ENC_PKT_CNT);
+	stats->enc_bytes = plt_read64(lf->rbase + CPT_LF_CTX_ENC_BYTE_CNT);
+	stats->dec_pkts = plt_read64(lf->rbase + CPT_LF_CTX_DEC_PKT_CNT);
+	stats->dec_bytes = plt_read64(lf->rbase + CPT_LF_CTX_DEC_BYTE_CNT);
+
+	return 0;
+}
+
+static inline int
+nix_eth_dev_cpt_lf_stats_get(struct roc_nix *roc_nix, struct roc_nix_cpt_lf_stats *stats,
+			     uint16_t idx)
+{
+	struct roc_cpt_lf *lf;
+	struct nix *nix;
+
+	if (!roc_nix)
+		return -EINVAL;
+	nix = roc_nix_to_nix_priv(roc_nix);
+	if (idx >= nix->nb_cpt_lf) {
+		plt_err("Invalid idx: %u total lfs: %d", idx, nix->nb_cpt_lf);
+		return -EINVAL;
+	}
+	lf = &nix->cpt_lf_base[idx];
+	stats->enc_pkts = plt_read64(lf->rbase + CPT_LF_CTX_ENC_PKT_CNT);
+	stats->enc_bytes = plt_read64(lf->rbase + CPT_LF_CTX_ENC_BYTE_CNT);
+	stats->dec_pkts = plt_read64(lf->rbase + CPT_LF_CTX_DEC_PKT_CNT);
+	stats->dec_bytes = plt_read64(lf->rbase + CPT_LF_CTX_DEC_BYTE_CNT);
+
+	return 0;
+}
+
+int
+roc_nix_inl_cpt_lf_stats_get(struct roc_nix *roc_nix, enum roc_nix_cpt_lf_stats_type type,
+			     struct roc_nix_cpt_lf_stats *stats, uint16_t idx)
+{
+	switch (type) {
+	case ROC_NIX_CPT_LF_STATS_INL_DEV:
+		return nix_inl_dev_cpt_lf_stats_get(roc_nix, stats, idx);
+	case ROC_NIX_CPT_LF_STATS_ETHDEV:
+		return nix_eth_dev_cpt_lf_stats_get(roc_nix, stats, idx);
+	default:
+		return -EINVAL;
+	}
 }
 
 int
@@ -1805,6 +1902,7 @@ roc_nix_inl_ts_pkind_set(struct roc_nix *roc_nix, bool ts_ena, bool inb_inl_dev)
 	uint16_t max_spi = 0;
 	uint32_t rq_refs = 0;
 	uint8_t pkind = 0;
+	size_t inb_sa_sz;
 	int i;
 
 	if (roc_model_is_cn9k())
@@ -1822,6 +1920,7 @@ roc_nix_inl_ts_pkind_set(struct roc_nix *roc_nix, bool ts_ena, bool inb_inl_dev)
 		if (!nix->inl_inb_ena)
 			return 0;
 		sa_base = nix->inb_sa_base;
+		inb_sa_sz = nix->inb_sa_sz;
 		max_spi = roc_nix->ipsec_in_max_spi;
 	}
 
@@ -1833,6 +1932,7 @@ roc_nix_inl_ts_pkind_set(struct roc_nix *roc_nix, bool ts_ena, bool inb_inl_dev)
 			inl_dev->ts_ena = ts_ena;
 			max_spi = inl_dev->ipsec_in_max_spi;
 			sa_base = inl_dev->inb_sa_base;
+			inb_sa_sz = inl_dev->inb_sa_sz;
 		} else if (inl_dev->ts_ena != ts_ena) {
 			if (inl_dev->ts_ena)
 				plt_err("Inline device is already configured with TS enable");
@@ -1851,8 +1951,7 @@ roc_nix_inl_ts_pkind_set(struct roc_nix *roc_nix, bool ts_ena, bool inb_inl_dev)
 		return 0;
 
 	for (i = 0; i < max_spi; i++) {
-		sa = ((uint8_t *)sa_base) +
-		     (i * ROC_NIX_INL_OT_IPSEC_INB_SA_SZ);
+		sa = ((uint8_t *)sa_base) + (i * inb_sa_sz);
 		((struct roc_ot_ipsec_inb_sa *)sa)->w0.s.pkind = pkind;
 	}
 	return 0;

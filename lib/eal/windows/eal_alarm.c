@@ -92,6 +92,13 @@ rte_eal_alarm_set(uint64_t us, rte_eal_alarm_callback cb_fn, void *cb_arg)
 	LARGE_INTEGER deadline;
 	int ret;
 
+	/* Check parameters, including that us won't cause a uint64_t overflow */
+	if (us < 1 || us > (UINT64_MAX - US_PER_S)) {
+		EAL_LOG(ERR, "Invalid alarm interval");
+		ret = -EINVAL;
+		goto exit;
+	}
+
 	if (cb_fn == NULL) {
 		EAL_LOG(ERR, "NULL callback");
 		ret = -EINVAL;
@@ -211,6 +218,11 @@ rte_eal_alarm_cancel(rte_eal_alarm_callback cb_fn, void *cb_arg)
 		}
 
 		rte_spinlock_unlock(&alarm_lock);
+
+		/* Yield control to a second thread executing eal_alarm_callback to avoid
+		 * its starvation, as it is waiting for the lock we have just released.
+		 */
+		SwitchToThread();
 	} while (executing);
 
 	rte_eal_trace_alarm_cancel(cb_fn, cb_arg, removed);

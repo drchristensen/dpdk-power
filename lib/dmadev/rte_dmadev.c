@@ -436,11 +436,12 @@ rte_dma_count_avail(void)
 int
 rte_dma_info_get(int16_t dev_id, struct rte_dma_info *dev_info)
 {
-	const struct rte_dma_dev *dev = &rte_dma_devices[dev_id];
+	const struct rte_dma_dev *dev;
 	int ret;
 
 	if (!rte_dma_is_valid(dev_id) || dev_info == NULL)
 		return -EINVAL;
+	dev = &rte_dma_devices[dev_id];
 
 	if (*dev->dev_ops->dev_info_get == NULL)
 		return -ENOTSUP;
@@ -449,6 +450,11 @@ rte_dma_info_get(int16_t dev_id, struct rte_dma_info *dev_info)
 					    sizeof(struct rte_dma_info));
 	if (ret != 0)
 		return ret;
+
+	if ((dev_info->dev_capa & RTE_DMA_CAPA_PRI_POLICY_SP) && (dev_info->nb_priorities <= 1)) {
+		RTE_DMA_LOG(ERR, "Num of priorities must be > 1 for Device %d", dev_id);
+		return -EINVAL;
+	}
 
 	dev_info->dev_name = dev->data->dev_name;
 	dev_info->numa_node = dev->device->numa_node;
@@ -462,12 +468,13 @@ rte_dma_info_get(int16_t dev_id, struct rte_dma_info *dev_info)
 int
 rte_dma_configure(int16_t dev_id, const struct rte_dma_conf *dev_conf)
 {
-	struct rte_dma_dev *dev = &rte_dma_devices[dev_id];
 	struct rte_dma_info dev_info;
+	struct rte_dma_dev *dev;
 	int ret;
 
 	if (!rte_dma_is_valid(dev_id) || dev_conf == NULL)
 		return -EINVAL;
+	dev = &rte_dma_devices[dev_id];
 
 	if (dev->data->dev_started != 0) {
 		RTE_DMA_LOG(ERR,
@@ -497,6 +504,12 @@ rte_dma_configure(int16_t dev_id, const struct rte_dma_conf *dev_conf)
 		return -EINVAL;
 	}
 
+	if ((dev_info.dev_capa & RTE_DMA_CAPA_PRI_POLICY_SP) &&
+	    (dev_conf->priority >= dev_info.nb_priorities)) {
+		RTE_DMA_LOG(ERR, "Device %d configure invalid priority", dev_id);
+		return -EINVAL;
+	}
+
 	if (*dev->dev_ops->dev_configure == NULL)
 		return -ENOTSUP;
 	ret = (*dev->dev_ops->dev_configure)(dev, dev_conf,
@@ -513,11 +526,12 @@ rte_dma_configure(int16_t dev_id, const struct rte_dma_conf *dev_conf)
 int
 rte_dma_start(int16_t dev_id)
 {
-	struct rte_dma_dev *dev = &rte_dma_devices[dev_id];
+	struct rte_dma_dev *dev;
 	int ret;
 
 	if (!rte_dma_is_valid(dev_id))
 		return -EINVAL;
+	dev = &rte_dma_devices[dev_id];
 
 	if (dev->data->dev_conf.nb_vchans == 0) {
 		RTE_DMA_LOG(ERR, "Device %d must be configured first", dev_id);
@@ -545,11 +559,12 @@ mark_started:
 int
 rte_dma_stop(int16_t dev_id)
 {
-	struct rte_dma_dev *dev = &rte_dma_devices[dev_id];
+	struct rte_dma_dev *dev;
 	int ret;
 
 	if (!rte_dma_is_valid(dev_id))
 		return -EINVAL;
+	dev = &rte_dma_devices[dev_id];
 
 	if (dev->data->dev_started == 0) {
 		RTE_DMA_LOG(WARNING, "Device %d already stopped", dev_id);
@@ -572,11 +587,12 @@ mark_stopped:
 int
 rte_dma_close(int16_t dev_id)
 {
-	struct rte_dma_dev *dev = &rte_dma_devices[dev_id];
+	struct rte_dma_dev *dev;
 	int ret;
 
 	if (!rte_dma_is_valid(dev_id))
 		return -EINVAL;
+	dev = &rte_dma_devices[dev_id];
 
 	/* Device must be stopped before it can be closed */
 	if (dev->data->dev_started == 1) {
@@ -600,13 +616,14 @@ int
 rte_dma_vchan_setup(int16_t dev_id, uint16_t vchan,
 		    const struct rte_dma_vchan_conf *conf)
 {
-	struct rte_dma_dev *dev = &rte_dma_devices[dev_id];
 	struct rte_dma_info dev_info;
 	bool src_is_dev, dst_is_dev;
+	struct rte_dma_dev *dev;
 	int ret;
 
 	if (!rte_dma_is_valid(dev_id) || conf == NULL)
 		return -EINVAL;
+	dev = &rte_dma_devices[dev_id];
 
 	if (dev->data->dev_started != 0) {
 		RTE_DMA_LOG(ERR,
@@ -693,10 +710,11 @@ rte_dma_vchan_setup(int16_t dev_id, uint16_t vchan,
 int
 rte_dma_stats_get(int16_t dev_id, uint16_t vchan, struct rte_dma_stats *stats)
 {
-	const struct rte_dma_dev *dev = &rte_dma_devices[dev_id];
+	const struct rte_dma_dev *dev;
 
 	if (!rte_dma_is_valid(dev_id) || stats == NULL)
 		return -EINVAL;
+	dev = &rte_dma_devices[dev_id];
 
 	if (vchan >= dev->data->dev_conf.nb_vchans &&
 	    vchan != RTE_DMA_ALL_VCHAN) {
@@ -715,11 +733,12 @@ rte_dma_stats_get(int16_t dev_id, uint16_t vchan, struct rte_dma_stats *stats)
 int
 rte_dma_stats_reset(int16_t dev_id, uint16_t vchan)
 {
-	struct rte_dma_dev *dev = &rte_dma_devices[dev_id];
+	struct rte_dma_dev *dev;
 	int ret;
 
 	if (!rte_dma_is_valid(dev_id))
 		return -EINVAL;
+	dev = &rte_dma_devices[dev_id];
 
 	if (vchan >= dev->data->dev_conf.nb_vchans &&
 	    vchan != RTE_DMA_ALL_VCHAN) {
@@ -739,10 +758,11 @@ rte_dma_stats_reset(int16_t dev_id, uint16_t vchan)
 int
 rte_dma_vchan_status(int16_t dev_id, uint16_t vchan, enum rte_dma_vchan_status *status)
 {
-	struct rte_dma_dev *dev = &rte_dma_devices[dev_id];
+	struct rte_dma_dev *dev;
 
-	if (!rte_dma_is_valid(dev_id))
+	if (!rte_dma_is_valid(dev_id) || status == NULL)
 		return -EINVAL;
+	dev = &rte_dma_devices[dev_id];
 
 	if (vchan >= dev->data->dev_conf.nb_vchans) {
 		RTE_DMA_LOG(ERR, "Device %u vchan %u out of range", dev_id, vchan);
@@ -769,6 +789,7 @@ dma_capability_name(uint64_t capability)
 		{ RTE_DMA_CAPA_SILENT,      "silent"  },
 		{ RTE_DMA_CAPA_HANDLES_ERRORS, "handles_errors" },
 		{ RTE_DMA_CAPA_M2D_AUTO_FREE,  "m2d_auto_free"  },
+		{ RTE_DMA_CAPA_PRI_POLICY_SP,  "pri_policy_sp" },
 		{ RTE_DMA_CAPA_OPS_COPY,    "copy"    },
 		{ RTE_DMA_CAPA_OPS_COPY_SG, "copy_sg" },
 		{ RTE_DMA_CAPA_OPS_FILL,    "fill"    },
@@ -804,12 +825,13 @@ dma_dump_capability(FILE *f, uint64_t dev_capa)
 int
 rte_dma_dump(int16_t dev_id, FILE *f)
 {
-	const struct rte_dma_dev *dev = &rte_dma_devices[dev_id];
+	const struct rte_dma_dev *dev;
 	struct rte_dma_info dev_info;
 	int ret;
 
 	if (!rte_dma_is_valid(dev_id) || f == NULL)
 		return -EINVAL;
+	dev = &rte_dma_devices[dev_id];
 
 	ret = rte_dma_info_get(dev_id, &dev_info);
 	if (ret != 0) {
@@ -955,6 +977,7 @@ dmadev_handle_dev_info(const char *cmd __rte_unused,
 	rte_tel_data_start_dict(d);
 	rte_tel_data_add_dict_string(d, "name", dma_info.dev_name);
 	rte_tel_data_add_dict_int(d, "nb_vchans", dma_info.nb_vchans);
+	rte_tel_data_add_dict_int(d, "nb_priorities", dma_info.nb_priorities);
 	rte_tel_data_add_dict_int(d, "numa_node", dma_info.numa_node);
 	rte_tel_data_add_dict_int(d, "max_vchans", dma_info.max_vchans);
 	rte_tel_data_add_dict_int(d, "max_desc", dma_info.max_desc);
@@ -974,6 +997,7 @@ dmadev_handle_dev_info(const char *cmd __rte_unused,
 	ADD_CAPA(dma_caps, dev_capa, RTE_DMA_CAPA_SILENT);
 	ADD_CAPA(dma_caps, dev_capa, RTE_DMA_CAPA_HANDLES_ERRORS);
 	ADD_CAPA(dma_caps, dev_capa, RTE_DMA_CAPA_M2D_AUTO_FREE);
+	ADD_CAPA(dma_caps, dev_capa, RTE_DMA_CAPA_PRI_POLICY_SP);
 	ADD_CAPA(dma_caps, dev_capa, RTE_DMA_CAPA_OPS_COPY);
 	ADD_CAPA(dma_caps, dev_capa, RTE_DMA_CAPA_OPS_COPY_SG);
 	ADD_CAPA(dma_caps, dev_capa, RTE_DMA_CAPA_OPS_FILL);

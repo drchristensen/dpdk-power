@@ -351,7 +351,7 @@
  */
 #define IXGBE_FW_API_VER_BRANCH		0x00
 #define IXGBE_FW_API_VER_MAJOR		0x01
-#define IXGBE_FW_API_VER_MINOR		0x05
+#define IXGBE_FW_API_VER_MINOR		0x07
 #define IXGBE_FW_API_VER_DIFF_ALLOWED	0x02
 
 #define IXGBE_ACI_DESC_SIZE		32
@@ -672,6 +672,8 @@ struct ixgbe_aci_cmd_list_caps_elem {
 	__le16 cap;
 #define IXGBE_ACI_CAPS_VALID_FUNCTIONS			0x0005
 #define IXGBE_ACI_MAX_VALID_FUNCTIONS			0x8
+#define IXGBE_ACI_CAPS_SRIOV				0x0012
+#define IXGBE_ACI_CAPS_VF				0x0013
 #define IXGBE_ACI_CAPS_VMDQ				0x0014
 #define IXGBE_ACI_CAPS_VSI				0x0017
 #define IXGBE_ACI_CAPS_DCB				0x0018
@@ -1954,6 +1956,8 @@ struct ixgbe_hw_common_caps {
 #define IXGBE_MAX_SUPPORTED_GPIO_SDP	8
 	u8 led[IXGBE_MAX_SUPPORTED_GPIO_LED];
 	u8 sdp[IXGBE_MAX_SUPPORTED_GPIO_SDP];
+	/* SR-IOV virtualization */
+	u8 sr_iov_1_1;			/* SR-IOV enabled */
 	/* VMDQ */
 	u8 vmdq;			/* VMDQ supported */
 
@@ -2076,6 +2080,8 @@ struct ixgbe_orom_civd_info {
 /* Function specific capabilities */
 struct ixgbe_hw_func_caps {
 	struct ixgbe_hw_common_caps common_cap;
+	u32 num_allocd_vfs;		/* Number of allocated VFs */
+	u32 vf_base_id;			/* Logical ID of the first VF */
 	u32 guar_num_vsi;
 	struct ixgbe_ts_func_info ts_func_info;
 	bool no_drop_policy_ena;
@@ -2084,6 +2090,7 @@ struct ixgbe_hw_func_caps {
 /* Device wide capabilities */
 struct ixgbe_hw_dev_caps {
 	struct ixgbe_hw_common_caps common_cap;
+	u32 num_vfs_exposed;		/* Total number of VFs exposed */
 	u32 num_vsi_allocd_to_host;	/* Excluding EMP VSI */
 	u32 num_flow_director_fltr;	/* Number of FD filters available */
 	struct ixgbe_ts_dev_info ts_dev_info;

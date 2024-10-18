@@ -32,8 +32,8 @@ subdirs = [
 ]
 
 if meson.is_cross_build()
-    disable_drivers += ',' + meson.get_cross_property('disable_drivers', '')
-    enable_drivers += ',' + meson.get_cross_property('enable_drivers', '')
+    disable_drivers += ',' + meson.get_external_property('disable_drivers', '')
+    enable_drivers += ',' + meson.get_external_property('enable_drivers', '')
 endif
 
 # add cmdline disabled drivers and meson disabled drivers together
@@ -280,9 +280,6 @@ foreach subpath:subdirs
                 lk_deps += [def_file]
 
                 lk_args = ['-Wl,/def:' + def_file.full_path()]
-                if meson.version().version_compare('<0.54.0')
-                    lk_args += ['-Wl,/implib:drivers\\lib' + lib_name + '.dll.a']
-                endif
             else
                 mingw_map = custom_target(lib_name + '_mingw',
                         command: [map_to_win_cmd, '@INPUT@', '@OUTPUT@'],

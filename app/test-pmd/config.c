@@ -786,6 +786,7 @@ port_infos_display(portid_t port_id)
 	char name[RTE_ETH_NAME_MAX_LEN];
 	int ret;
 	char fw_version[ETHDEV_FWVERS_LEN];
+	uint32_t lanes;
 
 	if (port_id_is_invalid(port_id, ENABLED_WARN)) {
 		print_valid_ports();
@@ -828,6 +829,8 @@ port_infos_display(portid_t port_id)
 
 	printf("\nLink status: %s\n", (link.link_status) ? ("up") : ("down"));
 	printf("Link speed: %s\n", rte_eth_link_speed_to_str(link.link_speed));
+	if (rte_eth_speed_lanes_get(port_id, &lanes) == 0)
+		printf("Active Lanes: %d\n", lanes);
 	printf("Link duplex: %s\n", (link.link_duplex == RTE_ETH_LINK_FULL_DUPLEX) ?
 	       ("full-duplex") : ("half-duplex"));
 	printf("Autoneg status: %s\n", (link.link_autoneg == RTE_ETH_LINK_AUTONEG) ?
@@ -1061,6 +1064,45 @@ port_eeprom_display(portid_t port_id)
 	rte_hexdump(stdout, "hexdump", einfo.data, einfo.length);
 	printf("Finish -- Port: %d EEPROM length: %d bytes\n", port_id, len_eeprom);
 	free(einfo.data);
+}
+
+void
+port_eeprom_set(portid_t port_id,
+		uint32_t magic,
+		uint32_t offset,
+		uint32_t length,
+		uint8_t *value)
+{
+	struct rte_dev_eeprom_info einfo;
+	int len_eeprom;
+	int ret;
+
+	if (port_id_is_invalid(port_id, ENABLED_WARN)) {
+		print_valid_ports();
+		return;
+	}
+
+	len_eeprom = rte_eth_dev_get_eeprom_length(port_id);
+	if (len_eeprom < 0) {
+		fprintf(stderr, "Unable to get EEPROM length: %s\n",
+			rte_strerror(-len_eeprom));
+		return;
+	}
+
+	einfo.data = value;
+	einfo.magic = magic;
+	einfo.length = length;
+	einfo.offset = offset;
+
+	if (einfo.offset + einfo.length > (uint32_t)(len_eeprom)) {
+		fprintf(stderr, "offset and length exceed capabilities of EEPROM length: %d\n",
+			len_eeprom);
+		return;
+	}
+
+	ret = rte_eth_dev_set_eeprom(port_id, &einfo);
+	if (ret != 0)
+		fprintf(stderr, "Unable to set EEPROM: %s\n", rte_strerror(-ret));
 }
 
 void
@@ -2636,8 +2678,8 @@ port_flow_template_table_create(portid_t port_id, uint32_t id,
 	}
 	pt->nb_pattern_templates = nb_pattern_templates;
 	pt->nb_actions_templates = nb_actions_templates;
-	rte_memcpy(&pt->flow_attr, &table_attr->flow_attr,
-		   sizeof(struct rte_flow_attr));
+	rte_memcpy(&pt->attr, table_attr,
+		   sizeof(struct rte_flow_template_table_attr));
 	printf("Template table #%u created\n", pt->id);
 	return 0;
 }
@@ -2835,7 +2877,7 @@ port_queue_flow_create(portid_t port_id, queueid_t queue_id,
 	}
 	job->type = QUEUE_JOB_TYPE_FLOW_CREATE;
 
-	pf = port_flow_new(&pt->flow_attr, pattern, actions, &error);
+	pf = port_flow_new(&pt->attr.flow_attr, pattern, actions, &error);
 	if (!pf) {
 		free(job);
 		return port_flow_complain(&error);
@@ -2846,12 +2888,22 @@ port_queue_flow_create(portid_t port_id, queueid_t queue_id,
 	}
 	/* Poisoning to make sure PMDs update it in case of error. */
 	memset(&error, 0x11, sizeof(error));
-	if (rule_idx == UINT32_MAX)
+	if (pt->attr.insertion_type == RTE_FLOW_TABLE_INSERTION_TYPE_PATTERN)
 		flow = rte_flow_async_create(port_id, queue_id, &op_attr, pt->table,
 			pattern, pattern_idx, actions, actions_idx, job, &error);
-	else
+	else if (pt->attr.insertion_type == RTE_FLOW_TABLE_INSERTION_TYPE_INDEX)
 		flow = rte_flow_async_create_by_index(port_id, queue_id, &op_attr, pt->table,
 			rule_idx, actions, actions_idx, job, &error);
+	else if (pt->attr.insertion_type == RTE_FLOW_TABLE_INSERTION_TYPE_INDEX_WITH_PATTERN)
+		flow = rte_flow_async_create_by_index_with_pattern(port_id, queue_id, &op_attr,
+			pt->table, rule_idx, pattern, pattern_idx, actions, actions_idx, job,
+			&error);
+	else {
+		free(pf);
+		free(job);
+		printf("Insertion type %d is invalid\n", pt->attr.insertion_type);
+		return -EINVAL;
+	}
 	if (!flow) {
 		free(pf);
 		free(job);
@@ -3060,7 +3112,7 @@ port_queue_flow_update(portid_t port_id, queueid_t queue_id,
 	}
 	job->type = QUEUE_JOB_TYPE_FLOW_UPDATE;
 
-	uf = port_flow_new(&pt->flow_attr, pf->rule.pattern_ro, actions, &error);
+	uf = port_flow_new(&pt->attr.flow_attr, pf->rule.pattern_ro, actions, &error);
 	if (!uf) {
 		free(job);
 		return port_flow_complain(&error);
@@ -5319,6 +5371,26 @@ set_fwd_eth_peer(portid_t port_id, char *peer_addr)
 	peer_eth_addrs[port_id] = new_peer_addr;
 }
 
+void
+set_dev_led(portid_t port_id, bool active)
+{
+	int ret;
+
+	if (!rte_eth_dev_is_valid_port(port_id)) {
+		fprintf(stderr, "Error: Invalid port number %u\n", port_id);
+		return;
+	}
+
+	if (active)
+		ret = rte_eth_led_on(port_id);
+	else
+		ret = rte_eth_led_off(port_id);
+
+	if (ret < 0)
+		fprintf(stderr, "Error: Unable to change LED state for port %u: %s\n",
+			port_id, rte_strerror(-ret));
+}
+
 int
 set_fwd_lcores_list(unsigned int *lcorelist, unsigned int nb_lc)
 {
@@ -7244,3 +7316,4 @@ show_mcast_macs(portid_t port_id)
 		printf("  %s\n", buf);
 	}
 }
+

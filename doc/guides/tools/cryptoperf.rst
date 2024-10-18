@@ -176,6 +176,7 @@ The following are the application command-line options:
            docsis
            modex
            ecdsa_p256r1
+           eddsa_25519
            sm2
            ipsec
            tls-record
@@ -360,6 +361,11 @@ The following are the application command-line options:
 * ``--tls-version <TLS1.2/TLS1.3/DTLS1.2>``
 
         Set TLS/DTLS protocol version for perf test (default is TLS1.2).
+
+* ``--low-prio-qp-mask <mask>``
+
+        Set low priority for queue pairs set in the hexadecimal mask.
+        This is an optional parameter, if not set all queue pairs will be on same high priority.
 
 Test Vector File
 ~~~~~~~~~~~~~~~~

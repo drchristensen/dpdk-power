@@ -168,6 +168,7 @@ exit:
 static int
 nix_inl_cpt_setup(struct nix_inl_dev *inl_dev, bool inl_dev_sso)
 {
+	struct roc_nix_inl_dev_q *q_info;
 	struct dev *dev = &inl_dev->dev;
 	bool ctx_ilen_valid = false;
 	struct roc_cpt_lf *lf;
@@ -208,6 +209,13 @@ nix_inl_cpt_setup(struct nix_inl_dev *inl_dev, bool inl_dev_sso)
 			plt_err("Failed to initialize CPT LF, rc=%d", rc);
 			goto lf_free;
 		}
+
+		q_info = &inl_dev->q_info[i];
+		q_info->nb_desc = lf->nb_desc;
+		q_info->fc_addr = lf->fc_addr;
+		q_info->io_addr = lf->io_addr;
+		q_info->lmt_base = lf->lmt_base;
+		q_info->rbase = lf->rbase;
 
 		roc_cpt_iq_enable(lf);
 	}
@@ -412,6 +420,8 @@ nix_inl_nix_setup(struct nix_inl_dev *inl_dev)
 	/* CN9K SA is different */
 	if (roc_model_is_cn9k())
 		inb_sa_sz = ROC_NIX_INL_ON_IPSEC_INB_SA_SZ;
+	else if (inl_dev->custom_inb_sa)
+		inb_sa_sz = ROC_NIX_INL_INB_CUSTOM_SA_SZ;
 	else
 		inb_sa_sz = ROC_NIX_INL_OT_IPSEC_INB_SA_SZ;
 
@@ -835,6 +845,30 @@ exit:
 	return rc;
 }
 
+void *
+roc_nix_inl_dev_qptr_get(uint8_t qid)
+{
+	struct idev_cfg *idev = idev_get_cfg();
+	struct nix_inl_dev *inl_dev = NULL;
+
+	if (idev)
+		inl_dev = idev->nix_inl_dev;
+
+	if (!inl_dev) {
+		plt_err("Inline Device could not be detected");
+		return NULL;
+	}
+	if (!inl_dev->attach_cptlf) {
+		plt_err("No CPT LFs are attached to Inline Device");
+		return NULL;
+	}
+	if (qid >= inl_dev->nb_cptlf) {
+		plt_err("Invalid qid: %u total queues: %d", qid, inl_dev->nb_cptlf);
+		return NULL;
+	}
+	return &inl_dev->q_info[qid];
+}
+
 int
 roc_nix_inl_dev_stats_get(struct roc_nix_stats *stats)
 {
@@ -910,6 +944,7 @@ roc_nix_inl_dev_init(struct roc_nix_inl_dev *roc_inl_dev)
 	inl_dev->nb_meta_bufs = roc_inl_dev->nb_meta_bufs;
 	inl_dev->meta_buf_sz = roc_inl_dev->meta_buf_sz;
 	inl_dev->soft_exp_poll_freq = roc_inl_dev->soft_exp_poll_freq;
+	inl_dev->custom_inb_sa = roc_inl_dev->custom_inb_sa;
 
 	if (roc_inl_dev->rx_inj_ena) {
 		inl_dev->rx_inj_ena = 1;

@@ -25,10 +25,11 @@ variable modify the directory where the files with results will be stored.
 
 import os.path
 from collections.abc import MutableSequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum, auto
-from types import FunctionType
 from typing import Union
+
+from framework.testbed_model.capability import Capability
 
 from .config import (
     OS,
@@ -44,7 +45,7 @@ from .config import (
 from .exception import DTSError, ErrorSeverity
 from .logger import DTSLogger
 from .settings import SETTINGS
-from .test_suite import TestSuite
+from .test_suite import TestCase, TestSuite
 
 
 @dataclass(slots=True, frozen=True)
@@ -60,10 +61,18 @@ class TestSuiteWithCases:
     Attributes:
         test_suite_class: The test suite class.
         test_cases: The test case methods.
+        required_capabilities: The combined required capabilities of both the test suite
+            and the subset of test cases.
     """
 
     test_suite_class: type[TestSuite]
-    test_cases: list[FunctionType]
+    test_cases: list[type[TestCase]]
+    required_capabilities: set[Capability] = field(default_factory=set, init=False)
+
+    def __post_init__(self):
+        """Gather the required capabilities of the test suite and all test cases."""
+        for test_object in [self.test_suite_class] + self.test_cases:
+            self.required_capabilities.update(test_object.required_capabilities)
 
     def create_config(self) -> TestSuiteConfig:
         """Generate a :class:`TestSuiteConfig` from the stored test suite with test cases.
@@ -76,6 +85,43 @@ class TestSuiteWithCases:
             test_cases=[test_case.__name__ for test_case in self.test_cases],
         )
 
+    def mark_skip_unsupported(self, supported_capabilities: set[Capability]) -> None:
+        """Mark the test suite and test cases to be skipped.
+
+        The mark is applied if object to be skipped requires any capabilities and at least one of
+        them is not among `supported_capabilities`.
+
+        Args:
+            supported_capabilities: The supported capabilities.
+        """
+        for test_object in [self.test_suite_class, *self.test_cases]:
+            capabilities_not_supported = test_object.required_capabilities - supported_capabilities
+            if capabilities_not_supported:
+                test_object.skip = True
+                capability_str = (
+                    "capability" if len(capabilities_not_supported) == 1 else "capabilities"
+                )
+                test_object.skip_reason = (
+                    f"Required {capability_str} '{capabilities_not_supported}' not found."
+                )
+        if not self.test_suite_class.skip:
+            if all(test_case.skip for test_case in self.test_cases):
+                self.test_suite_class.skip = True
+
+                self.test_suite_class.skip_reason = (
+                    "All test cases are marked to be skipped with reasons: "
+                    f"{' '.join(test_case.skip_reason for test_case in self.test_cases)}"
+                )
+
+    @property
+    def skip(self) -> bool:
+        """Skip the test suite if all test cases or the suite itself are to be skipped.
+
+        Returns:
+            :data:`True` if the test suite should be skipped, :data:`False` otherwise.
+        """
+        return all(test_case.skip for test_case in self.test_cases) or self.test_suite_class.skip
+
 
 class Result(Enum):
     """The possible states that a setup, a teardown or a test case may end up in."""
@@ -87,12 +133,12 @@ class Result(Enum):
     #:
     ERROR = auto()
     #:
-    SKIP = auto()
-    #:
     BLOCK = auto()
+    #:
+    SKIP = auto()
 
     def __bool__(self) -> bool:
-        """Only PASS is True."""
+        """Only :attr:`PASS` is True."""
         return self is self.PASS
 
 
@@ -170,14 +216,15 @@ class BaseResult:
         self.setup_result.result = result
         self.setup_result.error = error
 
-        if result in [Result.BLOCK, Result.ERROR, Result.FAIL]:
-            self.update_teardown(Result.BLOCK)
-            self._block_result()
+        if result != Result.PASS:
+            result_to_mark = Result.BLOCK if result != Result.SKIP else Result.SKIP
+            self.update_teardown(result_to_mark)
+            self._mark_results(result_to_mark)
 
-    def _block_result(self) -> None:
-        r"""Mark the result as :attr:`~Result.BLOCK`\ed.
+    def _mark_results(self, result) -> None:
+        """Mark the child results or the result of the level itself as `result`.
 
-        The blocking of child results should be done in overloaded methods.
+        The marking of results should be done in overloaded methods.
         """
 
     def update_teardown(self, result: Result, error: Exception | None = None) -> None:
@@ -392,11 +439,11 @@ class TestRunResult(BaseResult):
         self.sut_os_version = sut_info.os_version
         self.sut_kernel_version = sut_info.kernel_version
 
-    def _block_result(self) -> None:
-        r"""Mark the result as :attr:`~Result.BLOCK`\ed."""
+    def _mark_results(self, result) -> None:
+        """Mark the build target results as `result`."""
         for build_target in self._config.build_targets:
             child_result = self.add_build_target(build_target)
-            child_result.update_setup(Result.BLOCK)
+            child_result.update_setup(result)
 
 
 class BuildTargetResult(BaseResult):
@@ -466,11 +513,11 @@ class BuildTargetResult(BaseResult):
         self.compiler_version = versions.compiler_version
         self.dpdk_version = versions.dpdk_version
 
-    def _block_result(self) -> None:
-        r"""Mark the result as :attr:`~Result.BLOCK`\ed."""
+    def _mark_results(self, result) -> None:
+        """Mark the test suite results as `result`."""
         for test_suite_with_cases in self._test_suites_with_cases:
             child_result = self.add_test_suite(test_suite_with_cases)
-            child_result.update_setup(Result.BLOCK)
+            child_result.update_setup(result)
 
 
 class TestSuiteResult(BaseResult):
@@ -510,11 +557,11 @@ class TestSuiteResult(BaseResult):
         self.child_results.append(result)
         return result
 
-    def _block_result(self) -> None:
-        r"""Mark the result as :attr:`~Result.BLOCK`\ed."""
+    def _mark_results(self, result) -> None:
+        """Mark the test case results as `result`."""
         for test_case_method in self._test_suite_with_cases.test_cases:
             child_result = self.add_test_case(test_case_method.__name__)
-            child_result.update_setup(Result.BLOCK)
+            child_result.update_setup(result)
 
 
 class TestCaseResult(BaseResult, FixtureResult):
@@ -568,9 +615,9 @@ class TestCaseResult(BaseResult, FixtureResult):
         """
         statistics += self.result
 
-    def _block_result(self) -> None:
-        r"""Mark the result as :attr:`~Result.BLOCK`\ed."""
-        self.update(Result.BLOCK)
+    def _mark_results(self, result) -> None:
+        r"""Mark the result as `result`."""
+        self.update(result)
 
     def __bool__(self) -> bool:
         """The test case passed only if setup, teardown and the test case itself passed."""
@@ -584,7 +631,8 @@ class Statistics(dict):
 
     The data are stored in the following keys:
 
-    * **PASS RATE** (:class:`int`) -- The FAIL/PASS ratio of all test cases.
+    * **PASS RATE** (:class:`int`) -- The :attr:`~Result.FAIL`/:attr:`~Result.PASS` ratio
+        of all test cases.
     * **DPDK VERSION** (:class:`str`) -- The tested DPDK version.
     """
 
@@ -601,22 +649,27 @@ class Statistics(dict):
         self["DPDK VERSION"] = dpdk_version
 
     def __iadd__(self, other: Result) -> "Statistics":
-        """Add a Result to the final count.
+        """Add a :class:`Result` to the final count.
+
+        :attr:`~Result.SKIP` is not taken into account
 
         Example:
-            stats: Statistics = Statistics()  # empty Statistics
-            stats += Result.PASS  # add a Result to `stats`
+            stats: Statistics = Statistics()  # empty :class:`Statistics`
+            stats += Result.PASS  # add a :class:`Result` to `stats`
 
         Args:
-            other: The Result to add to this statistics object.
+            other: The :class:`Result` to add to this statistics object.
 
         Returns:
             The modified statistics object.
         """
         self[other.name] += 1
-        self["PASS RATE"] = (
-            float(self[Result.PASS.name]) * 100 / sum(self[result.name] for result in Result)
-        )
+        if other != Result.SKIP:
+            self["PASS RATE"] = (
+                float(self[Result.PASS.name])
+                * 100
+                / sum([self[result.name] for result in Result if result != Result.SKIP])
+            )
         return self
 
     def __str__(self) -> str:

@@ -67,20 +67,17 @@
 #define OTX_EP_MAX_IOQS_PER_VF 8
 #define OTX_CUST_DATA_LEN 0
 
-#define otx_ep_info(fmt, args...)				\
-	rte_log(RTE_LOG_INFO, otx_net_ep_logtype,		\
-		"%s():%u " fmt "\n",				\
-		__func__, __LINE__, ##args)
+#define otx_ep_info(...) \
+	RTE_LOG_LINE_PREFIX(INFO, OTX_NET_EP, "%s():%u ", \
+		__func__ RTE_LOG_COMMA __LINE__, __VA_ARGS__)
 
-#define otx_ep_err(fmt, args...)				\
-	rte_log(RTE_LOG_ERR, otx_net_ep_logtype,		\
-		"%s():%u " fmt "\n",				\
-		__func__, __LINE__, ##args)
+#define otx_ep_err(...) \
+	RTE_LOG_LINE_PREFIX(ERR, OTX_NET_EP, "%s():%u ", \
+		__func__ RTE_LOG_COMMA __LINE__, __VA_ARGS__)
 
-#define otx_ep_dbg(fmt, args...)				\
-	rte_log(RTE_LOG_DEBUG, otx_net_ep_logtype,		\
-		"%s():%u " fmt "\n",				\
-		__func__, __LINE__, ##args)
+#define otx_ep_dbg(...) \
+	RTE_LOG_LINE_PREFIX(DEBUG, OTX_NET_EP, "%s():%u ", \
+		__func__ RTE_LOG_COMMA __LINE__, __VA_ARGS__)
 
 /* IO Access */
 #define oct_ep_read64(addr) rte_read64_relaxed((void *)(addr))
@@ -120,7 +117,7 @@ union otx_ep_instr_irh {
 	{\
 	typeof(value) val = (value); \
 	typeof(reg_off) off = (reg_off); \
-	otx_ep_dbg("octeon_write_csr64: reg: 0x%08lx val: 0x%016llx\n", \
+	otx_ep_dbg("octeon_write_csr64: reg: 0x%08lx val: 0x%016llx", \
 		   (unsigned long)off, (unsigned long long)val); \
 	rte_write64(val, ((base_addr) + off)); \
 	}

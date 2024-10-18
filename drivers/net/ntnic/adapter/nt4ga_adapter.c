@@ -75,6 +75,11 @@ static int nt4ga_adapter_show_info(struct adapter_info_s *p_adapter_info, FILE *
 
 static int nt4ga_adapter_init(struct adapter_info_s *p_adapter_info)
 {
+	const struct flow_filter_ops *flow_filter_ops = get_flow_filter_ops();
+
+	if (flow_filter_ops == NULL)
+		NT_LOG(ERR, NTNIC, "%s: flow_filter module uninitialized", __func__);
+
 	char *const p_dev_name = malloc(24);
 	char *const p_adapter_id_str = malloc(24);
 	fpga_info_t *fpga_info = &p_adapter_info->fpga_info;
@@ -107,7 +112,7 @@ static int nt4ga_adapter_init(struct adapter_info_s *p_adapter_info)
 			PCIIDENT_TO_BUSNR(p_adapter_info->fpga_info.pciident),
 			PCIIDENT_TO_DEVNR(p_adapter_info->fpga_info.pciident),
 			PCIIDENT_TO_FUNCNR(p_adapter_info->fpga_info.pciident));
-		NT_LOG(DBG, NTNIC, "%s: (0x%08X)\n", p_dev_name,
+		NT_LOG(DBG, NTNIC, "%s: (0x%08X)", p_dev_name,
 			p_adapter_info->fpga_info.pciident);
 	}
 
@@ -121,7 +126,7 @@ static int nt4ga_adapter_init(struct adapter_info_s *p_adapter_info)
 			PCIIDENT_TO_BUSNR(p_adapter_info->fpga_info.pciident),
 			PCIIDENT_TO_DEVNR(p_adapter_info->fpga_info.pciident),
 			PCIIDENT_TO_FUNCNR(p_adapter_info->fpga_info.pciident));
-		NT_LOG(DBG, NTNIC, "%s: %s\n", p_adapter_id_str, p_dev_name);
+		NT_LOG(DBG, NTNIC, "%s: %s", p_adapter_id_str, p_dev_name);
 	}
 
 	{
@@ -142,7 +147,7 @@ static int nt4ga_adapter_init(struct adapter_info_s *p_adapter_info)
 	res = nthw_fpga_init(&p_adapter_info->fpga_info);
 
 	if (res) {
-		NT_LOG_DBGX(ERR, NTNIC, "%s: %s: FPGA=%04d res=x%08X\n", p_adapter_id_str,
+		NT_LOG_DBGX(ERR, NTNIC, "%s: %s: FPGA=%04d res=x%08X", p_adapter_id_str,
 			p_dev_name, fpga_info->n_fpga_prod_id, res);
 		return res;
 	}
@@ -154,6 +159,19 @@ static int nt4ga_adapter_init(struct adapter_info_s *p_adapter_info)
 	assert(n_phy_ports >= 1);
 	n_nim_ports = fpga_info->n_nims;
 	assert(n_nim_ports >= 1);
+
+	/* Nt4ga Init Filter */
+	nt4ga_filter_t *p_filter = &p_adapter_info->nt4ga_filter;
+
+	if (flow_filter_ops != NULL) {
+		res = flow_filter_ops->flow_filter_init(p_fpga, &p_filter->mp_flow_device,
+				p_adapter_info->adapter_no);
+
+		if (res != 0) {
+			NT_LOG(ERR, NTNIC, "%s: Cannot initialize filter", p_adapter_id_str);
+			return res;
+		}
+	}
 
 	{
 		int i;
@@ -171,7 +189,7 @@ static int nt4ga_adapter_init(struct adapter_info_s *p_adapter_info)
 			link_ops = get_100g_link_ops();
 
 			if (link_ops == NULL) {
-				NT_LOG(ERR, NTNIC, "NT200A02 100G link module uninitialized\n");
+				NT_LOG(ERR, NTNIC, "NT200A02 100G link module uninitialized");
 				res = -1;
 				break;
 			}
@@ -180,30 +198,61 @@ static int nt4ga_adapter_init(struct adapter_info_s *p_adapter_info)
 			break;
 
 		default:
-			NT_LOG(ERR, NTNIC, "Unsupported FPGA product: %04d\n",
+			NT_LOG(ERR, NTNIC, "Unsupported FPGA product: %04d",
 				fpga_info->n_fpga_prod_id);
 			res = -1;
 			break;
 		}
 
 		if (res) {
-			NT_LOG_DBGX(ERR, NTNIC, "%s: %s: FPGA=%04d res=x%08X\n",
+			NT_LOG_DBGX(ERR, NTNIC, "%s: %s: FPGA=%04d res=x%08X",
 				p_adapter_id_str, p_dev_name,
 				fpga_info->n_fpga_prod_id, res);
 			return res;
 		}
 	}
 
+	nthw_rmc_t *p_nthw_rmc = nthw_rmc_new();
+	if (p_nthw_rmc == NULL) {
+		NT_LOG(ERR, NTNIC, "Failed to allocate memory for RMC module");
+		return -1;
+	}
+
+	res = nthw_rmc_init(p_nthw_rmc, p_fpga, 0);
+	if (res) {
+		NT_LOG(ERR, NTNIC, "Failed to initialize RMC module");
+		return -1;
+	}
+
+	nthw_rmc_unblock(p_nthw_rmc, false);
+
 	return 0;
 }
 
 static int nt4ga_adapter_deinit(struct adapter_info_s *p_adapter_info)
 {
+	const struct flow_filter_ops *flow_filter_ops = get_flow_filter_ops();
+
+	if (flow_filter_ops == NULL)
+		NT_LOG(ERR, NTNIC, "%s: flow_filter module uninitialized", __func__);
+
 	fpga_info_t *fpga_info = &p_adapter_info->fpga_info;
 	int i;
 	int res = -1;
 
 	stop_monitor_tasks(-1);
+
+	/* Nt4ga Deinit Filter */
+	nt4ga_filter_t *p_filter = &p_adapter_info->nt4ga_filter;
+
+	if (flow_filter_ops != NULL) {
+		res = flow_filter_ops->flow_filter_done(p_filter->mp_flow_device);
+
+		if (res != 0) {
+			NT_LOG(ERR, NTNIC, "Cannot deinitialize filter");
+			return res;
+		}
+	}
 
 	nthw_fpga_shutdown(&p_adapter_info->fpga_info);
 

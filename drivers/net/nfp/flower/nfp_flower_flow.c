@@ -26,6 +26,7 @@
 #define NFP_FLOWER_LAYER_VXLAN          RTE_BIT32(7)
 
 #define NFP_FLOWER_LAYER2_GRE           RTE_BIT32(0)
+#define NFP_FLOWER_LAYER2_L3_OTHER      RTE_BIT32(3)
 #define NFP_FLOWER_LAYER2_QINQ          RTE_BIT32(4)
 #define NFP_FLOWER_LAYER2_GENEVE        RTE_BIT32(5)
 #define NFP_FLOWER_LAYER2_GENEVE_OP     RTE_BIT32(6)
@@ -962,10 +963,15 @@ struct nfp_item_flag {
 	bool outer_ip6_flag;
 };
 
+struct nfp_item_shared_flag {
+	bool l3_other_flag;
+};
+
 struct nfp_item_calculate_param {
 	const struct rte_flow_item *item;
 	struct nfp_fl_key_ls *key_ls;
 	struct nfp_item_flag *flag;
+	struct nfp_item_shared_flag shared_flag;
 };
 
 typedef int (*nfp_flow_key_check_item_fn)(struct nfp_item_calculate_param *param);
@@ -1044,14 +1050,11 @@ static nfp_flow_key_check_item_fn check_item_fns[] = {
 };
 
 static int
-nfp_flow_key_layers_check_items(const struct rte_flow_item items[])
+nfp_flow_key_layers_check_items(const struct rte_flow_item items[],
+		struct nfp_item_calculate_param *param)
 {
 	int ret;
-	struct nfp_item_flag flag = {};
 	const struct rte_flow_item *item;
-	struct nfp_item_calculate_param param = {
-		.flag = &flag,
-	};
 
 	for (item = items; item->type != RTE_FLOW_ITEM_TYPE_END; ++item) {
 		if (item->type >= RTE_DIM(check_item_fns)) {
@@ -1062,12 +1065,15 @@ nfp_flow_key_layers_check_items(const struct rte_flow_item items[])
 		if (check_item_fns[item->type] == NULL)
 			continue;
 
-		param.item = item;
-		ret = check_item_fns[item->type](&param);
+		param->item = item;
+		ret = check_item_fns[item->type](param);
 		if (ret != 0) {
 			PMD_DRV_LOG(ERR, "Flow item %d check fail", item->type);
 			return ret;
 		}
+
+		if (item->type != RTE_FLOW_ITEM_TYPE_ETH)
+			param->shared_flag.l3_other_flag = true;
 	}
 
 	return 0;
@@ -1081,9 +1087,23 @@ nfp_flow_item_calculate_stub(struct nfp_item_calculate_param *param __rte_unused
 static void
 nfp_flow_item_calculate_eth(struct nfp_item_calculate_param *param)
 {
-	if (param->item->spec != NULL) {
-		param->key_ls->key_layer |= NFP_FLOWER_LAYER_MAC;
-		param->key_ls->key_size += sizeof(struct nfp_flower_mac_mpls);
+	struct nfp_fl_key_ls *key_ls;
+	const struct rte_flow_item_eth *spec;
+
+	spec = param->item->spec;
+	if (spec == NULL)
+		return;
+
+	key_ls = param->key_ls;
+
+	key_ls->key_layer |= NFP_FLOWER_LAYER_MAC;
+	key_ls->key_size += sizeof(struct nfp_flower_mac_mpls);
+
+	if (!param->shared_flag.l3_other_flag && spec->type != 0) {
+		key_ls->key_layer |= NFP_FLOWER_LAYER_EXT_META;
+		key_ls->key_size += sizeof(struct nfp_flower_ext_meta);
+		key_ls->key_layer_two |= NFP_FLOWER_LAYER2_L3_OTHER;
+		key_ls->key_size += sizeof(struct nfp_flower_l3_other);
 	}
 }
 
@@ -1238,14 +1258,9 @@ static nfp_flow_key_calculate_item_fn item_fns[] = {
 
 static int
 nfp_flow_key_layers_calculate_items(const struct rte_flow_item items[],
-		struct nfp_fl_key_ls *key_ls)
+		struct nfp_item_calculate_param *param)
 {
-	struct nfp_item_flag flag = {};
 	const struct rte_flow_item *item;
-	struct nfp_item_calculate_param param = {
-		.key_ls = key_ls,
-		.flag = &flag,
-	};
 
 	for (item = items; item->type != RTE_FLOW_ITEM_TYPE_END; ++item) {
 		if (item->type >= RTE_DIM(item_fns) || item_fns[item->type] == NULL) {
@@ -1253,8 +1268,8 @@ nfp_flow_key_layers_calculate_items(const struct rte_flow_item items[],
 			return -ERANGE;
 		}
 
-		param.item = item;
-		item_fns[item->type](&param);
+		param->item = item;
+		item_fns[item->type](param);
 	}
 
 	return 0;
@@ -1799,6 +1814,8 @@ nfp_flow_key_layers_calculate(struct rte_eth_dev *dev,
 		struct nfp_fl_key_ls *key_ls)
 {
 	int ret;
+	struct nfp_item_flag flag = {};
+	struct nfp_item_calculate_param param = {};
 
 	key_ls->key_layer_two = 0;
 	key_ls->key_layer = NFP_FLOWER_LAYER_PORT;
@@ -1809,13 +1826,17 @@ nfp_flow_key_layers_calculate(struct rte_eth_dev *dev,
 	key_ls->vlan = 0;
 	key_ls->tun_type = NFP_FL_TUN_NONE;
 
-	ret = nfp_flow_key_layers_check_items(items);
+	param.key_ls = key_ls;
+	param.flag = &flag;
+
+	ret = nfp_flow_key_layers_check_items(items, &param);
 	if (ret != 0) {
 		PMD_DRV_LOG(ERR, "flow items check failed");
 		return ret;
 	}
 
-	ret = nfp_flow_key_layers_calculate_items(items, key_ls);
+	memset(param.flag, 0, sizeof(struct nfp_item_flag));
+	ret = nfp_flow_key_layers_calculate_items(items, &param);
 	if (ret != 0) {
 		PMD_DRV_LOG(ERR, "flow items calculate failed");
 		return ret;
@@ -1865,6 +1886,9 @@ nfp_flow_merge_eth(struct nfp_flow_merge_param *param)
 	const struct rte_flow_item *item;
 	const struct rte_flow_item_eth *spec;
 	const struct rte_flow_item_eth *mask;
+	struct nfp_flower_l3_other *l3_other;
+	struct nfp_flower_meta_tci *meta_tci;
+	struct nfp_flower_ext_meta *ext_meta = NULL;
 
 	item = param->item;
 	spec = item->spec;
@@ -1886,6 +1910,21 @@ nfp_flow_merge_eth(struct nfp_flow_merge_param *param)
 
 	eth->mpls_lse = 0;
 	*param->mbuf_off += sizeof(struct nfp_flower_mac_mpls);
+
+	meta_tci = (struct nfp_flower_meta_tci *)param->nfp_flow->payload.unmasked_data;
+	if ((meta_tci->nfp_flow_key_layer & NFP_FLOWER_LAYER_EXT_META) != 0)
+		ext_meta = (struct nfp_flower_ext_meta *)(meta_tci + 1);
+
+	if (ext_meta != NULL &&
+			(ext_meta->nfp_flow_key_layer2 & NFP_FLOWER_LAYER2_L3_OTHER) != 0) {
+		l3_other = (void *)(*param->mbuf_off);
+		if (param->is_mask)
+			l3_other->ethertype = mask->type;
+		else
+			l3_other->ethertype = spec->type;
+
+		*param->mbuf_off += sizeof(struct nfp_flower_l3_other);
+	}
 
 eth_end:
 	return 0;
@@ -2465,8 +2504,8 @@ static const struct nfp_flow_item_proc nfp_flow_item_proc_list[] = {
 			RTE_FLOW_ITEM_TYPE_IPV6),
 		.mask_support = &(const struct rte_flow_item_eth) {
 			.hdr = {
-				.dst_addr.addr_bytes = "\xff\xff\xff\xff\xff\xff",
-				.src_addr.addr_bytes = "\xff\xff\xff\xff\xff\xff",
+				.dst_addr.addr_bytes = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff },
+				.src_addr.addr_bytes = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff },
 				.ether_type          = RTE_BE16(0xffff),
 			},
 			.has_vlan = 1,
@@ -2518,10 +2557,10 @@ static const struct nfp_flow_item_proc nfp_flow_item_proc_list[] = {
 				.vtc_flow   = RTE_BE32(0x0ff00000),
 				.proto      = 0xff,
 				.hop_limits = 0xff,
-				.src_addr   = "\xff\xff\xff\xff\xff\xff\xff\xff"
-					"\xff\xff\xff\xff\xff\xff\xff\xff",
-				.dst_addr   = "\xff\xff\xff\xff\xff\xff\xff\xff"
-					"\xff\xff\xff\xff\xff\xff\xff\xff",
+				.src_addr   = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+						0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff },
+				.dst_addr   = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+						0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff },
 			},
 			.has_frag_ext = 1,
 		},
@@ -2579,7 +2618,7 @@ static const struct nfp_flow_item_proc nfp_flow_item_proc_list[] = {
 	[RTE_FLOW_ITEM_TYPE_GENEVE] = {
 		.next_item = NEXT_ITEM(RTE_FLOW_ITEM_TYPE_ETH),
 		.mask_support = &(const struct rte_flow_item_geneve) {
-			.vni = "\xff\xff\xff",
+			.vni =  { 0xff, 0xff, 0xff },
 		},
 		.mask_default = &rte_flow_item_geneve_mask,
 		.mask_sz = sizeof(struct rte_flow_item_geneve),
@@ -3822,7 +3861,6 @@ nfp_pre_tun_table_check_del(struct nfp_flower_representor *repr,
 		goto free_entry;
 	}
 
-	rte_free(entry);
 	rte_free(find_entry);
 	priv->pre_tun_cnt--;
 

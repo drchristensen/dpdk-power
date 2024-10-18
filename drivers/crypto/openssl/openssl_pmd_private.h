@@ -23,10 +23,10 @@
 
 /** OPENSSL PMD LOGTYPE DRIVER */
 extern int openssl_logtype_driver;
-#define OPENSSL_LOG(level, fmt, ...)  \
-	rte_log(RTE_LOG_ ## level, openssl_logtype_driver,  \
-			"%s() line %u: " fmt "\n", __func__, __LINE__,  \
-					## __VA_ARGS__)
+#define RTE_LOGTYPE_OPENSSL_DRIVER openssl_logtype_driver
+#define OPENSSL_LOG(level, ...)  \
+	RTE_LOG_LINE_PREFIX(level, OPENSSL_DRIVER, "%s() line %u: ", \
+		__func__ RTE_LOG_COMMA __LINE__, __VA_ARGS__)
 
 /* Maximum length for digest (SHA-512 needs 64 bytes) */
 #define DIGEST_LENGTH_MAX 64
@@ -197,6 +197,7 @@ struct __rte_cache_aligned openssl_asym_session {
 	union {
 		struct rsa {
 			RSA *rsa;
+			uint32_t pad;
 #if (OPENSSL_VERSION_NUMBER >= 0x30000000L)
 			EVP_PKEY_CTX * ctx;
 #endif
@@ -231,10 +232,23 @@ struct __rte_cache_aligned openssl_asym_session {
 #endif
 		} s;
 		struct {
+			uint8_t curve_id;
+#if (OPENSSL_VERSION_NUMBER >= 0x30000000L)
+			EC_GROUP * group;
+			BIGNUM *priv_key;
+#endif
+		} ec;
+		struct {
 #if (OPENSSL_VERSION_NUMBER >= 0x30000000L)
 			OSSL_PARAM * params;
 #endif
 		} sm2;
+		struct {
+			uint8_t curve_id;
+#if (OPENSSL_VERSION_NUMBER >= 0x30000000L)
+			OSSL_PARAM * params;
+#endif
+		} eddsa;
 	} u;
 };
 /** Set and validate OPENSSL crypto session parameters */

@@ -33,6 +33,7 @@
 
 #define ROC_NIX_INL_MAX_SOFT_EXP_RNGS                                          \
 	(PLT_MAX_ETHPORTS * ROC_NIX_SOFT_EXP_PER_PORT_MAX_RINGS)
+#define ROC_NIX_INL_INB_CUSTOM_SA_SZ 512
 
 /* Reassembly configuration */
 #define ROC_NIX_INL_REAS_ACTIVE_LIMIT	  0xFFF
@@ -97,11 +98,28 @@ struct roc_nix_inl_dev {
 	uint32_t meta_buf_sz;
 	uint32_t max_ipsec_rules;
 	uint8_t rx_inj_ena; /* Rx Inject Enable */
+	uint8_t custom_inb_sa;
 	/* End of input parameters */
 
-#define ROC_NIX_INL_MEM_SZ (1408)
+#define ROC_NIX_INL_MEM_SZ (2048)
 	uint8_t reserved[ROC_NIX_INL_MEM_SZ] __plt_cache_aligned;
 } __plt_cache_aligned;
+
+struct roc_nix_inl_dev_q {
+	uint32_t nb_desc;
+	uintptr_t rbase;
+	uintptr_t lmt_base;
+	uint64_t *fc_addr;
+	uint64_t io_addr;
+	int32_t fc_addr_sw;
+} __plt_cache_aligned;
+
+struct roc_nix_cpt_lf_stats {
+	uint64_t enc_pkts;
+	uint64_t enc_bytes;
+	uint64_t dec_pkts;
+	uint64_t dec_bytes;
+};
 
 /* NIX Inline Device API */
 int __roc_api roc_nix_inl_dev_init(struct roc_nix_inl_dev *roc_inl_dev);
@@ -176,5 +194,14 @@ int __roc_api roc_nix_inl_ctx_write(struct roc_nix *roc_nix, void *sa_dptr,
 				    void *sa_cptr, bool inb, uint16_t sa_len);
 void __roc_api roc_nix_inl_outb_cpt_lfs_dump(struct roc_nix *roc_nix, FILE *file);
 uint64_t __roc_api roc_nix_inl_eng_caps_get(struct roc_nix *roc_nix);
+void *__roc_api roc_nix_inl_dev_qptr_get(uint8_t qid);
 
+enum roc_nix_cpt_lf_stats_type {
+	ROC_NIX_CPT_LF_STATS_INL_DEV,
+	ROC_NIX_CPT_LF_STATS_KERNEL,
+	ROC_NIX_CPT_LF_STATS_ETHDEV = 2,
+};
+int __roc_api roc_nix_inl_cpt_lf_stats_get(struct roc_nix *roc_nix,
+					   enum roc_nix_cpt_lf_stats_type type,
+					   struct roc_nix_cpt_lf_stats *stats, uint16_t idx);
 #endif /* _ROC_NIX_INL_H_ */

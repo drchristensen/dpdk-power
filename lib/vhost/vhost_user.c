@@ -954,6 +954,7 @@ translate_ring_addresses(struct virtio_net **pdev, struct vhost_virtqueue **pvq)
 			vq->last_used_idx, vq->used->idx);
 		vq->last_used_idx  = vq->used->idx;
 		vq->last_avail_idx = vq->used->idx;
+		vhost_virtqueue_reconnect_log_split(vq);
 		VHOST_CONFIG_LOG(dev->ifname, WARNING,
 			"some packets maybe resent for Tx and dropped for Rx");
 	}
@@ -1039,9 +1040,11 @@ vhost_user_set_vring_base(struct virtio_net **pdev,
 		 */
 		vq->last_used_idx = vq->last_avail_idx;
 		vq->used_wrap_counter = vq->avail_wrap_counter;
+		vhost_virtqueue_reconnect_log_packed(vq);
 	} else {
 		vq->last_used_idx = ctx->msg.payload.state.num;
 		vq->last_avail_idx = ctx->msg.payload.state.num;
+		vhost_virtqueue_reconnect_log_split(vq);
 	}
 
 	VHOST_CONFIG_LOG(dev->ifname, INFO,
@@ -1997,6 +2000,7 @@ vhost_check_queue_inflights_split(struct virtio_net *dev,
 	}
 
 	vq->last_avail_idx += resubmit_num;
+	vhost_virtqueue_reconnect_log_split(vq);
 
 	if (resubmit_num) {
 		resubmit = rte_zmalloc_socket("resubmit", sizeof(struct rte_vhost_resubmit_info),
@@ -2399,7 +2403,7 @@ vhost_user_set_log_base(struct virtio_net **pdev,
 	 * mmap from 0 to workaround a hugepage mmap bug: mmap will
 	 * fail when offset is not page size aligned.
 	 */
-	addr = mmap(0, size + off, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+	addr = mmap(0, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, off);
 	alignment = get_blk_size(fd);
 	close(fd);
 	if (addr == MAP_FAILED) {

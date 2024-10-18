@@ -184,11 +184,11 @@ static int ice_set_mac_type(struct ice_hw *hw)
 	case ICE_DEV_ID_E830_QSFP56:
 	case ICE_DEV_ID_E830_SFP:
 	case ICE_DEV_ID_E830C_BACKPLANE:
-	case ICE_DEV_ID_E830_XXV_BACKPLANE:
+	case ICE_DEV_ID_E830_L_BACKPLANE:
 	case ICE_DEV_ID_E830C_QSFP:
-	case ICE_DEV_ID_E830_XXV_QSFP:
+	case ICE_DEV_ID_E830_L_QSFP:
 	case ICE_DEV_ID_E830C_SFP:
-	case ICE_DEV_ID_E830_XXV_SFP:
+	case ICE_DEV_ID_E830_L_SFP:
 		hw->mac_type = ICE_MAC_E830;
 		break;
 	default:
@@ -2365,48 +2365,48 @@ ice_parse_common_caps(struct ice_hw *hw, struct ice_hw_common_caps *caps,
 	switch (cap) {
 	case ICE_AQC_CAPS_VALID_FUNCTIONS:
 		caps->valid_functions = number;
-		ice_debug(hw, ICE_DBG_INIT, "%s: valid_functions (bitmap) = %d\n", prefix,
+		ice_debug(hw, ICE_DBG_INIT, "%s: valid_functions (bitmap) = 0x%x\n", prefix,
 			  caps->valid_functions);
 		break;
 	case ICE_AQC_CAPS_DCB:
 		caps->dcb = (number == 1);
 		caps->active_tc_bitmap = logical_id;
 		caps->maxtc = phys_id;
-		ice_debug(hw, ICE_DBG_INIT, "%s: dcb = %d\n", prefix, caps->dcb);
-		ice_debug(hw, ICE_DBG_INIT, "%s: active_tc_bitmap = %d\n", prefix,
+		ice_debug(hw, ICE_DBG_INIT, "%s: dcb = %u\n", prefix, caps->dcb);
+		ice_debug(hw, ICE_DBG_INIT, "%s: active_tc_bitmap = 0x%x\n", prefix,
 			  caps->active_tc_bitmap);
-		ice_debug(hw, ICE_DBG_INIT, "%s: maxtc = %d\n", prefix, caps->maxtc);
+		ice_debug(hw, ICE_DBG_INIT, "%s: maxtc = %u\n", prefix, caps->maxtc);
 		break;
 	case ICE_AQC_CAPS_RSS:
 		caps->rss_table_size = number;
 		caps->rss_table_entry_width = logical_id;
-		ice_debug(hw, ICE_DBG_INIT, "%s: rss_table_size = %d\n", prefix,
+		ice_debug(hw, ICE_DBG_INIT, "%s: rss_table_size = %u\n", prefix,
 			  caps->rss_table_size);
-		ice_debug(hw, ICE_DBG_INIT, "%s: rss_table_entry_width = %d\n", prefix,
+		ice_debug(hw, ICE_DBG_INIT, "%s: rss_table_entry_width = %u\n", prefix,
 			  caps->rss_table_entry_width);
 		break;
 	case ICE_AQC_CAPS_RXQS:
 		caps->num_rxq = number;
 		caps->rxq_first_id = phys_id;
-		ice_debug(hw, ICE_DBG_INIT, "%s: num_rxq = %d\n", prefix,
+		ice_debug(hw, ICE_DBG_INIT, "%s: num_rxq = %u\n", prefix,
 			  caps->num_rxq);
-		ice_debug(hw, ICE_DBG_INIT, "%s: rxq_first_id = %d\n", prefix,
+		ice_debug(hw, ICE_DBG_INIT, "%s: rxq_first_id = %u\n", prefix,
 			  caps->rxq_first_id);
 		break;
 	case ICE_AQC_CAPS_TXQS:
 		caps->num_txq = number;
 		caps->txq_first_id = phys_id;
-		ice_debug(hw, ICE_DBG_INIT, "%s: num_txq = %d\n", prefix,
+		ice_debug(hw, ICE_DBG_INIT, "%s: num_txq = %u\n", prefix,
 			  caps->num_txq);
-		ice_debug(hw, ICE_DBG_INIT, "%s: txq_first_id = %d\n", prefix,
+		ice_debug(hw, ICE_DBG_INIT, "%s: txq_first_id = %u\n", prefix,
 			  caps->txq_first_id);
 		break;
 	case ICE_AQC_CAPS_MSIX:
 		caps->num_msix_vectors = number;
 		caps->msix_vector_first_id = phys_id;
-		ice_debug(hw, ICE_DBG_INIT, "%s: num_msix_vectors = %d\n", prefix,
+		ice_debug(hw, ICE_DBG_INIT, "%s: num_msix_vectors = %u\n", prefix,
 			  caps->num_msix_vectors);
-		ice_debug(hw, ICE_DBG_INIT, "%s: msix_vector_first_id = %d\n", prefix,
+		ice_debug(hw, ICE_DBG_INIT, "%s: msix_vector_first_id = %u\n", prefix,
 			  caps->msix_vector_first_id);
 		break;
 	case ICE_AQC_CAPS_NVM_MGMT:
@@ -2433,7 +2433,7 @@ ice_parse_common_caps(struct ice_hw *hw, struct ice_hw_common_caps *caps,
 		break;
 	case ICE_AQC_CAPS_MAX_MTU:
 		caps->max_mtu = number;
-		ice_debug(hw, ICE_DBG_INIT, "%s: max_mtu = %d\n",
+		ice_debug(hw, ICE_DBG_INIT, "%s: max_mtu = %u\n",
 			  prefix, caps->max_mtu);
 		break;
 	case ICE_AQC_CAPS_PCIE_RESET_AVOIDANCE:
@@ -2467,15 +2467,15 @@ ice_parse_common_caps(struct ice_hw *hw, struct ice_hw_common_caps *caps,
 		caps->ext_topo_dev_img_ver_schema[index] =
 			(phys_id & ICE_EXT_TOPO_DEV_IMG_VER_SCHEMA) != 0;
 		ice_debug(hw, ICE_DBG_INIT,
-			  "%s: ext_topo_dev_img_ver_high[%d] = %d\n",
+			  "%s: ext_topo_dev_img_ver_high[%d] = %u\n",
 			  prefix, index,
 			  caps->ext_topo_dev_img_ver_high[index]);
 		ice_debug(hw, ICE_DBG_INIT,
-			  "%s: ext_topo_dev_img_ver_low[%d] = %d\n",
+			  "%s: ext_topo_dev_img_ver_low[%d] = %u\n",
 			  prefix, index,
 			  caps->ext_topo_dev_img_ver_low[index]);
 		ice_debug(hw, ICE_DBG_INIT,
-			  "%s: ext_topo_dev_img_part_num[%d] = %d\n",
+			  "%s: ext_topo_dev_img_part_num[%d] = %u\n",
 			  prefix, index,
 			  caps->ext_topo_dev_img_part_num[index]);
 		ice_debug(hw, ICE_DBG_INIT,
@@ -2531,7 +2531,7 @@ ice_recalc_port_limited_caps(struct ice_hw *hw, struct ice_hw_common_caps *caps)
 	if (hw->dev_caps.num_funcs > 4) {
 		/* Max 4 TCs per port */
 		caps->maxtc = 4;
-		ice_debug(hw, ICE_DBG_INIT, "reducing maxtc to %d (based on #ports)\n",
+		ice_debug(hw, ICE_DBG_INIT, "reducing maxtc to %u (based on #ports)\n",
 			  caps->maxtc);
 	}
 }
@@ -2549,9 +2549,9 @@ ice_parse_vsi_func_caps(struct ice_hw *hw, struct ice_hw_func_caps *func_p,
 			struct ice_aqc_list_caps_elem *cap)
 {
 	func_p->guar_num_vsi = ice_get_num_per_func(hw, ICE_MAX_VSI);
-	ice_debug(hw, ICE_DBG_INIT, "func caps: guar_num_vsi (fw) = %d\n",
+	ice_debug(hw, ICE_DBG_INIT, "func caps: guar_num_vsi (fw) = %u\n",
 		  LE32_TO_CPU(cap->number));
-	ice_debug(hw, ICE_DBG_INIT, "func caps: guar_num_vsi = %d\n",
+	ice_debug(hw, ICE_DBG_INIT, "func caps: guar_num_vsi = %u\n",
 		  func_p->guar_num_vsi);
 }
 
@@ -2585,6 +2585,10 @@ ice_parse_1588_func_caps(struct ice_hw *hw, struct ice_hw_func_caps *func_p,
 
 	info->clk_src = ((number & ICE_TS_CLK_SRC_M) != 0);
 	clk_freq = (number & ICE_TS_CLK_FREQ_M) >> ICE_TS_CLK_FREQ_S;
+	if (ice_is_e825c(hw)) {
+		info->clk_src = ICE_CLK_SRC_TCX0;
+		clk_freq = ICE_TIME_REF_FREQ_156_250;
+	}
 	if (clk_freq < NUM_ICE_TIME_REF_FREQ) {
 		info->time_ref = (enum ice_time_ref_freq)clk_freq;
 	} else {
@@ -2636,9 +2640,9 @@ ice_parse_fdir_func_caps(struct ice_hw *hw, struct ice_hw_func_caps *func_p)
 		GLQF_FD_SIZE_FD_BSIZE_S;
 	func_p->fd_fltr_best_effort = val;
 
-	ice_debug(hw, ICE_DBG_INIT, "func caps: fd_fltr_guar = %d\n",
+	ice_debug(hw, ICE_DBG_INIT, "func caps: fd_fltr_guar = %u\n",
 		  func_p->fd_fltr_guar);
-	ice_debug(hw, ICE_DBG_INIT, "func caps: fd_fltr_best_effort = %d\n",
+	ice_debug(hw, ICE_DBG_INIT, "func caps: fd_fltr_best_effort = %u\n",
 		  func_p->fd_fltr_best_effort);
 }
 
@@ -2728,7 +2732,7 @@ ice_parse_valid_functions_cap(struct ice_hw *hw, struct ice_hw_dev_caps *dev_p,
 	u32 number = LE32_TO_CPU(cap->number);
 
 	dev_p->num_funcs = ice_hweight32(number);
-	ice_debug(hw, ICE_DBG_INIT, "dev caps: num_funcs = %d\n",
+	ice_debug(hw, ICE_DBG_INIT, "dev caps: num_funcs = %u\n",
 		  dev_p->num_funcs);
 
 	hw->logical_pf_id = ice_func_id_to_logical_id(number, hw->pf_id);
@@ -2749,7 +2753,7 @@ ice_parse_vsi_dev_caps(struct ice_hw *hw, struct ice_hw_dev_caps *dev_p,
 	u32 number = LE32_TO_CPU(cap->number);
 
 	dev_p->num_vsi_allocd_to_host = number;
-	ice_debug(hw, ICE_DBG_INIT, "dev caps: num_vsi_allocd_to_host = %d\n",
+	ice_debug(hw, ICE_DBG_INIT, "dev caps: num_vsi_allocd_to_host = %u\n",
 		  dev_p->num_vsi_allocd_to_host);
 }
 
@@ -2822,7 +2826,7 @@ ice_parse_fdir_dev_caps(struct ice_hw *hw, struct ice_hw_dev_caps *dev_p,
 	u32 number = LE32_TO_CPU(cap->number);
 
 	dev_p->num_flow_director_fltr = number;
-	ice_debug(hw, ICE_DBG_INIT, "dev caps: num_flow_director_fltr = %d\n",
+	ice_debug(hw, ICE_DBG_INIT, "dev caps: num_flow_director_fltr = %u\n",
 		  dev_p->num_flow_director_fltr);
 }
 
@@ -2841,7 +2845,7 @@ ice_parse_nac_topo_dev_caps(struct ice_hw *hw, struct ice_hw_dev_caps *dev_p,
 	dev_p->nac_topo.mode = LE32_TO_CPU(cap->number);
 	dev_p->nac_topo.id = LE32_TO_CPU(cap->phys_id) & ICE_NAC_TOPO_ID_M;
 
-	ice_info(hw, "PF is configured in %s mode with IP instance ID %d\n",
+	ice_info(hw, "PF is configured in %s mode with IP instance ID %u\n",
 		 (dev_p->nac_topo.mode & ICE_NAC_TOPO_PRIMARY_M) ?
 		 "primary" : "secondary", dev_p->nac_topo.id);
 
@@ -2849,7 +2853,7 @@ ice_parse_nac_topo_dev_caps(struct ice_hw *hw, struct ice_hw_dev_caps *dev_p,
 		  !!(dev_p->nac_topo.mode & ICE_NAC_TOPO_PRIMARY_M));
 	ice_debug(hw, ICE_DBG_INIT, "dev caps: nac topology is_dual = %d\n",
 		  !!(dev_p->nac_topo.mode & ICE_NAC_TOPO_DUAL_M));
-	ice_debug(hw, ICE_DBG_INIT, "dev caps: nac topology id = %d\n",
+	ice_debug(hw, ICE_DBG_INIT, "dev caps: nac topology id = %u\n",
 		  dev_p->nac_topo.id);
 }
 
@@ -2927,7 +2931,7 @@ ice_parse_dev_caps(struct ice_hw *hw, struct ice_hw_dev_caps *dev_p,
 		default:
 			/* Don't list common capabilities as unknown */
 			if (!found)
-				ice_debug(hw, ICE_DBG_INIT, "dev caps: unknown capability[%d]: 0x%x\n",
+				ice_debug(hw, ICE_DBG_INIT, "dev caps: unknown capability[%u]: 0x%x\n",
 					  i, cap);
 			break;
 		}
@@ -6452,6 +6456,8 @@ u32 ice_get_link_speed(u16 index)
  */
 bool ice_fw_supports_fec_dis_auto(struct ice_hw *hw)
 {
+	if (ice_is_e830(hw))
+		return true;
 	return ice_is_fw_min_ver(hw, ICE_FW_VER_BRANCH_E810,
 				 ICE_FW_FEC_DIS_AUTO_MAJ,
 				 ICE_FW_FEC_DIS_AUTO_MIN,

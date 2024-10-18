@@ -4,10 +4,17 @@
 #include <cnxk_ethdev.h>
 
 #include <rte_eventdev.h>
+#include <rte_pmd_cnxk.h>
 
 #define CNXK_NIX_CQ_INL_CLAMP_MAX (64UL * 1024UL)
 
 #define NIX_TM_DFLT_RR_WT 71
+
+const char *
+rte_pmd_cnxk_model_str_get(void)
+{
+	return roc_model->name;
+}
 
 static inline uint64_t
 nix_get_rx_offload_capa(struct cnxk_eth_dev *dev)
@@ -135,6 +142,7 @@ nix_security_setup(struct cnxk_eth_dev *dev)
 			rc = -ENOMEM;
 			goto cleanup;
 		}
+		dev->inb.inl_dev_q = roc_nix_inl_dev_qptr_get(0);
 	}
 
 	if (dev->tx_offloads & RTE_ETH_TX_OFFLOAD_SECURITY ||
@@ -589,7 +597,7 @@ cnxk_nix_process_rx_conf(const struct rte_eth_rxconf *rx_conf,
 	}
 
 	if (mp == NULL || mp[0] == NULL || mp[1] == NULL) {
-		plt_err("invalid memory pools\n");
+		plt_err("invalid memory pools");
 		return -EINVAL;
 	}
 
@@ -617,7 +625,7 @@ cnxk_nix_process_rx_conf(const struct rte_eth_rxconf *rx_conf,
 		return -EINVAL;
 	}
 
-	plt_info("spb_pool:%s lpb_pool:%s lpb_len:%u spb_len:%u\n", (*spb_pool)->name,
+	plt_info("spb_pool:%s lpb_pool:%s lpb_len:%u spb_len:%u", (*spb_pool)->name,
 		 (*lpb_pool)->name, (*lpb_pool)->elt_size, (*spb_pool)->elt_size);
 
 	return 0;
@@ -1268,6 +1276,9 @@ cnxk_nix_configure(struct rte_eth_dev *eth_dev)
 	dev->rx_offloads = rxmode->offloads;
 	dev->tx_offloads = txmode->offloads;
 
+	if (nix->custom_inb_sa)
+		dev->rx_offloads |= RTE_ETH_RX_OFFLOAD_SECURITY;
+
 	/* Prepare rx cfg */
 	rx_cfg = ROC_NIX_LF_RX_CFG_DIS_APAD;
 	if (dev->rx_offloads &
@@ -1751,7 +1762,7 @@ cnxk_nix_dev_start(struct rte_eth_dev *eth_dev)
 	else
 		cnxk_eth_dev_ops.timesync_disable(eth_dev);
 
-	if (dev->rx_offloads & RTE_ETH_RX_OFFLOAD_TIMESTAMP) {
+	if (dev->rx_offloads & RTE_ETH_RX_OFFLOAD_TIMESTAMP || dev->ptp_en) {
 		rc = rte_mbuf_dyn_rx_timestamp_register
 			(&dev->tstamp.tstamp_dynfield_offset,
 			 &dev->tstamp.rx_tstamp_dynflag);

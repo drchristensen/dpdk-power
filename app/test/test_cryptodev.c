@@ -3,6 +3,7 @@
  * Copyright 2020 NXP
  */
 
+#include <stdbool.h>
 #include <time.h>
 
 #include <rte_common.h>
@@ -64,12 +65,13 @@
 #define VDEV_ARGS_SIZE 100
 #define MAX_NB_SESSIONS 4
 
-#define MAX_DRV_SERVICE_CTX_SIZE 256
-
 #define MAX_RAW_DEQUEUE_COUNT	65535
 
 #define IN_PLACE 0
 #define OUT_OF_PLACE 1
+
+#define QP_DRAIN_TIMEOUT 100
+#define HW_ERR_RECOVER_TIMEOUT 500
 
 static int gbl_driver_id;
 
@@ -201,6 +203,81 @@ struct crypto_testsuite_params *p_testsuite_params = &testsuite_params;
 static struct crypto_unittest_params unittest_params;
 static bool enq_cb_called;
 static bool deq_cb_called;
+
+enum cryptodev_err_state {
+	CRYPTODEV_ERR_CLEARED,
+	CRYPTODEV_ERR_TRIGGERED,
+	CRYPTODEV_ERR_UNRECOVERABLE,
+};
+
+static enum cryptodev_err_state crypto_err = CRYPTODEV_ERR_CLEARED;
+
+static void
+test_cryptodev_error_cb(uint8_t dev_id, enum rte_cryptodev_event_type event, void *cb_arg)
+{
+	struct crypto_testsuite_params *ts_params = &testsuite_params;
+	uint16_t qp_id;
+	int ticks = 0;
+	int ret = 0;
+
+	RTE_SET_USED(event);
+	RTE_SET_USED(cb_arg);
+
+	for (qp_id = 0; qp_id < ts_params->conf.nb_queue_pairs; qp_id++) {
+		ret = rte_cryptodev_queue_pair_event_error_query(dev_id, qp_id);
+		if (ret)
+			break;
+	}
+	if (ret == 1) {
+		/* Wait for the queue to be completely drained */
+		while (rte_cryptodev_qp_depth_used(dev_id, qp_id) != 0) {
+			rte_delay_ms(10);
+			ticks++;
+			if (ticks > QP_DRAIN_TIMEOUT) {
+				crypto_err = CRYPTODEV_ERR_UNRECOVERABLE;
+				return;
+			}
+		}
+		if (rte_cryptodev_queue_pair_reset(dev_id, qp_id, NULL, 0)) {
+			crypto_err = CRYPTODEV_ERR_UNRECOVERABLE;
+			return;
+		}
+	}
+
+	crypto_err = CRYPTODEV_ERR_CLEARED;
+}
+
+static struct rte_mbuf *
+create_mbuf_from_heap(int pkt_len, uint8_t pattern)
+{
+	struct rte_mbuf *m = NULL;
+	uint8_t *dst;
+
+	m = calloc(1, MBUF_SIZE);
+	if (m == NULL) {
+		printf("Cannot create mbuf from heap");
+		return NULL;
+	}
+
+	/* Set the default values to the mbuf */
+	m->nb_segs = 1;
+	m->port = RTE_MBUF_PORT_INVALID;
+	m->buf_len = MBUF_SIZE - sizeof(struct rte_mbuf) - RTE_PKTMBUF_HEADROOM;
+	rte_pktmbuf_reset_headroom(m);
+	__rte_mbuf_sanity_check(m, 1);
+
+	m->buf_addr = (char *)m + sizeof(struct rte_mbuf) + RTE_PKTMBUF_HEADROOM;
+
+	memset(m->buf_addr, pattern, m->buf_len);
+	dst = (uint8_t *)rte_pktmbuf_append(m, pkt_len);
+	if (dst == NULL) {
+		printf("Cannot append %d bytes to the mbuf\n", pkt_len);
+		free(m);
+		return NULL;
+	}
+
+	return m;
+}
 
 int
 process_sym_raw_dp_op(uint8_t dev_id, uint16_t qp_id,
@@ -587,7 +664,7 @@ testsuite_setup(void)
 		/* Not already created so create */
 		ts_params->large_mbuf_pool = rte_pktmbuf_pool_create(
 				"CRYPTO_LARGE_MBUFPOOL",
-				1, 0, 0, UINT16_MAX,
+				1, 0, 0, LARGE_MBUF_SIZE,
 				rte_socket_id());
 		if (ts_params->large_mbuf_pool == NULL) {
 			RTE_LOG(ERR, USER1,
@@ -693,14 +770,19 @@ testsuite_teardown(void)
 	struct crypto_testsuite_params *ts_params = &testsuite_params;
 	int res;
 
+	if (ts_params->large_mbuf_pool != NULL) {
+		rte_mempool_free(ts_params->large_mbuf_pool);
+		ts_params->large_mbuf_pool = NULL;
+	}
+
 	if (ts_params->mbuf_pool != NULL) {
-		RTE_LOG(DEBUG, USER1, "CRYPTO_MBUFPOOL count %u\n",
-		rte_mempool_avail_count(ts_params->mbuf_pool));
+		rte_mempool_free(ts_params->mbuf_pool);
+		ts_params->mbuf_pool = NULL;
 	}
 
 	if (ts_params->op_mpool != NULL) {
-		RTE_LOG(DEBUG, USER1, "CRYPTO_OP_POOL count %u\n",
-		rte_mempool_avail_count(ts_params->op_mpool));
+		rte_mempool_free(ts_params->op_mpool);
+		ts_params->op_mpool = NULL;
 	}
 
 	if (ts_params->session_mpool != NULL) {
@@ -718,7 +800,7 @@ check_capabilities_supported(enum rte_crypto_sym_xform_type type,
 		const int *algs, uint16_t num_algs)
 {
 	uint8_t dev_id = testsuite_params.valid_devs[0];
-	bool some_alg_supported = FALSE;
+	bool some_alg_supported = false;
 	uint16_t i;
 
 	for (i = 0; i < num_algs && !some_alg_supported; i++) {
@@ -727,7 +809,7 @@ check_capabilities_supported(enum rte_crypto_sym_xform_type type,
 		};
 		if (rte_cryptodev_sym_capability_get(dev_id,
 				&alg) != NULL)
-			some_alg_supported = TRUE;
+			some_alg_supported = true;
 	}
 	if (!some_alg_supported)
 		return TEST_SKIPPED;
@@ -11990,12 +12072,13 @@ test_tls_record_proto_process(const struct tls_record_test_data td[],
 		}
 
 		/* Setup source mbuf payload */
-		ut_params->ibuf = create_segmented_mbuf(ts_params->mbuf_pool, td[i].input_text.len,
-				nb_segs, 0);
+		ut_params->ibuf = create_segmented_mbuf_multi_pool(ts_params->mbuf_pool,
+				ts_params->large_mbuf_pool, td[i].input_text.len, nb_segs, 0);
 		pktmbuf_write(ut_params->ibuf, 0, td[i].input_text.len, td[i].input_text.data);
 		if (flags->out_of_place)
-			ut_params->obuf = create_segmented_mbuf(ts_params->mbuf_pool,
-					td[i].output_text.len, nb_segs, 0);
+			ut_params->obuf = create_segmented_mbuf_multi_pool(ts_params->mbuf_pool,
+					ts_params->large_mbuf_pool, td[i].output_text.len, nb_segs,
+					0);
 		else
 			ut_params->obuf = NULL;
 
@@ -12225,6 +12308,10 @@ skip_decrypt:
 
 		pass_cnt++;
 	}
+
+	if (flags->data_walkthrough)
+		printf("\t Min payload size: %d, Max payload size: %d\n",
+				TLS_RECORD_PLAINTEXT_MIN_LEN, max_payload_len);
 
 	if (pass_cnt > 0)
 		return TEST_SUCCESS;
@@ -12867,6 +12954,172 @@ test_tls_1_3_record_proto_sgl_oop(void)
 }
 
 #endif
+
+static int
+test_cryptodev_error_recover_helper_check(void)
+{
+	struct crypto_testsuite_params *ts_params = &testsuite_params;
+	struct rte_cryptodev_info dev_info;
+	uint64_t feat_flags;
+	int ret;
+
+	rte_cryptodev_info_get(ts_params->valid_devs[0], &dev_info);
+	feat_flags = dev_info.feature_flags;
+
+	/* Skip the test if queue pair reset is not supported */
+	ret = rte_cryptodev_queue_pair_reset(ts_params->valid_devs[0], 0, NULL, 0);
+	if (ret == -ENOTSUP)
+		return TEST_SKIPPED;
+
+	ret = rte_cryptodev_qp_depth_used(ts_params->valid_devs[0], 0);
+	if (ret == -ENOTSUP)
+		return TEST_SKIPPED;
+
+	if (!(feat_flags & RTE_CRYPTODEV_FF_SYMMETRIC_CRYPTO) ||
+	    ((global_api_test_type == CRYPTODEV_RAW_API_TEST) &&
+	     !(dev_info.feature_flags & RTE_CRYPTODEV_FF_SYM_RAW_DP))) {
+		RTE_LOG(INFO, USER1, "Feature flag req for AES Cipheronly, testsuite not met\n");
+		return TEST_SKIPPED;
+	}
+
+	return 0;
+}
+
+static int
+test_cryptodev_error_recover_helper(uint8_t dev_id, const void *test_data, bool generate_err)
+{
+	struct crypto_testsuite_params *ts_params = &testsuite_params;
+	struct crypto_unittest_params *ut_params = &unittest_params;
+	const struct blockcipher_test_data *tdata = test_data;
+	uint8_t cipher_key[tdata->cipher_key.len];
+	struct rte_crypto_sym_op *sym_op = NULL;
+	struct rte_crypto_op *op = NULL;
+	char *dst;
+
+	memcpy(cipher_key, tdata->cipher_key.data, tdata->cipher_key.len);
+	ut_params->cipher_xform.next = NULL;
+	ut_params->cipher_xform.type = RTE_CRYPTO_SYM_XFORM_CIPHER;
+	ut_params->cipher_xform.cipher.algo = tdata->crypto_algo;
+	ut_params->cipher_xform.cipher.op = RTE_CRYPTO_CIPHER_OP_ENCRYPT;
+	ut_params->cipher_xform.cipher.key.data = cipher_key;
+	ut_params->cipher_xform.cipher.key.length = tdata->cipher_key.len;
+	ut_params->cipher_xform.cipher.iv.offset = IV_OFFSET;
+	ut_params->cipher_xform.cipher.iv.length = tdata->iv.len;
+
+	ut_params->sess = rte_cryptodev_sym_session_create(dev_id, &ut_params->cipher_xform,
+							   ts_params->session_mpool);
+	TEST_ASSERT_NOT_NULL(ut_params->sess, "Session creation failed");
+
+	ut_params->op = rte_crypto_op_alloc(ts_params->op_mpool, RTE_CRYPTO_OP_TYPE_SYMMETRIC);
+	TEST_ASSERT_NOT_NULL(ut_params->op, "Failed to allocate symmetric crypto op");
+
+	memcpy(rte_crypto_op_ctod_offset(ut_params->op, uint8_t *, IV_OFFSET), tdata->iv.data,
+	       tdata->iv.len);
+	sym_op = ut_params->op->sym;
+	sym_op->cipher.data.offset = tdata->cipher_offset;
+	sym_op->cipher.data.length = tdata->ciphertext.len - tdata->cipher_offset;
+
+	rte_crypto_op_attach_sym_session(ut_params->op, ut_params->sess);
+
+	if (generate_err) {
+		ut_params->ibuf = create_mbuf_from_heap(tdata->ciphertext.len, 0);
+		if (ut_params->ibuf == NULL)
+			return TEST_FAILED;
+		crypto_err = CRYPTODEV_ERR_TRIGGERED;
+	} else {
+		ut_params->ibuf = rte_pktmbuf_alloc(ts_params->mbuf_pool);
+	}
+
+	/* clear mbuf payload */
+	memset(rte_pktmbuf_mtod(ut_params->ibuf, uint8_t *), 0,
+	       rte_pktmbuf_tailroom(ut_params->ibuf));
+
+	dst = rte_pktmbuf_mtod_offset(ut_params->ibuf, char *, 0);
+	memcpy(dst, tdata->plaintext.data, tdata->plaintext.len);
+
+	sym_op->m_src = ut_params->ibuf;
+	sym_op->m_dst = NULL;
+
+	op = process_crypto_request(ts_params->valid_devs[0], ut_params->op);
+
+	if (generate_err) {
+		free(ut_params->ibuf);
+		ut_params->ibuf = NULL;
+		if (op == NULL) {
+			rte_cryptodev_sym_session_free(ts_params->valid_devs[0], ut_params->sess);
+			ut_params->sess = NULL;
+			return TEST_SUCCESS;
+		} else {
+			return TEST_FAILED;
+		}
+	}
+
+	TEST_ASSERT_EQUAL(ut_params->op->status, RTE_CRYPTO_OP_STATUS_SUCCESS,
+			  "crypto op processing failed");
+
+	TEST_ASSERT_BUFFERS_ARE_EQUAL(dst, tdata->ciphertext.data + tdata->cipher_offset,
+				      tdata->ciphertext.len - tdata->cipher_offset,
+				      "Data not as expected");
+
+	rte_cryptodev_sym_session_free(ts_params->valid_devs[0], ut_params->sess);
+	ut_params->sess = NULL;
+
+	return TEST_SUCCESS;
+}
+
+/*
+ * This unit test verifies the recovery of the cryptodev from any fatal error.
+ * It verifies a single test data multiple times in a iteration. It uses a flag and flips its value
+ * for every call to helper function.
+ *
+ * When the flag is set to 0, the helper function verifies the test data without generating any
+ * errors, i.e: verifies the default behaviour of the cryptodev.
+ *
+ * When the flag is set to 1, the helper function allocates a pointer from heap or non-DMAble
+ * memory and passes the pointer to cryptodev PMD inorder to generate a fatal error. Once the error
+ * is generated, it waits till the cryptodev is recoverd from the error.
+ *
+ * Iterates the above steps multiple times, to verify the error recovery of cryptodev and behaviour
+ * of cryptodev after the recovery.
+ */
+static int
+test_cryptodev_verify_error_recover(const void *test_data)
+{
+	int ret = TEST_FAILED;
+	int i, num_itr = 5;
+
+	ret = test_cryptodev_error_recover_helper_check();
+	if (ret)
+		return ret;
+
+	TEST_ASSERT_SUCCESS(rte_cryptodev_callback_register(p_testsuite_params->valid_devs[0],
+							    RTE_CRYPTODEV_EVENT_ERROR,
+							    test_cryptodev_error_cb, NULL),
+			    "Failed to register Cryptodev callback");
+
+	for (i = 0; i < num_itr; i++) {
+		int ticks = 0;
+
+		ret = test_cryptodev_error_recover_helper(p_testsuite_params->valid_devs[0],
+							  test_data, false);
+		TEST_ASSERT_EQUAL(ret, TEST_SUCCESS, "encryption failed");
+
+		/* Generate Error */
+		ret = test_cryptodev_error_recover_helper(p_testsuite_params->valid_devs[0],
+							  test_data, true);
+		TEST_ASSERT_EQUAL(ret, TEST_SUCCESS, "encryption failed");
+
+		/* Wait till cryptodev recovered from error */
+		while (crypto_err == CRYPTODEV_ERR_TRIGGERED) {
+			rte_delay_ms(10);
+			if (ticks++ > HW_ERR_RECOVER_TIMEOUT)
+				return TEST_FAILED;
+		}
+	}
+	TEST_ASSERT_EQUAL(crypto_err, CRYPTODEV_ERR_CLEARED, "cryptodev error recovery failed");
+
+	return ret;
+}
 
 static int
 test_AES_GCM_authenticated_encryption_test_case_1(void)
@@ -18442,6 +18695,8 @@ static struct unit_test_suite cryptodev_gen_testsuite  = {
 		TEST_CASE_ST(ut_setup, ut_teardown, test_stats),
 		TEST_CASE_ST(ut_setup, ut_teardown, test_enq_callback_setup),
 		TEST_CASE_ST(ut_setup, ut_teardown, test_deq_callback_setup),
+		TEST_CASE_NAMED_WITH_DATA("Verify cryptodev error recover", ut_setup, ut_teardown,
+					  test_cryptodev_verify_error_recover, &aes_test_data_4),
 		TEST_CASES_END() /**< NULL terminate unit test array */
 	}
 };

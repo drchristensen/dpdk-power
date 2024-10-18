@@ -18,21 +18,20 @@
 #include "hisi_dmadev.h"
 
 RTE_LOG_REGISTER_DEFAULT(hisi_dma_logtype, INFO);
-#define HISI_DMA_LOG(level, fmt, args...) \
-		rte_log(RTE_LOG_ ## level, hisi_dma_logtype, \
-		"%s(): " fmt "\n", __func__, ##args)
-#define HISI_DMA_LOG_RAW(hw, level, fmt, args...) \
-		rte_log(RTE_LOG_ ## level, hisi_dma_logtype, \
-		"%s %s(): " fmt "\n", (hw)->data->dev_name, \
-		__func__, ##args)
-#define HISI_DMA_DEBUG(hw, fmt, args...) \
-		HISI_DMA_LOG_RAW(hw, DEBUG, fmt, ## args)
-#define HISI_DMA_INFO(hw, fmt, args...) \
-		HISI_DMA_LOG_RAW(hw, INFO, fmt, ## args)
-#define HISI_DMA_WARN(hw, fmt, args...) \
-		HISI_DMA_LOG_RAW(hw, WARNING, fmt, ## args)
-#define HISI_DMA_ERR(hw, fmt, args...) \
-		HISI_DMA_LOG_RAW(hw, ERR, fmt, ## args)
+#define RTE_LOGTYPE_HISI_DMA hisi_dma_logtype
+#define HISI_DMA_LOG(level, ...) \
+	RTE_LOG_LINE_PREFIX(level, HISI_DMA, "%s(): ", __func__, __VA_ARGS__)
+#define HISI_DMA_DEV_LOG(hw, level, ...) \
+	RTE_LOG_LINE_PREFIX(level, HISI_DMA, "%s %s(): ", \
+		(hw)->data->dev_name RTE_LOG_COMMA __func__, __VA_ARGS__)
+#define HISI_DMA_DEBUG(hw, ...) \
+	HISI_DMA_DEV_LOG(hw, DEBUG, __VA_ARGS__)
+#define HISI_DMA_INFO(hw, ...) \
+	HISI_DMA_DEV_LOG(hw, INFO, __VA_ARGS__)
+#define HISI_DMA_WARN(hw, ...) \
+	HISI_DMA_DEV_LOG(hw, WARNING, __VA_ARGS__)
+#define HISI_DMA_ERR(hw, ...) \
+	HISI_DMA_DEV_LOG(hw, ERR, __VA_ARGS__)
 
 static uint32_t
 hisi_dma_queue_base(struct hisi_dma_dev *hw)
@@ -357,7 +356,7 @@ hisi_dma_start(struct rte_dma_dev *dev)
 	struct hisi_dma_dev *hw = dev->data->dev_private;
 
 	if (hw->iomz == NULL) {
-		HISI_DMA_ERR(hw, "Vchan was not setup, start fail!\n");
+		HISI_DMA_ERR(hw, "Vchan was not setup, start fail!");
 		return -EINVAL;
 	}
 
@@ -630,7 +629,7 @@ hisi_dma_scan_cq(struct hisi_dma_dev *hw)
 			 * status array indexed by csq_head. Only error logs
 			 * are used for prompting.
 			 */
-			HISI_DMA_ERR(hw, "invalid csq_head:%u!\n", csq_head);
+			HISI_DMA_ERR(hw, "invalid csq_head:%u!", csq_head);
 			count = 0;
 			break;
 		}
@@ -912,7 +911,7 @@ hisi_dma_probe(struct rte_pci_driver *pci_drv __rte_unused,
 	rte_pci_device_name(&pci_dev->addr, name, sizeof(name));
 
 	if (pci_dev->mem_resource[2].addr == NULL) {
-		HISI_DMA_LOG(ERR, "%s BAR2 is NULL!\n", name);
+		HISI_DMA_LOG(ERR, "%s BAR2 is NULL!", name);
 		return -ENODEV;
 	}
 

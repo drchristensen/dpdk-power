@@ -2335,8 +2335,7 @@ mlx5_dev_close(struct rte_eth_dev *dev)
 	 * If default mreg copy action is removed at the stop stage,
 	 * the search will return none and nothing will be done anymore.
 	 */
-	if (priv->sh->config.dv_flow_en != 2)
-		mlx5_flow_stop_default(dev);
+	mlx5_flow_stop_default(dev);
 	mlx5_traffic_disable(dev);
 	/*
 	 * If all the flows are already flushed in the device stop stage,
@@ -2571,6 +2570,7 @@ const struct eth_dev_ops mlx5_dev_ops = {
 	.count_aggr_ports = mlx5_count_aggr_ports,
 	.map_aggr_tx_affinity = mlx5_map_aggr_tx_affinity,
 	.rx_metadata_negotiate = mlx5_flow_rx_metadata_negotiate,
+	.get_restore_flags = mlx5_get_restore_flags,
 };
 
 /* Available operations from secondary process. */
@@ -2663,6 +2663,7 @@ const struct eth_dev_ops mlx5_dev_ops_isolate = {
 	.get_monitor_addr = mlx5_get_monitor_addr,
 	.count_aggr_ports = mlx5_count_aggr_ports,
 	.map_aggr_tx_affinity = mlx5_map_aggr_tx_affinity,
+	.get_restore_flags = mlx5_get_restore_flags,
 };
 
 /**
@@ -3301,7 +3302,7 @@ mlx5_set_metadata_mask(struct rte_eth_dev *dev)
 		break;
 	case MLX5_XMETA_MODE_META32_HWS:
 		meta = UINT32_MAX;
-		mark = MLX5_FLOW_MARK_MASK;
+		mark = (reg_c0 >> rte_bsf32(reg_c0)) & MLX5_FLOW_MARK_MASK;
 		break;
 	default:
 		meta = 0;

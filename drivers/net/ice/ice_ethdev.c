@@ -6,10 +6,12 @@
 #include <ethdev_pci.h>
 
 #include <ctype.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <math.h>
 
 #include <rte_tailq.h>
 #include <rte_os_shim.h>
@@ -176,6 +178,7 @@ static int ice_timesync_read_rx_timestamp(struct rte_eth_dev *dev,
 static int ice_timesync_read_tx_timestamp(struct rte_eth_dev *dev,
 					  struct timespec *timestamp);
 static int ice_timesync_adjust_time(struct rte_eth_dev *dev, int64_t delta);
+static int ice_timesync_adjust_freq(struct rte_eth_dev *dev, int64_t ppm);
 static int ice_timesync_read_time(struct rte_eth_dev *dev,
 				  struct timespec *timestamp);
 static int ice_timesync_write_time(struct rte_eth_dev *dev,
@@ -225,11 +228,11 @@ static const struct rte_pci_id pci_id_ice_map[] = {
 	{ RTE_PCI_DEVICE(ICE_INTEL_VENDOR_ID, ICE_DEV_ID_E830_QSFP56) },
 	{ RTE_PCI_DEVICE(ICE_INTEL_VENDOR_ID, ICE_DEV_ID_E830_SFP) },
 	{ RTE_PCI_DEVICE(ICE_INTEL_VENDOR_ID, ICE_DEV_ID_E830C_BACKPLANE) },
-	{ RTE_PCI_DEVICE(ICE_INTEL_VENDOR_ID, ICE_DEV_ID_E830_XXV_BACKPLANE) },
+	{ RTE_PCI_DEVICE(ICE_INTEL_VENDOR_ID, ICE_DEV_ID_E830_L_BACKPLANE) },
 	{ RTE_PCI_DEVICE(ICE_INTEL_VENDOR_ID, ICE_DEV_ID_E830C_QSFP) },
-	{ RTE_PCI_DEVICE(ICE_INTEL_VENDOR_ID, ICE_DEV_ID_E830_XXV_QSFP) },
+	{ RTE_PCI_DEVICE(ICE_INTEL_VENDOR_ID, ICE_DEV_ID_E830_L_QSFP) },
 	{ RTE_PCI_DEVICE(ICE_INTEL_VENDOR_ID, ICE_DEV_ID_E830C_SFP) },
-	{ RTE_PCI_DEVICE(ICE_INTEL_VENDOR_ID, ICE_DEV_ID_E830_XXV_SFP) },
+	{ RTE_PCI_DEVICE(ICE_INTEL_VENDOR_ID, ICE_DEV_ID_E830_L_SFP) },
 	{ .vendor_id = 0, /* sentinel */ },
 };
 
@@ -307,6 +310,7 @@ static const struct eth_dev_ops ice_eth_dev_ops = {
 	.timesync_read_rx_timestamp   = ice_timesync_read_rx_timestamp,
 	.timesync_read_tx_timestamp   = ice_timesync_read_tx_timestamp,
 	.timesync_adjust_time         = ice_timesync_adjust_time,
+	.timesync_adjust_freq         = ice_timesync_adjust_freq,
 	.timesync_read_time           = ice_timesync_read_time,
 	.timesync_write_time          = ice_timesync_write_time,
 	.timesync_disable             = ice_timesync_disable,
@@ -1873,21 +1877,60 @@ ice_load_pkg_type(struct ice_hw *hw)
 	return package_type;
 }
 
+static int ice_read_customized_path(char *pkg_file, uint16_t buff_len)
+{
+	int fp, n;
+
+	fp = open(ICE_PKG_FILE_CUSTOMIZED_PATH, O_RDONLY);
+	if (fp < 0) {
+		PMD_INIT_LOG(INFO, "Failed to read CUSTOMIZED_PATH");
+		return -EIO;
+	}
+
+	n = read(fp, pkg_file, buff_len - 1);
+	if (n == 0) {
+		close(fp);
+		return -EIO;
+	}
+
+	if (pkg_file[n - 1] == '\n')
+		n--;
+
+	pkg_file[n] = '\0';
+
+	close(fp);
+	return 0;
+}
+
 int ice_load_pkg(struct ice_adapter *adapter, bool use_dsn, uint64_t dsn)
 {
 	struct ice_hw *hw = &adapter->hw;
 	char pkg_file[ICE_MAX_PKG_FILENAME_SIZE];
+	char customized_path[ICE_MAX_PKG_FILENAME_SIZE];
 	char opt_ddp_filename[ICE_MAX_PKG_FILENAME_SIZE];
 	void *buf;
 	size_t bufsz;
 	int err;
 
-	if (!use_dsn)
-		goto no_dsn;
-
 	memset(opt_ddp_filename, 0, ICE_MAX_PKG_FILENAME_SIZE);
 	snprintf(opt_ddp_filename, ICE_MAX_PKG_FILENAME_SIZE,
 		"ice-%016" PRIx64 ".pkg", dsn);
+
+	if (ice_read_customized_path(customized_path, ICE_MAX_PKG_FILENAME_SIZE) == 0) {
+		if (use_dsn) {
+			snprintf(pkg_file, RTE_DIM(pkg_file), "%s/%s",
+					customized_path, opt_ddp_filename);
+			if (rte_firmware_read(pkg_file, &buf, &bufsz) == 0)
+				goto load_fw;
+		}
+		snprintf(pkg_file, RTE_DIM(pkg_file), "%s/%s", customized_path, "ice.pkg");
+		if (rte_firmware_read(pkg_file, &buf, &bufsz) == 0)
+			goto load_fw;
+	}
+
+	if (!use_dsn)
+		goto no_dsn;
+
 	strncpy(pkg_file, ICE_PKG_FILE_SEARCH_PATH_UPDATES,
 		ICE_MAX_PKG_FILENAME_SIZE);
 	strcat(pkg_file, opt_ddp_filename);
@@ -1907,7 +1950,7 @@ no_dsn:
 
 	strncpy(pkg_file, ICE_PKG_FILE_DEFAULT, ICE_MAX_PKG_FILENAME_SIZE);
 	if (rte_firmware_read(pkg_file, &buf, &bufsz) < 0) {
-		PMD_INIT_LOG(ERR, "failed to search file path\n");
+		PMD_INIT_LOG(ERR, "failed to search file path");
 		return -1;
 	}
 
@@ -1916,7 +1959,7 @@ load_fw:
 
 	err = ice_copy_and_init_pkg(hw, buf, bufsz);
 	if (!ice_is_init_pkg_successful(err)) {
-		PMD_INIT_LOG(ERR, "ice_copy_and_init_hw failed: %d\n", err);
+		PMD_INIT_LOG(ERR, "ice_copy_and_init_hw failed: %d", err);
 		free(buf);
 		return -1;
 	}
@@ -2166,7 +2209,7 @@ static int ice_parse_devargs(struct rte_eth_dev *dev)
 
 	kvlist = rte_kvargs_parse(devargs->args, ice_valid_args);
 	if (kvlist == NULL) {
-		PMD_INIT_LOG(ERR, "Invalid kvargs key\n");
+		PMD_INIT_LOG(ERR, "Invalid kvargs key");
 		return -EINVAL;
 	}
 
@@ -2332,6 +2375,33 @@ ice_get_supported_rxdid(struct ice_hw *hw)
 	return supported_rxdid;
 }
 
+static void ice_ptp_init_info(struct rte_eth_dev *dev)
+{
+	struct ice_hw *hw = ICE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+	struct ice_adapter *ad =
+		ICE_DEV_PRIVATE_TO_ADAPTER(dev->data->dev_private);
+
+	switch (hw->phy_model) {
+	case ICE_PHY_ETH56G:
+		ad->ptp_tx_block = hw->pf_id;
+		ad->ptp_tx_index = 0;
+		break;
+	case ICE_PHY_E810:
+	case ICE_PHY_E830:
+		ad->ptp_tx_block = hw->port_info->lport;
+		ad->ptp_tx_index = 0;
+		break;
+	case ICE_PHY_E822:
+		ad->ptp_tx_block = hw->pf_id / ICE_PORTS_PER_QUAD;
+		ad->ptp_tx_index = (hw->pf_id % ICE_PORTS_PER_QUAD) *
+				ICE_PORTS_PER_PHY_E822 * ICE_QUADS_PER_PHY_E822;
+		break;
+	default:
+		PMD_DRV_LOG(WARNING, "Unsupported PHY model");
+		break;
+	}
+}
+
 static int
 ice_dev_init(struct rte_eth_dev *dev)
 {
@@ -2405,20 +2475,20 @@ ice_dev_init(struct rte_eth_dev *dev)
 	if (pos) {
 		if (rte_pci_read_config(pci_dev, &dsn_low, 4, pos + 4) < 0 ||
 				rte_pci_read_config(pci_dev, &dsn_high, 4, pos + 8) < 0) {
-			PMD_INIT_LOG(ERR, "Failed to read pci config space\n");
+			PMD_INIT_LOG(ERR, "Failed to read pci config space");
 		} else {
 			use_dsn = true;
 			dsn = (uint64_t)dsn_high << 32 | dsn_low;
 		}
 	} else {
-		PMD_INIT_LOG(ERR, "Failed to read device serial number\n");
+		PMD_INIT_LOG(ERR, "Failed to read device serial number");
 	}
 
 	ret = ice_load_pkg(pf->adapter, use_dsn, dsn);
 	if (ret == 0) {
 		ret = ice_init_hw_tbls(hw);
 		if (ret) {
-			PMD_INIT_LOG(ERR, "ice_init_hw_tbls failed: %d\n", ret);
+			PMD_INIT_LOG(ERR, "ice_init_hw_tbls failed: %d", ret);
 			rte_free(hw->pkg_copy);
 		}
 	}
@@ -2470,14 +2540,14 @@ ice_dev_init(struct rte_eth_dev *dev)
 
 	ret = ice_aq_stop_lldp(hw, true, false, NULL);
 	if (ret != ICE_SUCCESS)
-		PMD_INIT_LOG(DEBUG, "lldp has already stopped\n");
+		PMD_INIT_LOG(DEBUG, "lldp has already stopped");
 	ret = ice_init_dcb(hw, true);
 	if (ret != ICE_SUCCESS)
-		PMD_INIT_LOG(DEBUG, "Failed to init DCB\n");
+		PMD_INIT_LOG(DEBUG, "Failed to init DCB");
 	/* Forward LLDP packets to default VSI */
 	ret = ice_lldp_fltr_add_remove(hw, vsi->vsi_id, true);
 	if (ret != ICE_SUCCESS)
-		PMD_INIT_LOG(DEBUG, "Failed to cfg lldp\n");
+		PMD_INIT_LOG(DEBUG, "Failed to cfg lldp");
 	/* register callback func to eal lib */
 	rte_intr_callback_register(intr_handle,
 				   ice_interrupt_handler, dev);
@@ -2499,10 +2569,13 @@ ice_dev_init(struct rte_eth_dev *dev)
 	/* Initialize PHY model */
 	ice_ptp_init_phy_model(hw);
 
+	/* Initialize PTP info */
+	ice_ptp_init_info(dev);
+
 	if (hw->phy_model == ICE_PHY_E822) {
-		ret = ice_start_phy_timer_e822(hw, hw->pf_id);
+		ret = ice_start_phy_timer_e822(hw, hw->pf_id, true);
 		if (ret)
-			PMD_INIT_LOG(ERR, "Failed to start phy timer\n");
+			PMD_INIT_LOG(ERR, "Failed to start phy timer");
 	}
 
 	if (!ad->is_safe_mode) {
@@ -2748,7 +2821,7 @@ ice_hash_moveout(struct ice_pf *pf, struct ice_rss_hash_cfg *cfg)
 	status = ice_rem_rss_cfg(hw, vsi->idx, cfg);
 	if (status && status != ICE_ERR_DOES_NOT_EXIST) {
 		PMD_DRV_LOG(ERR,
-			    "ice_rem_rss_cfg failed for VSI:%d, error:%d\n",
+			    "ice_rem_rss_cfg failed for VSI:%d, error:%d",
 			    vsi->idx, status);
 		return -EBUSY;
 	}
@@ -2769,7 +2842,7 @@ ice_hash_moveback(struct ice_pf *pf, struct ice_rss_hash_cfg *cfg)
 	status = ice_add_rss_cfg(hw, vsi->idx, cfg);
 	if (status) {
 		PMD_DRV_LOG(ERR,
-			    "ice_add_rss_cfg failed for VSI:%d, error:%d\n",
+			    "ice_add_rss_cfg failed for VSI:%d, error:%d",
 			    vsi->idx, status);
 		return -EBUSY;
 	}
@@ -3164,7 +3237,7 @@ ice_rem_rss_cfg_wrap(struct ice_pf *pf, uint16_t vsi_id,
 
 	ret = ice_rem_rss_cfg(hw, vsi_id, cfg);
 	if (ret && ret != ICE_ERR_DOES_NOT_EXIST)
-		PMD_DRV_LOG(ERR, "remove rss cfg failed\n");
+		PMD_DRV_LOG(ERR, "remove rss cfg failed");
 
 	ice_rem_rss_cfg_post(pf, cfg->addl_hdrs);
 
@@ -3180,15 +3253,15 @@ ice_add_rss_cfg_wrap(struct ice_pf *pf, uint16_t vsi_id,
 
 	ret = ice_add_rss_cfg_pre(pf, cfg->addl_hdrs);
 	if (ret)
-		PMD_DRV_LOG(ERR, "add rss cfg pre failed\n");
+		PMD_DRV_LOG(ERR, "add rss cfg pre failed");
 
 	ret = ice_add_rss_cfg(hw, vsi_id, cfg);
 	if (ret)
-		PMD_DRV_LOG(ERR, "add rss cfg failed\n");
+		PMD_DRV_LOG(ERR, "add rss cfg failed");
 
 	ret = ice_add_rss_cfg_post(pf, cfg);
 	if (ret)
-		PMD_DRV_LOG(ERR, "add rss cfg post failed\n");
+		PMD_DRV_LOG(ERR, "add rss cfg post failed");
 
 	return 0;
 }
@@ -3378,7 +3451,7 @@ ice_get_default_rss_key(uint8_t *rss_key, uint32_t rss_key_size)
 	if (rss_key_size > sizeof(default_key)) {
 		PMD_DRV_LOG(WARNING,
 			    "requested size %u is larger than default %zu, "
-			    "only %zu bytes are gotten for key\n",
+			    "only %zu bytes are gotten for key",
 			    rss_key_size, sizeof(default_key),
 			    sizeof(default_key));
 	}
@@ -3413,12 +3486,12 @@ static int ice_init_rss(struct ice_pf *pf)
 
 	if (nb_q == 0) {
 		PMD_DRV_LOG(WARNING,
-			"RSS is not supported as rx queues number is zero\n");
+			"RSS is not supported as rx queues number is zero");
 		return 0;
 	}
 
 	if (is_safe_mode) {
-		PMD_DRV_LOG(WARNING, "RSS is not supported in safe mode\n");
+		PMD_DRV_LOG(WARNING, "RSS is not supported in safe mode");
 		return 0;
 	}
 
@@ -4277,7 +4350,7 @@ ice_phy_conf_link(struct ice_hw *hw,
 		cfg.phy_type_low = phy_type_low & phy_caps->phy_type_low;
 		cfg.phy_type_high = phy_type_high & phy_caps->phy_type_high;
 	} else {
-		PMD_DRV_LOG(WARNING, "Invalid speed setting, set to default!\n");
+		PMD_DRV_LOG(WARNING, "Invalid speed setting, set to default!");
 		cfg.phy_type_low = phy_caps->phy_type_low;
 		cfg.phy_type_high = phy_caps->phy_type_high;
 	}
@@ -5734,7 +5807,7 @@ ice_get_module_info(struct rte_eth_dev *dev,
 		}
 		break;
 	default:
-		PMD_DRV_LOG(WARNING, "SFF Module Type not recognized.\n");
+		PMD_DRV_LOG(WARNING, "SFF Module Type not recognized.");
 		return -EINVAL;
 	}
 	return 0;
@@ -5805,7 +5878,7 @@ ice_get_module_eeprom(struct rte_eth_dev *dev,
 							   0, NULL);
 				PMD_DRV_LOG(DEBUG, "SFF %02X %02X %02X %X = "
 					"%02X%02X%02X%02X."
-					"%02X%02X%02X%02X (%X)\n",
+					"%02X%02X%02X%02X (%X)",
 					addr, offset, page, is_sfp,
 					value[0], value[1],
 					value[2], value[3],
@@ -6437,6 +6510,22 @@ ice_dev_udp_tunnel_port_del(struct rte_eth_dev *dev,
 	return ret;
 }
 
+/**
+ * ice_ptp_write_init - Set PHC time to provided value
+ * @hw: Hardware private structure
+ *
+ * Set the PHC time to CLOCK_REALTIME
+ */
+static int ice_ptp_write_init(struct ice_hw *hw)
+{
+	uint64_t ns;
+	struct timespec sys_time;
+	clock_gettime(CLOCK_REALTIME, &sys_time);
+	ns = rte_timespec_to_ns(&sys_time);
+
+	return ice_ptp_init_time(hw, ns, true);
+}
+
 static int
 ice_timesync_enable(struct rte_eth_dev *dev)
 {
@@ -6466,22 +6555,15 @@ ice_timesync_enable(struct rte_eth_dev *dev)
 		}
 	}
 
-	/* Initialize cycle counters for system time/RX/TX timestamp */
-	memset(&ad->systime_tc, 0, sizeof(struct rte_timecounter));
-	memset(&ad->rx_tstamp_tc, 0, sizeof(struct rte_timecounter));
-	memset(&ad->tx_tstamp_tc, 0, sizeof(struct rte_timecounter));
+	if (!ice_ptp_lock(hw)) {
+		ice_debug(hw, ICE_DBG_PTP, "Failed to acquire PTP semaphore");
+		return ICE_ERR_NOT_READY;
+	}
 
-	ad->systime_tc.cc_mask = ICE_CYCLECOUNTER_MASK;
-	ad->systime_tc.cc_shift = 0;
-	ad->systime_tc.nsec_mask = 0;
-
-	ad->rx_tstamp_tc.cc_mask = ICE_CYCLECOUNTER_MASK;
-	ad->rx_tstamp_tc.cc_shift = 0;
-	ad->rx_tstamp_tc.nsec_mask = 0;
-
-	ad->tx_tstamp_tc.cc_mask = ICE_CYCLECOUNTER_MASK;
-	ad->tx_tstamp_tc.cc_shift = 0;
-	ad->tx_tstamp_tc.nsec_mask = 0;
+	ret = ice_ptp_write_init(hw);
+	ice_ptp_unlock(hw);
+	if (ret)
+		PMD_INIT_LOG(ERR, "Failed to set current system time to PHC timer");
 
 	ad->ptp_ena = 1;
 
@@ -6497,14 +6579,13 @@ ice_timesync_read_rx_timestamp(struct rte_eth_dev *dev,
 			ICE_DEV_PRIVATE_TO_ADAPTER(dev->data->dev_private);
 	struct ice_rx_queue *rxq;
 	uint32_t ts_high;
-	uint64_t ts_ns, ns;
+	uint64_t ts_ns;
 
 	rxq = dev->data->rx_queues[flags];
 
 	ts_high = rxq->time_high;
 	ts_ns = ice_tstamp_convert_32b_64b(hw, ad, 1, ts_high);
-	ns = rte_timecounter_update(&ad->rx_tstamp_tc, ts_ns);
-	*timestamp = rte_ns_to_timespec(ns);
+	*timestamp = rte_ns_to_timespec(ts_ns);
 
 	return 0;
 }
@@ -6516,22 +6597,18 @@ ice_timesync_read_tx_timestamp(struct rte_eth_dev *dev,
 	struct ice_hw *hw = ICE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 	struct ice_adapter *ad =
 			ICE_DEV_PRIVATE_TO_ADAPTER(dev->data->dev_private);
-	uint8_t lport;
-	uint64_t ts_ns, ns, tstamp;
+	uint64_t ts_ns, tstamp;
 	const uint64_t mask = 0xFFFFFFFF;
 	int ret;
 
-	lport = hw->port_info->lport;
-
-	ret = ice_read_phy_tstamp(hw, lport, 0, &tstamp);
-	if (ret) {
+	ret = ice_read_phy_tstamp(hw, ad->ptp_tx_block, ad->ptp_tx_index, &tstamp);
+	if (ret || tstamp == 0) {
 		PMD_DRV_LOG(ERR, "Failed to read phy timestamp");
 		return -1;
 	}
 
 	ts_ns = ice_tstamp_convert_32b_64b(hw, ad, 1, (tstamp >> 8) & mask);
-	ns = rte_timecounter_update(&ad->tx_tstamp_tc, ts_ns);
-	*timestamp = rte_ns_to_timespec(ns);
+	*timestamp = rte_ns_to_timespec(ts_ns);
 
 	return 0;
 }
@@ -6539,28 +6616,108 @@ ice_timesync_read_tx_timestamp(struct rte_eth_dev *dev,
 static int
 ice_timesync_adjust_time(struct rte_eth_dev *dev, int64_t delta)
 {
-	struct ice_adapter *ad =
-			ICE_DEV_PRIVATE_TO_ADAPTER(dev->data->dev_private);
+	struct ice_hw *hw = ICE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+	uint8_t tmr_idx = hw->func_caps.ts_func_info.tmr_index_assoc;
+	uint32_t lo, lo2, hi;
+	uint64_t time, ns;
+	int ret;
 
-	ad->systime_tc.nsec += delta;
-	ad->rx_tstamp_tc.nsec += delta;
-	ad->tx_tstamp_tc.nsec += delta;
+	if (delta > INT32_MAX || delta < INT32_MIN) {
+		lo = ICE_READ_REG(hw, GLTSYN_TIME_L(tmr_idx));
+		hi = ICE_READ_REG(hw, GLTSYN_TIME_H(tmr_idx));
+		lo2 = ICE_READ_REG(hw, GLTSYN_TIME_L(tmr_idx));
 
+		if (lo2 < lo) {
+			lo = ICE_READ_REG(hw, GLTSYN_TIME_L(tmr_idx));
+			hi = ICE_READ_REG(hw, GLTSYN_TIME_H(tmr_idx));
+		}
+
+		time = ((uint64_t)hi << 32) | lo;
+		ns = time + delta;
+
+		wr32(hw, GLTSYN_SHTIME_L(tmr_idx), ICE_LO_DWORD(ns));
+		wr32(hw, GLTSYN_SHTIME_H(tmr_idx), ICE_HI_DWORD(ns));
+		wr32(hw, GLTSYN_SHTIME_0(tmr_idx), 0);
+
+		ret = ice_ptp_init_time(hw, ns, true);
+		if (ret) {
+			PMD_DRV_LOG(ERR, "PTP init time failed, err %d", ret);
+			return -1;
+		}
+		return 0;
+	}
+
+	ret = ice_ptp_adj_clock(hw, delta, true);
+	if (ret) {
+		PMD_DRV_LOG(ERR, "PTP adj clock failed, err %d", ret);
+		return -1;
+	}
+
+	return 0;
+}
+
+static int
+ice_timesync_adjust_freq(struct rte_eth_dev *dev, int64_t ppm)
+{
+	struct ice_hw *hw = ICE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+	int64_t incval, diff = 0;
+	bool negative = false;
+	uint64_t div, rem;
+	uint64_t divisor = 1000000ULL << 16;
+	int shift;
+	int ret;
+
+	incval = ice_get_base_incval(hw, ICE_SRC_TMR_MODE_NANOSECONDS);
+
+	if (ppm < 0) {
+		negative = true;
+		ppm = -ppm;
+	}
+
+	/* can incval * ppm overflow ? */
+	if (log2(incval) + log2(ppm) > 62) {
+		rem = ppm % divisor;
+		div = ppm / divisor;
+		diff = div * incval;
+		ppm = rem;
+
+		shift = log2(incval) + log2(ppm) - 62;
+		if (shift > 0) {
+			/* drop precision */
+			ppm >>= shift;
+			divisor >>= shift;
+		}
+	}
+
+	if (divisor)
+		diff = diff + incval * ppm / divisor;
+
+	if (negative)
+		incval -= diff;
+	else
+		incval += diff;
+
+	ret = ice_ptp_write_incval_locked(hw, incval, true);
+	if (ret) {
+		PMD_DRV_LOG(ERR, "PTP failed to set incval, err %d", ret);
+		return -1;
+	}
 	return 0;
 }
 
 static int
 ice_timesync_write_time(struct rte_eth_dev *dev, const struct timespec *ts)
 {
-	struct ice_adapter *ad =
-			ICE_DEV_PRIVATE_TO_ADAPTER(dev->data->dev_private);
+	struct ice_hw *hw = ICE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 	uint64_t ns;
+	int ret;
 
 	ns = rte_timespec_to_ns(ts);
-
-	ad->systime_tc.nsec = ns;
-	ad->rx_tstamp_tc.nsec = ns;
-	ad->tx_tstamp_tc.nsec = ns;
+	ret = ice_ptp_init_time(hw, ns, true);
+	if (ret) {
+		PMD_DRV_LOG(ERR, "PTP init time failed, err %d", ret);
+		return -1;
+	}
 
 	return 0;
 }
@@ -6569,11 +6726,9 @@ static int
 ice_timesync_read_time(struct rte_eth_dev *dev, struct timespec *ts)
 {
 	struct ice_hw *hw = ICE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
-	struct ice_adapter *ad =
-			ICE_DEV_PRIVATE_TO_ADAPTER(dev->data->dev_private);
 	uint8_t tmr_idx = hw->func_caps.ts_func_info.tmr_index_assoc;
 	uint32_t hi, lo, lo2;
-	uint64_t time, ns;
+	uint64_t time;
 
 	lo = ICE_READ_REG(hw, GLTSYN_TIME_L(tmr_idx));
 	hi = ICE_READ_REG(hw, GLTSYN_TIME_H(tmr_idx));
@@ -6585,8 +6740,7 @@ ice_timesync_read_time(struct rte_eth_dev *dev, struct timespec *ts)
 	}
 
 	time = ((uint64_t)hi << 32) | lo;
-	ns = rte_timecounter_update(&ad->systime_tc, time);
-	*ts = rte_ns_to_timespec(ns);
+	*ts = rte_ns_to_timespec(time);
 
 	return 0;
 }
@@ -6773,7 +6927,7 @@ ice_fec_get_capability(struct rte_eth_dev *dev, struct rte_eth_fec_capa *speed_f
 	ret = ice_aq_get_phy_caps(hw->port_info, false, ICE_AQC_REPORT_TOPO_CAP_MEDIA,
 				  &pcaps, NULL);
 	if (ret != ICE_SUCCESS) {
-		PMD_DRV_LOG(ERR, "Failed to get capability information: %d\n",
+		PMD_DRV_LOG(ERR, "Failed to get capability information: %d",
 				ret);
 		return -ENOTSUP;
 	}
@@ -6805,7 +6959,7 @@ ice_fec_get(struct rte_eth_dev *dev, uint32_t *fec_capa)
 
 	ret = ice_get_link_info_safe(pf, enable_lse, &link_status);
 	if (ret != ICE_SUCCESS) {
-		PMD_DRV_LOG(ERR, "Failed to get link information: %d\n",
+		PMD_DRV_LOG(ERR, "Failed to get link information: %d",
 			ret);
 		return -ENOTSUP;
 	}
@@ -6815,7 +6969,7 @@ ice_fec_get(struct rte_eth_dev *dev, uint32_t *fec_capa)
 	ret = ice_aq_get_phy_caps(pi, false, ICE_AQC_REPORT_TOPO_CAP_MEDIA,
 				  &pcaps, NULL);
 	if (ret != ICE_SUCCESS) {
-		PMD_DRV_LOG(ERR, "Failed to get capability information: %d\n",
+		PMD_DRV_LOG(ERR, "Failed to get capability information: %d",
 			ret);
 		return -ENOTSUP;
 	}

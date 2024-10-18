@@ -96,6 +96,34 @@ dummy_event_port_profile_switch(__rte_unused void *port, __rte_unused uint8_t pr
 	return -EINVAL;
 }
 
+static int
+dummy_event_port_preschedule_modify(__rte_unused void *port,
+				    __rte_unused enum rte_event_dev_preschedule_type preschedule)
+{
+	RTE_EDEV_LOG_ERR("modify pre-schedule requested for unconfigured event device");
+	return -EINVAL;
+}
+
+static int
+dummy_event_port_preschedule_modify_hint(
+	__rte_unused void *port, __rte_unused enum rte_event_dev_preschedule_type preschedule)
+{
+	return -ENOTSUP;
+}
+
+static void
+dummy_event_port_preschedule(__rte_unused void *port,
+			     __rte_unused enum rte_event_dev_preschedule_type preschedule)
+{
+	RTE_EDEV_LOG_ERR("pre-schedule requested for unconfigured event device");
+}
+
+static void
+dummy_event_port_preschedule_hint(__rte_unused void *port,
+				  __rte_unused enum rte_event_dev_preschedule_type preschedule)
+{
+}
+
 void
 event_dev_fp_ops_reset(struct rte_event_fp_ops *fp_op)
 {
@@ -109,11 +137,12 @@ event_dev_fp_ops_reset(struct rte_event_fp_ops *fp_op)
 		.dequeue_burst = dummy_event_dequeue_burst,
 		.maintain = dummy_event_maintain,
 		.txa_enqueue = dummy_event_tx_adapter_enqueue,
-		.txa_enqueue_same_dest =
-			dummy_event_tx_adapter_enqueue_same_dest,
+		.txa_enqueue_same_dest = dummy_event_tx_adapter_enqueue_same_dest,
 		.ca_enqueue = dummy_event_crypto_adapter_enqueue,
 		.dma_enqueue = dummy_event_dma_adapter_enqueue,
 		.profile_switch = dummy_event_port_profile_switch,
+		.preschedule_modify = dummy_event_port_preschedule_modify,
+		.preschedule = dummy_event_port_preschedule,
 		.data = dummy_data,
 	};
 
@@ -136,5 +165,13 @@ event_dev_fp_ops_set(struct rte_event_fp_ops *fp_op,
 	fp_op->ca_enqueue = dev->ca_enqueue;
 	fp_op->dma_enqueue = dev->dma_enqueue;
 	fp_op->profile_switch = dev->profile_switch;
+	fp_op->preschedule_modify = dev->preschedule_modify;
+	fp_op->preschedule = dev->preschedule;
 	fp_op->data = dev->data->ports;
+
+	if (fp_op->preschedule_modify == NULL)
+		fp_op->preschedule_modify = dummy_event_port_preschedule_modify_hint;
+
+	if (fp_op->preschedule == NULL)
+		fp_op->preschedule = dummy_event_port_preschedule_hint;
 }

@@ -419,7 +419,6 @@ nfp_net_recv_pkts(void *rx_queue,
 	struct nfp_net_dp_buf *rxb;
 	struct nfp_net_rx_desc *rxds;
 	uint16_t avail_multiplexed = 0;
-	struct nfp_net_hw_priv *hw_priv;
 
 	rxq = rx_queue;
 	if (unlikely(rxq == NULL)) {
@@ -432,7 +431,6 @@ nfp_net_recv_pkts(void *rx_queue,
 	}
 
 	hw = rxq->hw;
-	hw_priv = rxq->hw_priv;
 
 	while (avail + avail_multiplexed < nb_pkts) {
 		rxb = &rxq->rxbufs[rxq->rd_p];
@@ -523,7 +521,7 @@ nfp_net_recv_pkts(void *rx_queue,
 
 		if (((meta.flags >> NFP_NET_META_PORTID) & 0x1) == 0) {
 			rx_pkts[avail++] = mb;
-		} else if (nfp_flower_pf_dispatch_pkts(hw_priv, mb, meta.port_id)) {
+		} else if (nfp_flower_pf_dispatch_pkts(rxq, mb, meta.port_id)) {
 			avail_multiplexed++;
 		} else {
 			rte_pktmbuf_free(mb);
@@ -593,6 +591,20 @@ nfp_net_reset_rx_queue(struct nfp_net_rxq *rxq)
 	rxq->nb_rx_hold = 0;
 }
 
+static void
+nfp_rx_queue_setup_flbufsz(struct nfp_net_hw *hw,
+		struct nfp_net_rxq *rxq)
+{
+	if (!hw->flbufsz_set_flag) {
+		hw->flbufsz_set_flag = true;
+		hw->flbufsz = rxq->mbuf_size;
+		return;
+	}
+
+	if (hw->flbufsz < rxq->mbuf_size)
+		hw->flbufsz = rxq->mbuf_size;
+}
+
 int
 nfp_net_rx_queue_setup(struct rte_eth_dev *dev,
 		uint16_t queue_idx,
@@ -651,7 +663,7 @@ nfp_net_rx_queue_setup(struct rte_eth_dev *dev,
 	rxq->mem_pool = mp;
 	rxq->mbuf_size = rxq->mem_pool->elt_size;
 	rxq->mbuf_size -= (sizeof(struct rte_mbuf) + RTE_PKTMBUF_HEADROOM);
-	hw->flbufsz = rxq->mbuf_size;
+	nfp_rx_queue_setup_flbufsz(hw, rxq);
 
 	rxq->rx_count = nb_desc;
 	rxq->port_id = dev->data->port_id;
@@ -818,11 +830,11 @@ nfp_net_tx_queue_setup(struct rte_eth_dev *dev,
 		unsigned int socket_id,
 		const struct rte_eth_txconf *tx_conf)
 {
-	struct nfp_net_hw *hw;
+	struct nfp_net_hw_priv *hw_priv;
 
-	hw = nfp_net_get_hw(dev);
+	hw_priv = dev->process_private;
 
-	if (hw->ver.extend == NFP_NET_CFG_VERSION_DP_NFD3)
+	if (hw_priv->pf_dev->ver.extend == NFP_NET_CFG_VERSION_DP_NFD3)
 		return nfp_net_nfd3_tx_queue_setup(dev, queue_idx,
 				nb_desc, socket_id, tx_conf);
 	else
@@ -854,10 +866,10 @@ nfp_net_tx_queue_info_get(struct rte_eth_dev *dev,
 		struct rte_eth_txq_info *info)
 {
 	struct rte_eth_dev_info dev_info;
-	struct nfp_net_hw *hw = nfp_net_get_hw(dev);
+	struct nfp_net_hw_priv *hw_priv = dev->process_private;
 	struct nfp_net_txq *txq = dev->data->tx_queues[queue_id];
 
-	if (hw->ver.extend == NFP_NET_CFG_VERSION_DP_NFD3)
+	if (hw_priv->pf_dev->ver.extend == NFP_NET_CFG_VERSION_DP_NFD3)
 		info->nb_desc = txq->tx_count / NFD3_TX_DESC_PER_PKT;
 	else
 		info->nb_desc = txq->tx_count / NFDK_TX_DESC_PER_SIMPLE_PKT;

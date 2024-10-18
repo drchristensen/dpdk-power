@@ -242,7 +242,7 @@ hns3_get_rx_queue(struct rte_eth_dev *dev)
 	for (queue_id = 0; queue_id < dev->data->nb_rx_queues; queue_id++) {
 		rx_queues = dev->data->rx_queues;
 		if (rx_queues == NULL || rx_queues[queue_id] == NULL) {
-			hns3_err(hw, "detect rx_queues is NULL!\n");
+			hns3_err(hw, "detect rx_queues is NULL!");
 			return NULL;
 		}
 
@@ -267,7 +267,7 @@ hns3_get_tx_queue(struct rte_eth_dev *dev)
 	for (queue_id = 0; queue_id < dev->data->nb_tx_queues; queue_id++) {
 		tx_queues = dev->data->tx_queues;
 		if (tx_queues == NULL || tx_queues[queue_id] == NULL) {
-			hns3_err(hw, "detect tx_queues is NULL!\n");
+			hns3_err(hw, "detect tx_queues is NULL!");
 			return NULL;
 		}
 
@@ -297,7 +297,7 @@ hns3_get_rxtx_fake_queue_info(FILE *file, struct rte_eth_dev *dev)
 	if (dev->data->nb_rx_queues < dev->data->nb_tx_queues) {
 		rx_queues = hw->fkq_data.rx_queues;
 		if (rx_queues == NULL || rx_queues[queue_id] == NULL) {
-			hns3_err(hw, "detect rx_queues is NULL!\n");
+			hns3_err(hw, "detect rx_queues is NULL!");
 			return;
 		}
 		rxq = (struct hns3_rx_queue *)rx_queues[queue_id];
@@ -311,7 +311,7 @@ hns3_get_rxtx_fake_queue_info(FILE *file, struct rte_eth_dev *dev)
 		queue_id = 0;
 
 		if (tx_queues == NULL || tx_queues[queue_id] == NULL) {
-			hns3_err(hw, "detect tx_queues is NULL!\n");
+			hns3_err(hw, "detect tx_queues is NULL!");
 			return;
 		}
 		txq = (struct hns3_tx_queue *)tx_queues[queue_id];
@@ -437,6 +437,62 @@ hns3_get_rxtx_queue_enable_state(FILE *file, struct rte_eth_dev *dev)
 }
 
 static void
+hns3_get_rxtx_queue_head_tail_pointer(FILE *file, struct rte_eth_dev *dev)
+{
+	struct hns3_hw *hw = HNS3_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+	uint32_t reg_offset, queue_id;
+	void **rx_queues, **tx_queues;
+	struct hns3_rx_queue *rxq;
+	struct hns3_tx_queue *txq;
+	uint16_t sw_hold;
+
+	rx_queues = dev->data->rx_queues;
+	if (rx_queues == NULL)
+		return;
+	tx_queues = dev->data->tx_queues;
+	if (tx_queues == NULL)
+		return;
+
+	fprintf(file, "\t  -- Rx queue head and tail info:\n");
+	fprintf(file, "\t       qid  sw_head  sw_hold  hw_head  hw_tail\n");
+	for (queue_id = 0; queue_id < dev->data->nb_rx_queues; queue_id++) {
+		if (rx_queues[queue_id] == NULL)
+			continue;
+		rxq = (struct hns3_rx_queue *)rx_queues[queue_id];
+		if (rxq->rx_deferred_start)
+			continue;
+
+		if (dev->rx_pkt_burst == hns3_recv_pkts_vec ||
+		    dev->rx_pkt_burst == hns3_recv_pkts_vec_sve)
+			sw_hold = rxq->rx_rearm_nb;
+		else
+			sw_hold = rxq->rx_free_hold;
+
+		reg_offset = hns3_get_tqp_reg_offset(queue_id);
+		fprintf(file, "\t        %-5u%-9u%-9u%-9u%u\n", queue_id,
+			rxq->next_to_use, sw_hold,
+			hns3_read_dev(hw, HNS3_RING_RX_HEAD_REG + reg_offset),
+			hns3_read_dev(hw, HNS3_RING_RX_TAIL_REG + reg_offset));
+	}
+
+	fprintf(file, "\t  -- Tx queue head and tail info:\n");
+	fprintf(file, "\t       qid  sw_head  sw_tail  hw_head  hw_tail\n");
+	for (queue_id = 0; queue_id < dev->data->nb_tx_queues; queue_id++) {
+		if (tx_queues[queue_id] == NULL)
+			continue;
+		txq = (struct hns3_tx_queue *)tx_queues[queue_id];
+		if (txq->tx_deferred_start)
+			continue;
+
+		reg_offset = hns3_get_tqp_reg_offset(queue_id);
+		fprintf(file, "\t        %-5u%-9u%-9u%-9u%u\n", queue_id,
+			txq->next_to_clean, txq->next_to_use,
+			hns3_read_dev(hw, HNS3_RING_TX_HEAD_REG + reg_offset),
+			hns3_read_dev(hw, HNS3_RING_TX_TAIL_REG + reg_offset));
+	}
+}
+
+static void
 hns3_get_rxtx_queue_info(FILE *file, struct rte_eth_dev *dev)
 {
 	struct hns3_rx_queue *rxq;
@@ -460,6 +516,7 @@ hns3_get_rxtx_queue_info(FILE *file, struct rte_eth_dev *dev)
 
 	hns3_get_rxtx_fake_queue_info(file, dev);
 	hns3_get_rxtx_queue_enable_state(file, dev);
+	hns3_get_rxtx_queue_head_tail_pointer(file, dev);
 }
 
 static int
@@ -961,7 +1018,7 @@ hns3_rx_descriptor_dump(const struct rte_eth_dev *dev, uint16_t queue_id,
 		return -EINVAL;
 
 	if (num > rxq->nb_rx_desc) {
-		hns3_err(hw, "Invalid BD num=%u\n", num);
+		hns3_err(hw, "Invalid BD num=%u", num);
 		return -EINVAL;
 	}
 
@@ -1003,7 +1060,7 @@ hns3_tx_descriptor_dump(const struct rte_eth_dev *dev, uint16_t queue_id,
 		return -EINVAL;
 
 	if (num > txq->nb_tx_desc) {
-		hns3_err(hw, "Invalid BD num=%u\n", num);
+		hns3_err(hw, "Invalid BD num=%u", num);
 		return -EINVAL;
 	}
 

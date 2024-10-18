@@ -12,10 +12,6 @@
  * for DPDK.
  */
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 #include <assert.h>
 #include <limits.h>
 #include <stdint.h>
@@ -25,6 +21,10 @@ extern "C" {
 
 /* OS specific include */
 #include <rte_os.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 #ifndef RTE_TOOLCHAIN_MSVC
 #ifndef typeof
@@ -226,6 +226,40 @@ typedef uint16_t unaligned_uint16_t;
 	__attribute__((alloc_size(__VA_ARGS__)))
 #else
 #define __rte_alloc_size(...)
+#endif
+
+/**
+ * Tells the compiler that the function returns a value that points to
+ * memory aligned by a function argument.
+ *
+ * Note: not enabled on Clang because it warns if align argument is zero.
+ */
+#if defined(RTE_CC_GCC)
+#define __rte_alloc_align(argno) \
+	__attribute__((alloc_align(argno)))
+#else
+#define __rte_alloc_align(argno)
+#endif
+
+/**
+ * Tells the compiler this is a function like malloc and that the pointer
+ * returned cannot alias any other pointer (ie new memory).
+ */
+#if defined(RTE_CC_GCC) || defined(RTE_CC_CLANG)
+#define __rte_malloc __attribute__((__malloc__))
+#else
+#define __rte_malloc
+#endif
+
+/**
+ * With recent GCC versions also able to track that proper
+ * deallocator function is used for this pointer.
+ */
+#if defined(RTE_TOOLCHAIN_GCC) && (GCC_VERSION >= 110000)
+#define __rte_dealloc(dealloc, argno) \
+	__attribute__((malloc(dealloc, argno)))
+#else
+#define __rte_dealloc(dealloc, argno)
 #endif
 
 #define RTE_PRIORITY_LOG 101

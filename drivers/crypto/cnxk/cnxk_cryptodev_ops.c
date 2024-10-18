@@ -2,6 +2,7 @@
  * Copyright(C) 2021 Marvell.
  */
 
+#include <rte_atomic.h>
 #include <rte_cryptodev.h>
 #include <cryptodev_pmd.h>
 #include <rte_errno.h>
@@ -25,7 +26,9 @@
 #include "cnxk_se.h"
 
 #include "cn10k_cryptodev_ops.h"
+#include "cn10k_cryptodev_sec.h"
 #include "cn9k_cryptodev_ops.h"
+#include "cn9k_ipsec.h"
 
 #include "rte_pmd_cnxk_crypto.h"
 
@@ -65,7 +68,7 @@ cnxk_cpt_sec_get_mlen(void)
 	return len;
 }
 
-static int
+int
 cnxk_cpt_asym_get_mlen(void)
 {
 	uint32_t len;
@@ -494,6 +497,27 @@ cnxk_cpt_queue_pair_setup(struct rte_cryptodev *dev, uint16_t qp_id,
 exit:
 	cnxk_cpt_qp_destroy(dev, qp);
 	return ret;
+}
+
+int
+cnxk_cpt_queue_pair_reset(struct rte_cryptodev *dev, uint16_t qp_id,
+			  const struct rte_cryptodev_qp_conf *conf, int socket_id)
+{
+	if (conf == NULL) {
+		struct cnxk_cpt_vf *vf = dev->data->dev_private;
+		struct roc_cpt_lf *lf;
+
+		if (vf == NULL)
+			return -ENOTSUP;
+
+		lf = vf->cpt.lf[qp_id];
+		roc_cpt_lf_reset(lf);
+		roc_cpt_iq_enable(lf);
+
+		return 0;
+	}
+
+	return cnxk_cpt_queue_pair_setup(dev, qp_id, conf, socket_id);
 }
 
 uint32_t
@@ -945,7 +969,7 @@ cnxk_cpt_queue_pair_event_error_query(struct rte_cryptodev *dev, uint16_t qp_id)
 	return 0;
 }
 
-void *
+struct rte_pmd_cnxk_crypto_qptr *
 rte_pmd_cnxk_crypto_qptr_get(uint8_t dev_id, uint16_t qp_id)
 {
 	const struct rte_crypto_fp_ops *fp_ops;
@@ -958,9 +982,9 @@ rte_pmd_cnxk_crypto_qptr_get(uint8_t dev_id, uint16_t qp_id)
 }
 
 static inline void
-cnxk_crypto_cn10k_submit(void *qptr, void *inst, uint16_t nb_inst)
+cnxk_crypto_cn10k_submit(struct rte_pmd_cnxk_crypto_qptr *qptr, void *inst, uint16_t nb_inst)
 {
-	struct cnxk_cpt_qp *qp = qptr;
+	struct cnxk_cpt_qp *qp = PLT_PTR_CAST(qptr);
 	uint64_t lmt_base, io_addr;
 	uint16_t lmt_id;
 	void *lmt_dst;
@@ -987,9 +1011,9 @@ again:
 }
 
 static inline void
-cnxk_crypto_cn9k_submit(void *qptr, void *inst, uint16_t nb_inst)
+cnxk_crypto_cn9k_submit(struct rte_pmd_cnxk_crypto_qptr *qptr, void *inst, uint16_t nb_inst)
 {
-	struct cnxk_cpt_qp *qp = qptr;
+	struct cnxk_cpt_qp *qp = PLT_PTR_CAST(qptr);
 
 	const uint64_t lmt_base = qp->lf.lmt_base;
 	const uint64_t io_addr = qp->lf.io_addr;
@@ -1008,7 +1032,7 @@ cnxk_crypto_cn9k_submit(void *qptr, void *inst, uint16_t nb_inst)
 }
 
 void
-rte_pmd_cnxk_crypto_submit(void *qptr, void *inst, uint16_t nb_inst)
+rte_pmd_cnxk_crypto_submit(struct rte_pmd_cnxk_crypto_qptr *qptr, void *inst, uint16_t nb_inst)
 {
 	if (roc_model_is_cn10k())
 		return cnxk_crypto_cn10k_submit(qptr, inst, nb_inst);
@@ -1016,4 +1040,177 @@ rte_pmd_cnxk_crypto_submit(void *qptr, void *inst, uint16_t nb_inst)
 		return cnxk_crypto_cn9k_submit(qptr, inst, nb_inst);
 
 	plt_err("Invalid cnxk model");
+}
+
+int
+rte_pmd_cnxk_crypto_cptr_flush(struct rte_pmd_cnxk_crypto_qptr *qptr,
+			       struct rte_pmd_cnxk_crypto_cptr *cptr, bool invalidate)
+{
+	struct cnxk_cpt_qp *qp = PLT_PTR_CAST(qptr);
+
+	if (unlikely(qptr == NULL)) {
+		plt_err("Invalid queue pair pointer");
+		return -EINVAL;
+	}
+
+	if (unlikely(cptr == NULL)) {
+		plt_err("Invalid CPTR pointer");
+		return -EINVAL;
+	}
+
+	if (unlikely(!roc_model_is_cn10k())) {
+		plt_err("Invalid cnxk model");
+		return -EINVAL;
+	}
+
+	return roc_cpt_lf_ctx_flush(&qp->lf, cptr, invalidate);
+}
+
+struct rte_pmd_cnxk_crypto_cptr *
+rte_pmd_cnxk_crypto_cptr_get(struct rte_pmd_cnxk_crypto_sess *rte_sess)
+{
+	if (rte_sess == NULL) {
+		plt_err("Invalid session pointer");
+		return NULL;
+	}
+
+	if (rte_sess->sec_sess == NULL) {
+		plt_err("Invalid RTE session pointer");
+		return NULL;
+	}
+
+	if (rte_sess->op_type == RTE_CRYPTO_OP_TYPE_ASYMMETRIC) {
+		struct cnxk_ae_sess *ae_sess = PLT_PTR_CAST(rte_sess->crypto_asym_sess);
+		return PLT_PTR_CAST(&ae_sess->hw_ctx);
+	}
+
+	if (rte_sess->op_type != RTE_CRYPTO_OP_TYPE_SYMMETRIC) {
+		plt_err("Invalid crypto operation type");
+		return NULL;
+	}
+
+	if (rte_sess->sess_type == RTE_CRYPTO_OP_WITH_SESSION) {
+		struct cnxk_se_sess *se_sess = PLT_PTR_CAST(rte_sess->crypto_sym_sess);
+		return PLT_PTR_CAST(&se_sess->roc_se_ctx.se_ctx);
+	}
+
+	if (rte_sess->sess_type == RTE_CRYPTO_OP_SECURITY_SESSION) {
+		if (roc_model_is_cn10k()) {
+			struct cn10k_sec_session *sec_sess = PLT_PTR_CAST(rte_sess->sec_sess);
+			return PLT_PTR_CAST(&sec_sess->sa);
+		}
+
+		if (roc_model_is_cn9k()) {
+			struct cn9k_sec_session *sec_sess = PLT_PTR_CAST(rte_sess->sec_sess);
+			return PLT_PTR_CAST(&sec_sess->sa);
+		}
+
+		plt_err("Invalid cnxk model");
+		return NULL;
+	}
+
+	plt_err("Invalid session type");
+	return NULL;
+}
+
+int
+rte_pmd_cnxk_crypto_cptr_read(struct rte_pmd_cnxk_crypto_qptr *qptr,
+			      struct rte_pmd_cnxk_crypto_cptr *cptr, void *data, uint32_t len)
+{
+	struct cnxk_cpt_qp *qp = PLT_PTR_CAST(qptr);
+	int ret;
+
+	if (unlikely(qptr == NULL)) {
+		plt_err("Invalid queue pair pointer");
+		return -EINVAL;
+	}
+
+	if (unlikely(cptr == NULL)) {
+		plt_err("Invalid CPTR pointer");
+		return -EINVAL;
+	}
+
+	if (unlikely(data == NULL)) {
+		plt_err("Invalid data pointer");
+		return -EINVAL;
+	}
+
+	ret = roc_cpt_lf_ctx_flush(&qp->lf, cptr, false);
+	if (ret)
+		return ret;
+
+	/* Wait for the flush to complete. */
+	rte_delay_ms(1);
+
+	memcpy(data, cptr, len);
+	return 0;
+}
+
+int
+rte_pmd_cnxk_crypto_cptr_write(struct rte_pmd_cnxk_crypto_qptr *qptr,
+			       struct rte_pmd_cnxk_crypto_cptr *cptr, void *data, uint32_t len)
+{
+	struct cnxk_cpt_qp *qp = PLT_PTR_CAST(qptr);
+	int ret;
+
+	if (unlikely(qptr == NULL)) {
+		plt_err("Invalid queue pair pointer");
+		return -EINVAL;
+	}
+
+	if (unlikely(cptr == NULL)) {
+		plt_err("Invalid CPTR pointer");
+		return -EINVAL;
+	}
+
+	if (unlikely(data == NULL)) {
+		plt_err("Invalid data pointer");
+		return -EINVAL;
+	}
+
+	ret = roc_cpt_ctx_write(&qp->lf, data, cptr, len);
+	if (ret) {
+		plt_err("Could not write to CPTR");
+		return ret;
+	}
+
+	ret = roc_cpt_lf_ctx_flush(&qp->lf, cptr, false);
+	if (ret)
+		return ret;
+
+	rte_atomic_thread_fence(rte_memory_order_seq_cst);
+
+	return 0;
+}
+
+int
+rte_pmd_cnxk_crypto_qp_stats_get(struct rte_pmd_cnxk_crypto_qptr *qptr,
+				 struct rte_pmd_cnxk_crypto_qp_stats *stats)
+{
+	struct cnxk_cpt_qp *qp = PLT_PTR_CAST(qptr);
+	struct roc_cpt_lf *lf;
+
+	if (unlikely(qptr == NULL)) {
+		plt_err("Invalid queue pair pointer");
+		return -EINVAL;
+	}
+
+	if (unlikely(stats == NULL)) {
+		plt_err("Invalid stats pointer");
+		return -EINVAL;
+	}
+
+	if (unlikely(roc_model_is_cn9k())) {
+		plt_err("Invalid cnxk model");
+		return -EINVAL;
+	}
+
+	lf = &qp->lf;
+
+	stats->ctx_enc_pkts = plt_read64(lf->rbase + CPT_LF_CTX_ENC_PKT_CNT);
+	stats->ctx_enc_bytes = plt_read64(lf->rbase + CPT_LF_CTX_ENC_BYTE_CNT);
+	stats->ctx_dec_bytes = plt_read64(lf->rbase + CPT_LF_CTX_DEC_BYTE_CNT);
+	stats->ctx_dec_bytes = plt_read64(lf->rbase + CPT_LF_CTX_DEC_BYTE_CNT);
+
+	return 0;
 }

@@ -30,13 +30,13 @@ nix_rx_offload_flags(struct rte_eth_dev *eth_dev)
 	if (dev->rx_offloads & RTE_ETH_RX_OFFLOAD_SCATTER)
 		flags |= NIX_RX_MULTI_SEG_F;
 
-	if ((dev->rx_offloads & RTE_ETH_RX_OFFLOAD_TIMESTAMP))
+	if ((dev->rx_offloads & RTE_ETH_RX_OFFLOAD_TIMESTAMP) || dev->ptp_en)
 		flags |= NIX_RX_OFFLOAD_TSTAMP_F;
 
 	if (!dev->ptype_disable)
 		flags |= NIX_RX_OFFLOAD_PTYPE_F;
 
-	if (dev->rx_offloads & RTE_ETH_RX_OFFLOAD_SECURITY)
+	if (dev->rx_offloads & RTE_ETH_RX_OFFLOAD_SECURITY && !dev->nix.custom_inb_sa)
 		flags |= NIX_RX_OFFLOAD_SECURITY_F;
 
 	return flags;
@@ -473,7 +473,7 @@ cn10k_nix_ptp_info_update_cb(struct roc_nix *nix, bool ptp_en)
 	struct cnxk_eth_dev *dev = (struct cnxk_eth_dev *)nix;
 	struct rte_eth_dev *eth_dev;
 	struct cn10k_eth_rxq *rxq;
-	int i;
+	int i, rc;
 
 	if (!dev)
 		return -EINVAL;
@@ -496,8 +496,22 @@ cn10k_nix_ptp_info_update_cb(struct roc_nix *nix, bool ptp_en)
 		 * and MTU setting also requires MBOX message to be
 		 * sent(VF->PF)
 		 */
+		if (dev->ptp_en) {
+			rc = rte_mbuf_dyn_rx_timestamp_register
+				(&dev->tstamp.tstamp_dynfield_offset,
+				 &dev->tstamp.rx_tstamp_dynflag);
+			if (rc != 0) {
+				plt_err("Failed to register Rx timestamp field/flag");
+				return -EINVAL;
+			}
+		}
 		eth_dev->rx_pkt_burst = nix_ptp_vf_burst;
+		rte_eth_fp_ops[eth_dev->data->port_id].rx_pkt_burst = eth_dev->rx_pkt_burst;
 		rte_mb();
+		if (dev->cnxk_sso_ptp_tstamp_cb)
+			dev->cnxk_sso_ptp_tstamp_cb(eth_dev->data->port_id,
+						    NIX_RX_OFFLOAD_TSTAMP_F, dev->ptp_en);
+
 	}
 
 	return 0;
@@ -707,7 +721,7 @@ cn10k_rx_descriptor_dump(const struct rte_eth_dev *eth_dev, uint16_t qid,
 	available_pkts = cn10k_nix_rx_avail_get(rxq);
 
 	if ((offset + num - 1) >= available_pkts) {
-		plt_err("Invalid BD num=%u\n", num);
+		plt_err("Invalid BD num=%u", num);
 		return -EINVAL;
 	}
 

@@ -140,7 +140,7 @@ bnxt_zero_data_len_tso_segsz(struct rte_mbuf *tx_pkt, uint8_t data_len_chk)
 	}
 
 	if (len_to_check == 0) {
-		PMD_DRV_LOG(ERR, "Error! Tx pkt %s == 0\n", type_str);
+		PMD_DRV_LOG_LINE(ERR, "Error! Tx pkt %s == 0", type_str);
 		rte_pktmbuf_dump(stdout, tx_pkt, 64);
 		rte_dump_stack();
 		return true;
@@ -226,8 +226,8 @@ static uint16_t bnxt_start_xmit(struct rte_mbuf *tx_pkt,
 
 	/* Check if number of Tx descriptors is above HW limit */
 	if (unlikely(nr_bds > BNXT_MAX_TSO_SEGS)) {
-		PMD_DRV_LOG(ERR,
-			    "Num descriptors %d exceeds HW limit\n", nr_bds);
+		PMD_DRV_LOG_LINE(ERR,
+			    "Num descriptors %d exceeds HW limit", nr_bds);
 		return -ENOSPC;
 	}
 
@@ -237,8 +237,8 @@ static uint16_t bnxt_start_xmit(struct rte_mbuf *tx_pkt,
 		char *seg = rte_pktmbuf_append(tx_pkt, pad);
 
 		if (!seg) {
-			PMD_DRV_LOG(ERR,
-				    "Failed to pad mbuf by %d bytes\n",
+			PMD_DRV_LOG_LINE(ERR,
+				    "Failed to pad mbuf by %d bytes",
 				    pad);
 			return -ENOMEM;
 		}
@@ -548,8 +548,8 @@ static int bnxt_handle_tx_cp(struct bnxt_tx_queue *txq)
 		if (CMP_TYPE(txcmp) == TX_CMPL_TYPE_TX_L2)
 			nb_tx_pkts += opaque;
 		else
-			RTE_LOG_DP(ERR, BNXT,
-					"Unhandled CMP type %02x\n",
+			RTE_LOG_DP_LINE(ERR, BNXT,
+					"Unhandled CMP type %02x",
 					CMP_TYPE(txcmp));
 		raw_cons = NEXT_RAW_CMP(raw_cons);
 	} while (nb_tx_pkts < ring_mask);
@@ -593,7 +593,7 @@ uint16_t _bnxt_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 
 	/* Tx queue was stopped; wait for it to be restarted */
 	if (unlikely(!txq->tx_started)) {
-		PMD_DRV_LOG(DEBUG, "Tx q stopped;return\n");
+		PMD_DRV_LOG_LINE(DEBUG, "Tx q stopped;return");
 		return 0;
 	}
 
@@ -639,7 +639,7 @@ int bnxt_tx_queue_start(struct rte_eth_dev *dev, uint16_t tx_queue_id)
 
 	dev->data->tx_queue_state[tx_queue_id] = RTE_ETH_QUEUE_STATE_STARTED;
 	txq->tx_started = true;
-	PMD_DRV_LOG(DEBUG, "Tx queue started\n");
+	PMD_DRV_LOG_LINE(DEBUG, "Tx queue started");
 
 	return 0;
 }
@@ -659,7 +659,7 @@ int bnxt_tx_queue_stop(struct rte_eth_dev *dev, uint16_t tx_queue_id)
 
 	dev->data->tx_queue_state[tx_queue_id] = RTE_ETH_QUEUE_STATE_STOPPED;
 	txq->tx_started = false;
-	PMD_DRV_LOG(DEBUG, "Tx queue stopped\n");
+	PMD_DRV_LOG_LINE(DEBUG, "Tx queue stopped");
 
 	return 0;
 }

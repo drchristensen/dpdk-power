@@ -126,24 +126,24 @@ nfp_flower_get_repr(struct nfp_net_hw_priv *hw_priv,
 }
 
 bool
-nfp_flower_pf_dispatch_pkts(struct nfp_net_hw_priv *hw_priv,
+nfp_flower_pf_dispatch_pkts(struct nfp_net_rxq *rxq,
 		struct rte_mbuf *mbuf,
 		uint32_t port_id)
 {
 	struct nfp_flower_representor *repr;
 
-	repr = nfp_flower_get_repr(hw_priv, port_id);
+	repr = nfp_flower_get_repr(rxq->hw_priv, port_id);
 	if (repr == NULL) {
 		PMD_RX_LOG(ERR, "Can not get repr for port %u", port_id);
 		return false;
 	}
 
-	if (repr->ring == NULL) {
+	if (repr->ring == NULL || repr->ring[rxq->qidx] == NULL) {
 		PMD_RX_LOG(ERR, "No ring available for repr_port %s", repr->name);
 		return false;
 	}
 
-	if (rte_ring_enqueue(repr->ring, (void *)mbuf) != 0)
+	if (rte_ring_enqueue(repr->ring[rxq->qidx], (void *)mbuf) != 0)
 		return false;
 
 	return true;
@@ -166,15 +166,15 @@ nfp_flower_pf_nfdk_xmit_pkts(void *tx_queue,
 }
 
 static void
-nfp_flower_pf_xmit_pkts_register(struct nfp_app_fw_flower *app_fw_flower)
+nfp_flower_pf_xmit_pkts_register(struct nfp_pf_dev *pf_dev)
 {
-	struct nfp_net_hw *hw;
 	struct nfp_flower_nfd_func *nfd_func;
+	struct nfp_app_fw_flower *app_fw_flower;
 
-	hw = app_fw_flower->pf_hw;
+	app_fw_flower = pf_dev->app_fw_priv;
 	nfd_func = &app_fw_flower->nfd_func;
 
-	if (hw->ver.extend == NFP_NET_CFG_VERSION_DP_NFD3)
+	if (pf_dev->ver.extend == NFP_NET_CFG_VERSION_DP_NFD3)
 		nfd_func->pf_xmit_t = nfp_flower_pf_nfd3_xmit_pkts;
 	else
 		nfd_func->pf_xmit_t = nfp_flower_pf_nfdk_xmit_pkts;
@@ -204,14 +204,12 @@ nfp_flower_init_vnic_common(struct nfp_net_hw_priv *hw_priv,
 	uint64_t rx_bar_off;
 	uint64_t tx_bar_off;
 	struct nfp_pf_dev *pf_dev;
-	struct rte_pci_device *pci_dev;
 
 	pf_dev = hw_priv->pf_dev;
-	pci_dev = pf_dev->pci_dev;
 
 	PMD_INIT_LOG(DEBUG, "%s vNIC ctrl bar: %p", vnic_type, hw->super.ctrl_bar);
 
-	err = nfp_net_common_init(pci_dev, hw);
+	err = nfp_net_common_init(pf_dev, hw);
 	if (err != 0)
 		return err;
 
@@ -612,15 +610,15 @@ nfp_flower_start_ctrl_vnic(struct nfp_app_fw_flower *app_fw_flower)
 }
 
 static void
-nfp_flower_pkt_add_metadata_register(struct nfp_app_fw_flower *app_fw_flower)
+nfp_flower_pkt_add_metadata_register(struct nfp_pf_dev *pf_dev)
 {
-	struct nfp_net_hw *hw;
 	struct nfp_flower_nfd_func *nfd_func;
+	struct nfp_app_fw_flower *app_fw_flower;
 
-	hw = app_fw_flower->pf_hw;
+	app_fw_flower = pf_dev->app_fw_priv;
 	nfd_func = &app_fw_flower->nfd_func;
 
-	if (hw->ver.extend == NFP_NET_CFG_VERSION_DP_NFD3)
+	if (pf_dev->ver.extend == NFP_NET_CFG_VERSION_DP_NFD3)
 		nfd_func->pkt_add_metadata_t = nfp_flower_nfd3_pkt_add_metadata;
 	else
 		nfd_func->pkt_add_metadata_t = nfp_flower_nfdk_pkt_add_metadata;
@@ -635,11 +633,11 @@ nfp_flower_pkt_add_metadata(struct nfp_app_fw_flower *app_fw_flower,
 }
 
 static void
-nfp_flower_nfd_func_register(struct nfp_app_fw_flower *app_fw_flower)
+nfp_flower_nfd_func_register(struct nfp_pf_dev *pf_dev)
 {
-	nfp_flower_pkt_add_metadata_register(app_fw_flower);
-	nfp_flower_ctrl_vnic_xmit_register(app_fw_flower);
-	nfp_flower_pf_xmit_pkts_register(app_fw_flower);
+	nfp_flower_pkt_add_metadata_register(pf_dev);
+	nfp_flower_ctrl_vnic_xmit_register(pf_dev);
+	nfp_flower_pf_xmit_pkts_register(pf_dev);
 }
 
 int
@@ -694,7 +692,7 @@ nfp_init_app_fw_flower(struct nfp_net_hw_priv *hw_priv)
 	/* Map the PF ctrl bar */
 	snprintf(bar_name, sizeof(bar_name), "_pf%u_net_bar0", id);
 	pf_dev->ctrl_bar = nfp_rtsym_map(pf_dev->sym_tbl, bar_name,
-			NFP_NET_CFG_BAR_SZ, &pf_dev->ctrl_area);
+			pf_dev->ctrl_bar_size, &pf_dev->ctrl_area);
 	if (pf_dev->ctrl_bar == NULL) {
 		PMD_INIT_LOG(ERR, "Cloud not map the PF vNIC ctrl bar");
 		ret = -ENODEV;
@@ -730,7 +728,7 @@ nfp_init_app_fw_flower(struct nfp_net_hw_priv *hw_priv)
 		goto pf_cpp_area_cleanup;
 	}
 
-	nfp_flower_nfd_func_register(app_fw_flower);
+	nfp_flower_nfd_func_register(pf_dev);
 
 	/* The ctrl vNIC struct comes directly after the PF one */
 	app_fw_flower->ctrl_hw = pf_hw + 1;
@@ -739,7 +737,7 @@ nfp_init_app_fw_flower(struct nfp_net_hw_priv *hw_priv)
 	/* Map the ctrl vNIC ctrl bar */
 	snprintf(ctrl_name, sizeof(ctrl_name), "_pf%u_net_ctrl_bar", id);
 	ctrl_hw->super.ctrl_bar = nfp_rtsym_map(pf_dev->sym_tbl, ctrl_name,
-			NFP_NET_CFG_BAR_SZ, &ctrl_hw->ctrl_area);
+			pf_dev->ctrl_bar_size, &ctrl_hw->ctrl_area);
 	if (ctrl_hw->super.ctrl_bar == NULL) {
 		PMD_INIT_LOG(ERR, "Cloud not map the ctrl vNIC ctrl bar");
 		ret = -ENODEV;

@@ -2668,8 +2668,8 @@ mlx5_flow_validate_item_eth(const struct rte_eth_dev *dev,
 {
 	const struct rte_flow_item_eth *mask = item->mask;
 	const struct rte_flow_item_eth nic_mask = {
-		.hdr.dst_addr.addr_bytes = "\xff\xff\xff\xff\xff\xff",
-		.hdr.src_addr.addr_bytes = "\xff\xff\xff\xff\xff\xff",
+		.hdr.dst_addr.addr_bytes = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff },
+		.hdr.src_addr.addr_bytes = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff },
 		.hdr.ether_type = RTE_BE16(0xffff),
 		.has_vlan = ext_vlan_sup ? 1 : 0,
 	};
@@ -2933,12 +2933,10 @@ mlx5_flow_validate_item_ipv6(const struct rte_eth_dev *dev,
 	const struct rte_flow_item_ipv6 *spec = item->spec;
 	const struct rte_flow_item_ipv6 nic_mask = {
 		.hdr = {
-			.src_addr =
-				"\xff\xff\xff\xff\xff\xff\xff\xff"
-				"\xff\xff\xff\xff\xff\xff\xff\xff",
-			.dst_addr =
-				"\xff\xff\xff\xff\xff\xff\xff\xff"
-				"\xff\xff\xff\xff\xff\xff\xff\xff",
+			.src_addr = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+				      0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff },
+			.dst_addr = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+				      0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff },
 			.vtc_flow = RTE_BE32(0xffffffff),
 			.proto = 0xff,
 		},
@@ -3163,7 +3161,7 @@ mlx5_flow_validate_item_vxlan(struct rte_eth_dev *dev,
 		uint8_t vni[4];
 	} id = { .vlan_id = 0, };
 	const struct rte_flow_item_vxlan nic_mask = {
-		.hdr.vni = "\xff\xff\xff",
+		.hdr.vni =  { 0xff, 0xff, 0xff },
 		.hdr.rsvd1 = 0xff,
 	};
 	const struct rte_flow_item_vxlan *valid_mask;
@@ -3249,7 +3247,7 @@ mlx5_flow_validate_item_vxlan_gpe(const struct rte_flow_item *item,
 	} id = { .vlan_id = 0, };
 
 	struct rte_flow_item_vxlan_gpe nic_mask = {
-		.vni = "\xff\xff\xff",
+		.vni =  { 0xff, 0xff, 0xff },
 		.protocol = 0xff,
 		.flags = 0xff,
 	};
@@ -3563,7 +3561,7 @@ mlx5_flow_validate_item_geneve(const struct rte_flow_item *item,
 			  MLX5_GENEVE_OPT_LEN_1 : MLX5_GENEVE_OPT_LEN_0;
 	const struct rte_flow_item_geneve nic_mask = {
 		.ver_opt_len_o_c_rsvd0 = RTE_BE16(0x3f80),
-		.vni = "\xff\xff\xff",
+		.vni =  { 0xff, 0xff, 0xff },
 		.protocol = RTE_BE16(UINT16_MAX),
 	};
 
@@ -3867,6 +3865,15 @@ mlx5_flow_validate_item_nvgre(const struct rte_eth_dev *dev,
 	const struct rte_flow_item_nvgre *mask = item->mask;
 	int ret;
 
+	const struct rte_flow_item_nvgre hws_nic_mask = {
+		.c_k_s_rsvd0_ver = RTE_BE16(0xB000),
+		.protocol = RTE_BE16(UINT16_MAX),
+		.tni = {0xff, 0xff, 0xff},
+		.flow_id = 0xff
+	};
+	const struct rte_flow_item_nvgre *nic_mask = !mlx5_hws_active(dev) ?
+		&rte_flow_item_nvgre_mask : &hws_nic_mask;
+
 	if (target_protocol != 0xff && target_protocol != IPPROTO_GRE)
 		return rte_flow_error_set(error, EINVAL,
 					  RTE_FLOW_ERROR_TYPE_ITEM, item,
@@ -3884,10 +3891,10 @@ mlx5_flow_validate_item_nvgre(const struct rte_eth_dev *dev,
 						  item, "L3 Layer is missing");
 	}
 	if (!mask)
-		mask = &rte_flow_item_nvgre_mask;
+		mask = nic_mask;
 	ret = mlx5_flow_item_acceptable
 		(dev, item, (const uint8_t *)mask,
-		 (const uint8_t *)&rte_flow_item_nvgre_mask,
+		 (const uint8_t *)nic_mask,
 		 sizeof(struct rte_flow_item_nvgre),
 		 MLX5_ITEM_RANGE_NOT_ACCEPTED, error);
 	if (ret < 0)
@@ -8154,6 +8161,17 @@ mlx5_flow_list_flush(struct rte_eth_dev *dev, enum mlx5_flow_type type,
 void
 mlx5_flow_stop_default(struct rte_eth_dev *dev)
 {
+#ifdef HAVE_MLX5_HWS_SUPPORT
+	struct mlx5_priv *priv = dev->data->dev_private;
+
+	if (priv->sh->config.dv_flow_en == 2) {
+		mlx5_flow_nta_del_default_copy_action(dev);
+		if (!rte_atomic_load_explicit(&priv->hws_mark_refcnt,
+					      rte_memory_order_relaxed))
+			flow_hw_rxq_flag_set(dev, false);
+		return;
+	}
+#endif
 	flow_mreg_del_default_copy_action(dev);
 	flow_rxq_flags_clear(dev);
 }
@@ -8198,7 +8216,12 @@ int
 mlx5_flow_start_default(struct rte_eth_dev *dev)
 {
 	struct rte_flow_error error;
+#ifdef HAVE_MLX5_HWS_SUPPORT
+	struct mlx5_priv *priv = dev->data->dev_private;
 
+	if (priv->sh->config.dv_flow_en == 2)
+		return mlx5_flow_nta_add_default_copy_action(dev, &error);
+#endif
 	/* Make sure default copy action (reg_c[0] -> reg_b) is created. */
 	return flow_mreg_add_default_copy_action(dev, &error);
 }

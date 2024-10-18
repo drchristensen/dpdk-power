@@ -51,6 +51,7 @@
 #define ICE_PKG_FILE_UPDATES "/lib/firmware/updates/intel/ice/ddp/ice.pkg"
 #define ICE_PKG_FILE_SEARCH_PATH_DEFAULT "/lib/firmware/intel/ice/ddp/"
 #define ICE_PKG_FILE_SEARCH_PATH_UPDATES "/lib/firmware/updates/intel/ice/ddp/"
+#define ICE_PKG_FILE_CUSTOMIZED_PATH "/sys/module/firmware_class/parameters/path"
 #define ICE_MAX_PKG_FILENAME_SIZE   256
 
 #define MAX_ACL_NORMAL_ENTRIES    256
@@ -611,9 +612,8 @@ struct ice_adapter {
 	/* For vector PMD */
 	eth_rx_burst_t tx_pkt_burst;
 	/* For PTP */
-	struct rte_timecounter systime_tc;
-	struct rte_timecounter rx_tstamp_tc;
-	struct rte_timecounter tx_tstamp_tc;
+	uint8_t ptp_tx_block;
+	uint8_t ptp_tx_index;
 	bool ptp_ena;
 	uint64_t time_hw;
 	struct ice_fdir_prof_info fdir_prof_info[ICE_MAX_PTGS];

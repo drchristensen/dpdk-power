@@ -449,6 +449,11 @@ static const struct rte_pci_id pci_id_ixgbe_map[] = {
 	{ RTE_PCI_DEVICE(IXGBE_INTEL_VENDOR_ID, IXGBE_DEV_ID_X550EM_X_KX4) },
 	{ RTE_PCI_DEVICE(IXGBE_INTEL_VENDOR_ID, IXGBE_DEV_ID_X550EM_X_KR) },
 	{ RTE_PCI_DEVICE(IXGBE_INTEL_VENDOR_ID, IXGBE_DEV_ID_X550EM_X_XFI) },
+	{ RTE_PCI_DEVICE(IXGBE_INTEL_VENDOR_ID, IXGBE_DEV_ID_E610_10G_T) },
+	{ RTE_PCI_DEVICE(IXGBE_INTEL_VENDOR_ID, IXGBE_DEV_ID_E610_2_5G_T) },
+	{ RTE_PCI_DEVICE(IXGBE_INTEL_VENDOR_ID, IXGBE_DEV_ID_E610_BACKPLANE) },
+	{ RTE_PCI_DEVICE(IXGBE_INTEL_VENDOR_ID, IXGBE_DEV_ID_E610_SFP) },
+	{ RTE_PCI_DEVICE(IXGBE_INTEL_VENDOR_ID, IXGBE_DEV_ID_E610_SGMII) },
 #ifdef RTE_LIBRTE_IXGBE_BYPASS
 	{ RTE_PCI_DEVICE(IXGBE_INTEL_VENDOR_ID, IXGBE_DEV_ID_82599_BYPASS) },
 #endif
@@ -1155,10 +1160,7 @@ eth_ixgbe_dev_init(struct rte_eth_dev *eth_dev, void *init_params __rte_unused)
 	}
 
 	if (hw->mac.ops.fw_recovery_mode && hw->mac.ops.fw_recovery_mode(hw)) {
-		PMD_INIT_LOG(ERR, "\nERROR: "
-			"Firmware recovery mode detected. Limiting functionality.\n"
-			"Refer to the Intel(R) Ethernet Adapters and Devices "
-			"User Guide for details on firmware recovery mode.");
+		PMD_INIT_LOG(ERR, "ERROR: Firmware recovery mode detected. Limiting functionality.");
 		return -EIO;
 	}
 
@@ -1783,7 +1785,7 @@ eth_ixgbe_pci_probe(struct rte_pci_driver *pci_drv __rte_unused,
 
 	if (eth_da.nb_representor_ports > 0 &&
 	    eth_da.type != RTE_ETH_REPRESENTOR_VF) {
-		PMD_DRV_LOG(ERR, "unsupported representor type: %s\n",
+		PMD_DRV_LOG(ERR, "unsupported representor type: %s",
 			    pci_dev->device.devargs->args);
 		return -ENOTSUP;
 	}

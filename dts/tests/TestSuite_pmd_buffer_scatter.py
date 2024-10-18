@@ -24,9 +24,11 @@ from scapy.utils import hexstr  # type: ignore[import-untyped]
 
 from framework.params.testpmd import SimpleForwardingModes
 from framework.remote_session.testpmd_shell import TestPmdShell
-from framework.test_suite import TestSuite
+from framework.test_suite import TestSuite, func_test
+from framework.testbed_model.capability import NicCapability, requires
 
 
+@requires(NicCapability.RX_OFFLOAD_SCATTER)
 class TestPmdBufferScatter(TestSuite):
     """DPDK PMD packet scattering test suite.
 
@@ -53,15 +55,9 @@ class TestPmdBufferScatter(TestSuite):
         """Set up the test suite.
 
         Setup:
-            Verify that we have at least 2 port links in the current test run
-            and increase the MTU of both ports on the traffic generator to 9000
+            Increase the MTU of both ports on the traffic generator to 9000
             to support larger packet sizes.
         """
-        self.verify(
-            len(self._port_links) > 1,
-            "There must be at least two port links to run the scatter test suite",
-        )
-
         self.tg_node.main_session.configure_port_mtu(9000, self._tg_port_egress)
         self.tg_node.main_session.configure_port_mtu(9000, self._tg_port_ingress)
 
@@ -123,6 +119,8 @@ class TestPmdBufferScatter(TestSuite):
                     f"{offset}.",
                 )
 
+    @requires(NicCapability.SCATTERED_RX_ENABLED)
+    @func_test
     def test_scatter_mbuf_2048(self) -> None:
         """Run the :meth:`pmd_scatter` test with `mbsize` set to 2048."""
         self.pmd_scatter(mbsize=2048)

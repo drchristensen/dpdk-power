@@ -220,7 +220,7 @@ struct port_table {
 	uint32_t id; /**< Table ID. */
 	uint32_t nb_pattern_templates; /**< Number of pattern templates. */
 	uint32_t nb_actions_templates; /**< Number of actions templates. */
-	struct rte_flow_attr flow_attr; /**< Flow attributes. */
+	struct rte_flow_template_table_attr attr; /**< Table attributes. */
 	struct rte_flow_template_table *table; /**< PMD opaque template object */
 };
 
@@ -927,6 +927,8 @@ void device_infos_display(const char *identifier);
 void port_infos_display(portid_t port_id);
 void port_summary_display(portid_t port_id);
 void port_eeprom_display(portid_t port_id);
+void port_eeprom_set(portid_t port_id, uint32_t magic, uint32_t offset,
+		     uint32_t length, uint8_t *value);
 void port_module_eeprom_display(portid_t port_id);
 void port_summary_header_display(void);
 void rx_queue_infos_display(portid_t port_idi, uint16_t queue_id);
@@ -942,6 +944,7 @@ int init_fwd_streams(void);
 void update_fwd_ports(portid_t new_pid);
 
 void set_fwd_eth_peer(portid_t port_id, char *peer_addr);
+void set_dev_led(portid_t port_id, bool active);
 
 void port_mtu_set(portid_t port_id, uint16_t mtu);
 int port_action_handle_create(portid_t port_id, uint32_t id, bool indirect_list,

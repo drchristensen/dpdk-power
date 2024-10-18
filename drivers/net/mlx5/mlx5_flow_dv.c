@@ -1526,7 +1526,6 @@ mlx5_modify_flex_item(const struct rte_eth_dev *dev,
 	const struct mlx5_flex_pattern_field *map;
 	uint32_t offset = data->offset;
 	uint32_t width_left = width;
-	uint32_t def;
 	uint32_t cur_width = 0;
 	uint32_t tmp_ofs;
 	uint32_t idx = 0;
@@ -1551,7 +1550,7 @@ mlx5_modify_flex_item(const struct rte_eth_dev *dev,
 	tmp_ofs = pos < data->offset ? data->offset - pos : 0;
 	for (j = i; i < flex->mapnum && width_left > 0; ) {
 		map = flex->map + i;
-		id = mlx5_flex_get_sample_id(flex, i, &pos, false, &def);
+		id = mlx5_flex_get_sample_id(flex, i, &pos, false);
 		if (id == -1) {
 			i++;
 			/* All left length is dummy */
@@ -1570,7 +1569,7 @@ mlx5_modify_flex_item(const struct rte_eth_dev *dev,
 			 * 2. Width has been covered.
 			 */
 			for (j = i + 1; j < flex->mapnum; j++) {
-				tmp_id = mlx5_flex_get_sample_id(flex, j, &pos, false, &def);
+				tmp_id = mlx5_flex_get_sample_id(flex, j, &pos, false);
 				if (tmp_id == -1) {
 					i = j;
 					pos -= flex->map[j].width;
@@ -7697,12 +7696,10 @@ const struct rte_flow_item_ipv4 nic_ipv4_mask = {
 
 const struct rte_flow_item_ipv6 nic_ipv6_mask = {
 	.hdr = {
-		.src_addr =
-		"\xff\xff\xff\xff\xff\xff\xff\xff"
-		"\xff\xff\xff\xff\xff\xff\xff\xff",
-		.dst_addr =
-		"\xff\xff\xff\xff\xff\xff\xff\xff"
-		"\xff\xff\xff\xff\xff\xff\xff\xff",
+		.src_addr = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+			      0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff },
+		.dst_addr = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+			      0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff },
 		.vtc_flow = RTE_BE32(0xffffffff),
 		.proto = 0xff,
 		.hop_limits = 0xff,
@@ -8196,6 +8193,8 @@ flow_dv_validate(struct rte_eth_dev *dev, const struct rte_flow_attr *attr,
 							 tunnel != 0, error);
 			if (ret < 0)
 				return ret;
+			/* Reset for next proto, it is unknown. */
+			next_protocol = 0xff;
 			break;
 		case RTE_FLOW_ITEM_TYPE_METER_COLOR:
 			ret = flow_dv_validate_item_meter_color(dev, items,
@@ -9291,8 +9290,8 @@ flow_dv_translate_item_eth(void *key, const struct rte_flow_item *item,
 	const struct rte_flow_item_eth *eth_m;
 	const struct rte_flow_item_eth *eth_v;
 	const struct rte_flow_item_eth nic_mask = {
-		.hdr.dst_addr.addr_bytes = "\xff\xff\xff\xff\xff\xff",
-		.hdr.src_addr.addr_bytes = "\xff\xff\xff\xff\xff\xff",
+		.hdr.dst_addr.addr_bytes = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff },
+		.hdr.src_addr.addr_bytes = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff },
 		.hdr.ether_type = RTE_BE16(0xffff),
 		.has_vlan = 0,
 	};
@@ -9549,12 +9548,10 @@ flow_dv_translate_item_ipv6(void *key, const struct rte_flow_item *item,
 	const struct rte_flow_item_ipv6 *ipv6_v;
 	const struct rte_flow_item_ipv6 nic_mask = {
 		.hdr = {
-			.src_addr =
-				"\xff\xff\xff\xff\xff\xff\xff\xff"
-				"\xff\xff\xff\xff\xff\xff\xff\xff",
-			.dst_addr =
-				"\xff\xff\xff\xff\xff\xff\xff\xff"
-				"\xff\xff\xff\xff\xff\xff\xff\xff",
+			.src_addr = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+				      0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff },
+			.dst_addr = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+				      0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff },
 			.vtc_flow = RTE_BE32(0xffffffff),
 			.proto = 0xff,
 			.hop_limits = 0xff,
@@ -10064,7 +10061,7 @@ flow_dv_translate_item_vxlan(struct rte_eth_dev *dev,
 	int i;
 	struct mlx5_priv *priv = dev->data->dev_private;
 	const struct rte_flow_item_vxlan nic_mask = {
-		.hdr.vni = "\xff\xff\xff",
+		.hdr.vni =  { 0xff, 0xff, 0xff },
 		.hdr.rsvd1 = 0xff,
 	};
 
@@ -14538,6 +14535,7 @@ __flow_dv_translate_items_hws(const struct rte_flow_item *items,
 		.next_protocol = 0xff,
 		.attr = &rattr,
 		.rss_desc = &rss_desc,
+		.group = attr->group,
 	};
 	int ret = 0;
 

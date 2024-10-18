@@ -409,6 +409,7 @@ int nix_tm_sq_sched_conf(struct nix *nix, struct nix_tm_node *node,
 
 int nix_rq_cn9k_cfg(struct dev *dev, struct roc_nix_rq *rq, uint16_t qints,
 		    bool cfg, bool ena);
+int nix_rq_cn10k_cfg(struct dev *dev, struct roc_nix_rq *rq, uint16_t qints, bool cfg, bool ena);
 int nix_rq_cfg(struct dev *dev, struct roc_nix_rq *rq, uint16_t qints, bool cfg,
 	       bool ena);
 int nix_rq_ena_dis(struct dev *dev, struct roc_nix_rq *rq, bool enable);
@@ -468,7 +469,8 @@ struct nix_tm_shaper_profile *nix_tm_shaper_profile_alloc(void);
 void nix_tm_shaper_profile_free(struct nix_tm_shaper_profile *profile);
 
 uint64_t nix_get_blkaddr(struct dev *dev);
-void nix_lf_rq_dump(__io struct nix_cn10k_rq_ctx_s *ctx, FILE *file);
+void nix_cn10k_lf_rq_dump(__io struct nix_cn10k_rq_ctx_s *ctx, FILE *file);
+void nix_lf_rq_dump(__io struct nix_cn20k_rq_ctx_s *ctx, FILE *file);
 int nix_lf_gen_reg_dump(uintptr_t nix_lf_base, uint64_t *data);
 int nix_lf_stat_reg_dump(uintptr_t nix_lf_base, uint64_t *data, uint8_t lf_tx_stats,
 			 uint8_t lf_rx_stats);

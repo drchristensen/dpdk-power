@@ -362,10 +362,11 @@ ice_cfg_cgu_pll_e825c(struct ice_hw *hw, enum ice_time_ref_freq *clk_freq,
 		      enum ice_clk_src *clk_src)
 {
 	union tspll_ro_lock_e825c ro_lock;
+	union nac_cgu_dword16_e825c dw16;
 	union nac_cgu_dword23_e825c dw23;
+	union nac_cgu_dword24_e825c dw24;
 	union nac_cgu_dword19 dw19;
 	union nac_cgu_dword22 dw22;
-	union nac_cgu_dword24 dw24;
 	union nac_cgu_dword9 dw9;
 	int err;
 
@@ -380,8 +381,8 @@ ice_cfg_cgu_pll_e825c(struct ice_hw *hw, enum ice_time_ref_freq *clk_freq,
 	}
 
 	if (*clk_src == ICE_CLK_SRC_TCX0 &&
-	    *clk_freq != ICE_TIME_REF_FREQ_25_000) {
-		ice_warn(hw, "TCX0 only supports 25 MHz frequency\n");
+	    *clk_freq != ICE_TIME_REF_FREQ_156_250) {
+		ice_warn(hw, "TCX0 only supports 156.25 MHz frequency\n");
 		return ICE_ERR_PARAM;
 	}
 
@@ -390,6 +391,10 @@ ice_cfg_cgu_pll_e825c(struct ice_hw *hw, enum ice_time_ref_freq *clk_freq,
 		return err;
 
 	err = ice_read_cgu_reg_e82x(hw, NAC_CGU_DWORD24, &dw24.val);
+	if (err)
+		return err;
+
+	err = ice_read_cgu_reg_e82x(hw, NAC_CGU_DWORD16_E825C, &dw16.val);
 	if (err)
 		return err;
 
@@ -403,7 +408,7 @@ ice_cfg_cgu_pll_e825c(struct ice_hw *hw, enum ice_time_ref_freq *clk_freq,
 
 	/* Log the current clock configuration */
 	ice_debug(hw, ICE_DBG_PTP, "Current CGU configuration -- %s, clk_src %s, clk_freq %s, PLL %s\n",
-		  dw24.field.ts_pll_enable ? "enabled" : "disabled",
+		  dw23.field.ts_pll_enable ? "enabled" : "disabled",
 		  ice_clk_src_str(dw23.field.time_ref_sel),
 		  ice_clk_freq_str(dw9.field.time_ref_freq_sel),
 		  ro_lock.field.plllock_true_lock_cri ? "locked" : "unlocked");
@@ -418,9 +423,33 @@ ice_cfg_cgu_pll_e825c(struct ice_hw *hw, enum ice_time_ref_freq *clk_freq,
 			return err;
 	}
 
-	/* Set the frequency */
+	if (dw9.field.time_sync_en) {
+		dw9.field.time_sync_en = 0;
+
+		err = ice_write_cgu_reg_e82x(hw, NAC_CGU_DWORD9,
+					     dw9.val);
+		if (err)
+			return err;
+	}
+
+	/* Set the frequency and enable the correct receiver */
 	dw9.field.time_ref_freq_sel = *clk_freq;
+	if (*clk_src == ICE_CLK_SRC_TCX0) {
+		dw9.field.time_ref_en = 0;
+		dw9.field.clk_eref0_en = 1;
+	} else {
+		dw9.field.time_ref_en = 1;
+		dw9.field.clk_eref0_en = 0;
+	}
+	dw9.field.time_sync_en = 1;
 	err = ice_write_cgu_reg_e82x(hw, NAC_CGU_DWORD9, dw9.val);
+	if (err)
+		return err;
+
+	/* Choose the referenced frequency */
+	dw16.field.tspll_ck_refclkfreq =
+	e825c_cgu_params[*clk_freq].tspll_ck_refclkfreq;
+	err = ice_write_cgu_reg_e82x(hw, NAC_CGU_DWORD16_E825C, dw16.val);
 	if (err)
 		return err;
 
@@ -429,8 +458,8 @@ ice_cfg_cgu_pll_e825c(struct ice_hw *hw, enum ice_time_ref_freq *clk_freq,
 	if (err)
 		return err;
 
-	dw19.field.tspll_fbdiv_intgr = e822_cgu_params[*clk_freq].feedback_div;
-	dw19.field.tspll_ndivratio = 1;
+	dw19.field.tspll_fbdiv_intgr = e825c_cgu_params[*clk_freq].tspll_fbdiv_intgr;
+	dw19.field.tspll_ndivratio = e825c_cgu_params[*clk_freq].tspll_ndivratio;
 
 	err = ice_write_cgu_reg_e82x(hw, NAC_CGU_DWORD19, dw19.val);
 	if (err)
@@ -441,7 +470,8 @@ ice_cfg_cgu_pll_e825c(struct ice_hw *hw, enum ice_time_ref_freq *clk_freq,
 	if (err)
 		return err;
 
-	dw22.field.time1588clk_div = e822_cgu_params[*clk_freq].post_pll_div;
+	/* those two are constant for E825C */
+	dw22.field.time1588clk_div = 5;
 	dw22.field.time1588clk_sel_div2 = 0;
 
 	err = ice_write_cgu_reg_e82x(hw, NAC_CGU_DWORD22, dw22.val);
@@ -453,14 +483,14 @@ ice_cfg_cgu_pll_e825c(struct ice_hw *hw, enum ice_time_ref_freq *clk_freq,
 	if (err)
 		return err;
 
-	dw23.field.ref1588_ck_div = e822_cgu_params[*clk_freq].refclk_pre_div;
+	dw23.field.ref1588_ck_div = REF1588_CK_DIV;
 	dw23.field.time_ref_sel = *clk_src;
 
 	err = ice_write_cgu_reg_e82x(hw, NAC_CGU_DWORD23_E825C, dw23.val);
 	if (err)
 		return err;
 
-	dw24.field.tspll_fbdiv_frac = e822_cgu_params[*clk_freq].frac_n_div;
+	dw24.field.tspll_fbdiv_frac = e825c_cgu_params[*clk_freq].tspll_fbdiv_frac;
 
 	err = ice_write_cgu_reg_e82x(hw, NAC_CGU_DWORD24, dw24.val);
 	if (err)
@@ -486,11 +516,9 @@ ice_cfg_cgu_pll_e825c(struct ice_hw *hw, enum ice_time_ref_freq *clk_freq,
 	}
 
 	/* Log the current clock configuration */
-	ice_debug(hw, ICE_DBG_PTP, "New CGU configuration -- %s, clk_src %s, clk_freq %s, PLL %s\n",
-		  dw24.field.ts_pll_enable ? "enabled" : "disabled",
+	ice_debug(hw, ICE_DBG_PTP, "New CGU configuration -- clk_src %s, clk_freq %s\n",
 		  ice_clk_src_str(dw23.field.time_ref_sel),
-		  ice_clk_freq_str(dw9.field.time_ref_freq_sel),
-		  ro_lock.field.plllock_true_lock_cri ? "locked" : "unlocked");
+		  ice_clk_freq_str(dw9.field.time_ref_freq_sel));
 
 	*clk_freq = (enum ice_time_ref_freq)dw9.field.time_ref_freq_sel;
 	*clk_src = (enum ice_clk_src)dw23.field.time_ref_sel;
@@ -770,7 +798,10 @@ static int ice_init_cgu_e82x(struct ice_hw *hw)
 		ice_warn(hw, "Failed to lock TS PLL to predefined frequency. Retrying with fallback frequency.\n");
 
 		/* Try to lock to internal 25 MHz TCXO as a fallback */
-		time_ref_freq = ICE_TIME_REF_FREQ_25_000;
+		if (hw->phy_model == ICE_PHY_ETH56G)
+			time_ref_freq = ICE_TIME_REF_FREQ_156_250;
+		else
+			time_ref_freq = ICE_TIME_REF_FREQ_25_000;
 		clk_src = ICE_CLK_SRC_TCX0;
 		if (ice_is_e825c(hw))
 			err = ice_cfg_cgu_pll_e825c(hw, &time_ref_freq,
@@ -1061,7 +1092,7 @@ ice_read_phy_eth56g_raw_lp(struct ice_hw *hw, u8 phy_index, u32 reg_addr,
  */
 static int
 ice_phy_port_res_address_eth56g(u8 port, enum eth56g_res_type res_type,
-				u16 offset, u32 *address)
+				u32 offset, u32 *address)
 {
 	u8 phy, lane;
 
@@ -1584,7 +1615,7 @@ ice_clear_phy_tstamp_eth56g(struct ice_hw *hw, u8 port, u8 idx)
  */
 static void ice_ptp_reset_ts_memory_eth56g(struct ice_hw *hw)
 {
-	unsigned int port;
+	u8 port;
 
 	for (port = 0; port < hw->max_phy_port; port++) {
 		ice_write_phy_reg_eth56g(hw, port, PHY_REG_TX_MEMORY_STATUS_L,
@@ -1988,21 +2019,6 @@ int ice_phy_cfg_tx_offset_eth56g(struct ice_hw *hw, u8 port)
 }
 
 /**
- * ice_calc_fixed_rx_offset_eth56g - Calculated the fixed Rx offset for a port
- * @hw: pointer to HW struct
- * @link_spd: The Link speed to calculate for
- *
- * Determine the fixed Rx latency for a given link speed.
- */
-static u64
-ice_calc_fixed_rx_offset_eth56g(struct ice_hw *hw,
-				enum ice_ptp_link_spd link_spd)
-{
-	u64 fixed_offset = 0;
-	return fixed_offset;
-}
-
-/**
  * ice_phy_cfg_rx_offset_eth56g - Configure total Rx timestamp offset
  * @hw: pointer to the HW struct
  * @port: the PHY port to configure
@@ -2024,16 +2040,8 @@ ice_calc_fixed_rx_offset_eth56g(struct ice_hw *hw,
 int ice_phy_cfg_rx_offset_eth56g(struct ice_hw *hw, u8 port)
 {
 	int err;
-	u64 total_offset;
 
-	total_offset = ice_calc_fixed_rx_offset_eth56g(hw, 0);
-
-	/* Now that the total offset has been calculated, program it to the
-	 * PHY and indicate that the Rx offset is ready. After this,
-	 * timestamps will be enabled.
-	 */
-	err = ice_write_64b_phy_reg_eth56g(hw, port, PHY_REG_TOTAL_RX_OFFSET_L,
-					   total_offset);
+	err = ice_write_64b_phy_reg_eth56g(hw, port, PHY_REG_TOTAL_RX_OFFSET_L, 0);
 	if (err)
 		return err;
 
@@ -2328,20 +2336,15 @@ ice_start_phy_timer_eth56g(struct ice_hw *hw, u8 port)
  */
 static void ice_sb_access_ena_eth56g(struct ice_hw *hw, bool enable)
 {
-	u32 regval;
-
 	/* Enable reading and writing switch and PHY registers over the
 	 * sideband queue.
 	 */
-#define PF_SB_REM_DEV_CTL_SWITCH_READ BIT(1)
-#define PF_SB_REM_DEV_CTL_PHY0 BIT(2)
-	regval = rd32(hw, PF_SB_REM_DEV_CTL);
+	u32 regval = rd32(hw, PF_SB_REM_DEV_CTL);
+
 	if (enable)
-		regval |= (PF_SB_REM_DEV_CTL_SWITCH_READ |
-			   PF_SB_REM_DEV_CTL_PHY0);
+		regval |= (BIT(eth56g_dev_1));
 	else
-		regval &= ~(PF_SB_REM_DEV_CTL_SWITCH_READ |
-			    PF_SB_REM_DEV_CTL_PHY0);
+		regval &= ~(BIT(eth56g_dev_1));
 
 	wr32(hw, PF_SB_REM_DEV_CTL, regval);
 }
@@ -4466,17 +4469,102 @@ ice_stop_phy_timer_e822(struct ice_hw *hw, u8 port, bool soft_reset)
 }
 
 /**
+ * ice_phy_cfg_fixed_tx_offset_e822 - Configure Tx offset for bypass mode
+ * @hw: pointer to the HW struct
+ * @port: the PHY port to configure
+ *
+ * Calculate and program the fixed Tx offset, and indicate that the offset is
+ * ready. This can be used when operating in bypass mode.
+ */
+static int ice_phy_cfg_fixed_tx_offset_e822(struct ice_hw *hw, u8 port)
+{
+	enum ice_ptp_link_spd link_spd;
+	enum ice_ptp_fec_mode fec_mode;
+	u64 total_offset;
+	int err;
+
+	err = ice_phy_get_speed_and_fec_e822(hw, port, &link_spd, &fec_mode);
+	if (err)
+		return err;
+
+	total_offset = ice_calc_fixed_tx_offset_e822(hw, link_spd);
+
+	/* Program the fixed Tx offset into the P_REG_TOTAL_TX_OFFSET_L
+	 * register, then indicate that the Tx offset is ready. After this,
+	 * timestamps will be enabled.
+	 *
+	 * Note that this skips including the more precise offsets generated
+	 * by the Vernier calibration.
+	 */
+
+	err = ice_write_64b_phy_reg_e822(hw, port, P_REG_TOTAL_TX_OFFSET_L,
+					 total_offset);
+	if (err)
+		return err;
+
+	err = ice_write_phy_reg_e822(hw, port, P_REG_TX_OR, 1);
+	if (err)
+		return err;
+
+	return ICE_SUCCESS;
+}
+
+/**
+ * ice_phy_cfg_rx_offset_e822 - Configure fixed Rx offset for bypass mode
+ * @hw: pointer to the HW struct
+ * @port: the PHY port to configure
+ *
+ * Calculate and program the fixed Rx offset, and indicate that the offset is
+ * ready. This can be used when operating in bypass mode.
+ */
+static int ice_phy_cfg_fixed_rx_offset_e822(struct ice_hw *hw, u8 port)
+{
+	enum ice_ptp_link_spd link_spd;
+	enum ice_ptp_fec_mode fec_mode;
+	u64 total_offset;
+	int err;
+
+	err = ice_phy_get_speed_and_fec_e822(hw, port, &link_spd, &fec_mode);
+	if (err)
+		return err;
+
+	total_offset = ice_calc_fixed_rx_offset_e822(hw, link_spd);
+
+	/* Program the fixed Rx offset into the P_REG_TOTAL_RX_OFFSET_L
+	 * register, then indicate that the Rx offset is ready. After this,
+	 * timestamps will be enabled.
+	 *
+	 * Note that this skips including the more precise offsets generated
+	 * by Vernier calibration.
+	 */
+	err = ice_write_64b_phy_reg_e822(hw, port, P_REG_TOTAL_RX_OFFSET_L,
+					 total_offset);
+	if (err)
+		return err;
+
+	err = ice_write_phy_reg_e822(hw, port, P_REG_RX_OR, 1);
+	if (err)
+		return err;
+
+	return ICE_SUCCESS;
+}
+
+/**
  * ice_start_phy_timer_e822 - Start the PHY clock timer
  * @hw: pointer to the HW struct
  * @port: the PHY port to start
+ * @bypass: if true, start the PHY in bypass mode
  *
  * Start the clock of a PHY port. This must be done as part of the flow to
  * re-calibrate Tx and Rx timestamping offsets whenever the clock time is
  * initialized or when link speed changes.
  *
- * Hardware will take Vernier measurements on Tx or Rx of packets.
+ * Bypass mode enables timestamps immediately without waiting for Vernier
+ * calibration to complete. Hardware will still continue taking Vernier
+ * measurements on Tx or Rx of packets, but they will not be applied to
+ * timestamps.
  */
-int ice_start_phy_timer_e822(struct ice_hw *hw, u8 port)
+int ice_start_phy_timer_e822(struct ice_hw *hw, u8 port, bool bypass)
 {
 	u32 lo, hi, val;
 	u64 incval;
@@ -4541,15 +4629,35 @@ int ice_start_phy_timer_e822(struct ice_hw *hw, u8 port)
 
 	ice_ptp_exec_tmr_cmd(hw);
 
+	if (bypass) {
+		/* Enter BYPASS mode, enabling timestamps immediately. */
+		val |= P_REG_PS_BYPASS_MODE_M;
+		err = ice_write_phy_reg_e822(hw, port, P_REG_PS, val);
+		if (err)
+			return err;
+	}
+
 	val |= P_REG_PS_ENA_CLK_M;
 	err = ice_write_phy_reg_e822(hw, port, P_REG_PS, val);
 	if (err)
 		return err;
 
-	val |= P_REG_PS_LOAD_OFFSET_M;
-	err = ice_write_phy_reg_e822(hw, port, P_REG_PS, val);
-	if (err)
-		return err;
+	if (bypass) {
+		/* Program the fixed Tx offset */
+		err = ice_phy_cfg_fixed_tx_offset_e822(hw, port);
+		if (err)
+			return err;
+
+		/* Program the fixed Rx offset */
+		err = ice_phy_cfg_fixed_rx_offset_e822(hw, port);
+		if (err)
+			return err;
+	} else {
+		val |= P_REG_PS_LOAD_OFFSET_M;
+		err = ice_write_phy_reg_e822(hw, port, P_REG_PS, val);
+		if (err)
+			return err;
+	}
 
 	ice_ptp_exec_tmr_cmd(hw);
 
@@ -5646,7 +5754,7 @@ void ice_ptp_unlock(struct ice_hw *hw)
  */
 void ice_ptp_init_phy_model(struct ice_hw *hw)
 {
-	unsigned int phy;
+	u8 phy;
 
 	for (phy = 0; phy < MAX_PHYS_PER_ICE; phy++)
 		hw->phy_addr[phy] = 0;
@@ -5666,6 +5774,7 @@ void ice_ptp_init_phy_model(struct ice_hw *hw)
 	}
 
 	ice_sb_access_ena_eth56g(hw, true);
+
 	for (phy = 0; phy < hw->num_phys; phy++)
 		if (hw->phy_addr[phy]) {
 			int err;

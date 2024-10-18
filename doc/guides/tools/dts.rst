@@ -54,6 +54,7 @@ DTS uses Poetry as its Python dependency management.
 Python build/development and runtime environments are the same and DTS development environment,
 DTS runtime environment or just plain DTS environment are used interchangeably.
 
+.. _dts_deps:
 
 Setting up DTS environment
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -91,7 +92,7 @@ Setting up DTS environment
 
    .. code-block:: console
 
-      poetry install --no-root
+      poetry install
       poetry shell
 
 #. **SSH Connection**
@@ -251,6 +252,9 @@ DTS is run with ``main.py`` located in the ``dts`` directory after entering Poet
                            ... | DTS_TEST_SUITES='suite, suite case, ...' (default: [])
      --re-run N_TIMES, --re_run N_TIMES
                            [DTS_RERUN] Re-run each test case the specified number of times if a test failure occurs. (default: 0)
+     --random-seed NUMBER  [DTS_RANDOM_SEED] The seed to use with the pseudo-random generator.
+                           If not specified, the configuration value is used instead.
+                           If that's also not specified, a random seed is generated. (default: None)
 
 
 The brackets contain the names of environment variables that set the same thing.
@@ -291,8 +295,15 @@ When adding code to the DTS framework, pay attention to the rest of the code
 and try not to divert much from it.
 The :ref:`DTS developer tools <dts_dev_tools>` will issue warnings
 when some of the basics are not met.
+You should also build the :ref:`API documentation <building_api_docs>`
+to address any issues found during the build.
 
-The code must be properly documented with docstrings.
+The API documentation, which is a helpful reference when developing, may be accessed
+in the code directly or generated with the :ref:`API docs build steps <building_api_docs>`.
+When adding new files or modifying the directory structure,
+the corresponding changes must be made to DTS API doc sources in ``doc/api/dts``.
+
+Speaking of which, the code must be properly documented with docstrings.
 The style must conform to the `Google style
 <https://google.github.io/styleguide/pyguide.html#38-comments-and-docstrings>`_.
 See an example of the style `here
@@ -427,6 +438,35 @@ the DTS code check and format script.
 Refer to the script for usage: ``devtools/dts-check-format.sh -h``.
 
 
+.. _building_api_docs:
+
+Building DTS API docs
+---------------------
+
+The documentation is built using the standard DPDK build system.
+See :doc:`../linux_gsg/build_dpdk` for more details on compiling DPDK with meson.
+
+The :ref:`doc build dependencies <doc_dependencies>` may be installed with Poetry:
+
+.. code-block:: console
+
+   poetry install --only docs
+   poetry install --with docs  # an alternative that will also install DTS dependencies
+   poetry shell
+
+After executing the meson command, build the documentation with:
+
+.. code-block:: console
+
+   ninja -C build doc
+
+The output is generated in ``build/doc/api/dts/html``.
+
+.. note::
+
+   Make sure to fix any Sphinx warnings when adding or updating docstrings.
+
+
 Configuration Schema
 --------------------
 
@@ -547,6 +587,8 @@ involved in the testing. These can be defined with the following mappings:
    |                            |               | argument to DPDK. **Example**: ``crypto_openssl`` |
    +----------------------------+---------------+---------------------------------------------------+
    | ``traffic_generator_node`` | Node name for the traffic generator node.                         |
+   +----------------------------+-------------------------------------------------------------------+
+   | ``random_seed``            | (*optional*) *int* – Set a seed for pseudo-random generation.     |
    +----------------------------+-------------------------------------------------------------------+
 
 ``nodes``

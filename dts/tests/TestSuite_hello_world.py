@@ -8,7 +8,8 @@ No other EAL parameters apart from cores are used.
 """
 
 from framework.remote_session.dpdk_shell import compute_eal_params
-from framework.test_suite import TestSuite
+from framework.test_suite import TestSuite, func_test
+from framework.testbed_model.capability import TopologyType, requires
 from framework.testbed_model.cpu import (
     LogicalCoreCount,
     LogicalCoreCountFilter,
@@ -16,6 +17,7 @@ from framework.testbed_model.cpu import (
 )
 
 
+@requires(topology_type=TopologyType.no_link)
 class TestHelloWorld(TestSuite):
     """DPDK hello world app test suite."""
 
@@ -27,7 +29,8 @@ class TestHelloWorld(TestSuite):
         """
         self.app_helloworld_path = self.sut_node.build_dpdk_app("helloworld")
 
-    def test_hello_world_single_core(self) -> None:
+    @func_test
+    def hello_world_single_core(self) -> None:
         """Single core test case.
 
         Steps:
@@ -46,7 +49,8 @@ class TestHelloWorld(TestSuite):
             f"helloworld didn't start on lcore{lcores[0]}",
         )
 
-    def test_hello_world_all_cores(self) -> None:
+    @func_test
+    def hello_world_all_cores(self) -> None:
         """All cores test case.
 
         Steps:

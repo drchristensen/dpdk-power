@@ -11,7 +11,9 @@
  *
  * On the NFP6000, due to THB-350, the configuration BAR is 32K in size.
  */
-#define NFP_NET_CFG_BAR_SZ              (32 * 1024)
+#define NFP_NET_CFG_BAR_SZ_32K          (32 * 1024)
+#define NFP_NET_CFG_BAR_SZ_8K           (8 * 1024)
+#define NFP_NET_CFG_BAR_SZ_MIN          NFP_NET_CFG_BAR_SZ_8K
 
 /*
  * Configuration sriov VF.
@@ -121,6 +123,10 @@
 struct nfp_net_fw_ver {
 	uint8_t minor;
 	uint8_t major;
+	/**
+	 * BIT0: class, refer NFP_NET_CFG_VERSION_CLASS_*
+	 * BIT[7:1]: reserved
+	 */
 	uint8_t class;
 	/**
 	 * This byte can be extended for more use.
@@ -147,6 +153,8 @@ struct nfp_net_fw_ver {
 #define NFP_NET_CFG_VERSION             0x0030
 #define   NFP_NET_CFG_VERSION_DP_NFD3   0
 #define   NFP_NET_CFG_VERSION_DP_NFDK   1
+#define   NFP_NET_CFG_VERSION_CLASS_GENERIC    0
+#define   NFP_NET_CFG_VERSION_CLASS_NO_EMEM    1
 #define NFP_NET_CFG_STS                 0x0034
 #define   NFP_NET_CFG_STS_LINK            (0x1 << 0) /* Link up or down */
 /* Link rate */
@@ -205,14 +213,20 @@ struct nfp_net_fw_ver {
 #define NFP_NET_CFG_CTRL_IPSEC_LM_LOOKUP  (0x1 << 4) /**< SA long match lookup */
 #define NFP_NET_CFG_CTRL_MULTI_PF         (0x1 << 5)
 #define NFP_NET_CFG_CTRL_FLOW_STEER       (0x1 << 8) /**< Flow Steering */
+#define NFP_NET_CFG_CTRL_VIRTIO           (0x1 << 10) /**< Virtio offload */
 #define NFP_NET_CFG_CTRL_IN_ORDER         (0x1 << 11) /**< Virtio in-order flag */
+#define NFP_NET_CFG_CTRL_LM_RELAY         (0x1 << 12) /**< Virtio live migration relay start */
+#define NFP_NET_CFG_CTRL_NOTIFY_DATA      (0x1 << 13) /**< Virtio notification data flag */
+#define NFP_NET_CFG_CTRL_SWLM             (0x1 << 14) /**< Virtio SW live migration enable */
 #define NFP_NET_CFG_CTRL_USO              (0x1 << 16) /**< UDP segmentation offload */
 
 #define NFP_NET_CFG_CAP_WORD1           0x00a4
 
+#define NFP_NET_CFG_TX_USED_INDEX       0x00b0
+#define NFP_NET_CFG_RX_USED_INDEX       0x00b4
+
 /* 16B reserved for future use (0x00b0 - 0x00c0). */
-#define NFP_NET_CFG_RESERVED            0x00b0
-#define NFP_NET_CFG_RESERVED_SZ         0x0010
+#define NFP_NET_CFG_MAX_FS_CAP          0x00b8
 
 /*
  * RSS configuration (0x0100 - 0x01ac):

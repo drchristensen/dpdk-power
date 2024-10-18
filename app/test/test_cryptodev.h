@@ -6,24 +6,19 @@
 
 #include <rte_cryptodev.h>
 
-#define HEX_DUMP 0
-
-#define FALSE                           0
-#define TRUE                            1
-
 #define MAX_NUM_OPS_INFLIGHT            (4096)
 #define MIN_NUM_OPS_INFLIGHT            (128)
 #define DEFAULT_NUM_OPS_INFLIGHT        (128)
+#define TEST_STATS_RETRIES              (100)
 
-#define MAX_NUM_QPS_PER_QAT_DEVICE      (2)
-#define DEFAULT_NUM_QPS_PER_QAT_DEVICE  (2)
-#define DEFAULT_BURST_SIZE              (64)
 #define DEFAULT_NUM_XFORMS              (2)
 #define NUM_MBUFS                       (8191)
 #define MBUF_CACHE_SIZE                 (256)
 #define MBUF_DATAPAYLOAD_SIZE		(4096 + DIGEST_BYTE_LENGTH_SHA512)
 #define MBUF_SIZE			(sizeof(struct rte_mbuf) + \
 		RTE_PKTMBUF_HEADROOM + MBUF_DATAPAYLOAD_SIZE)
+#define LARGE_MBUF_DATAPAYLOAD_SIZE	(UINT16_MAX - RTE_PKTMBUF_HEADROOM)
+#define LARGE_MBUF_SIZE			(RTE_PKTMBUF_HEADROOM + LARGE_MBUF_DATAPAYLOAD_SIZE)
 
 #define BYTE_LENGTH(x)				(x/8)
 /* HASH DIGEST LENGTHS */
@@ -150,7 +145,8 @@ pktmbuf_write(struct rte_mbuf *mbuf, int offset, int len, const uint8_t *buffer)
 }
 
 static inline uint8_t *
-pktmbuf_mtod_offset(struct rte_mbuf *mbuf, int offset) {
+pktmbuf_mtod_offset(struct rte_mbuf *mbuf, int offset)
+{
 	struct rte_mbuf *m;
 
 	for (m = mbuf; (m != NULL) && (offset > m->data_len); m = m->next)
@@ -164,7 +160,8 @@ pktmbuf_mtod_offset(struct rte_mbuf *mbuf, int offset) {
 }
 
 static inline rte_iova_t
-pktmbuf_iova_offset(struct rte_mbuf *mbuf, int offset) {
+pktmbuf_iova_offset(struct rte_mbuf *mbuf, int offset)
+{
 	struct rte_mbuf *m;
 
 	for (m = mbuf; (m != NULL) && (offset > m->data_len); m = m->next)
@@ -179,8 +176,8 @@ pktmbuf_iova_offset(struct rte_mbuf *mbuf, int offset) {
 
 static inline struct rte_mbuf *
 create_segmented_mbuf(struct rte_mempool *mbuf_pool, int pkt_len,
-		int nb_segs, uint8_t pattern) {
-
+		int nb_segs, uint8_t pattern)
+{
 	struct rte_mbuf *m = NULL, *mbuf = NULL;
 	int size, t_len, data_len = 0;
 	uint8_t *dst;
@@ -229,6 +226,44 @@ create_segmented_mbuf(struct rte_mempool *mbuf_pool, int pkt_len,
 fail:
 	rte_pktmbuf_free(mbuf);
 	return NULL;
+}
+
+static inline struct rte_mbuf *
+create_segmented_mbuf_multi_pool(struct rte_mempool *mbuf_pool_small,
+		struct rte_mempool *mbuf_pool_large, int pkt_len, int nb_segs, uint8_t pattern)
+{
+	struct rte_mempool *mbuf_pool;
+	int max_seg_len, seg_len;
+
+	if (nb_segs < 1) {
+		printf("Number of segments must be 1 or more (is %d)\n", nb_segs);
+		return NULL;
+	}
+
+	if (pkt_len >= nb_segs)
+		seg_len = pkt_len / nb_segs;
+	else
+		seg_len = 1;
+
+	/* Determine max segment length */
+	max_seg_len = seg_len + pkt_len % nb_segs;
+
+	if (max_seg_len > LARGE_MBUF_DATAPAYLOAD_SIZE) {
+		printf("Segment size %d is too big\n", max_seg_len);
+		return NULL;
+	}
+
+	if (max_seg_len > MBUF_DATAPAYLOAD_SIZE)
+		mbuf_pool = mbuf_pool_large;
+	else
+		mbuf_pool = mbuf_pool_small;
+
+	if (mbuf_pool == NULL) {
+		printf("Invalid mbuf pool\n");
+		return NULL;
+	}
+
+	return create_segmented_mbuf(mbuf_pool, pkt_len, nb_segs, pattern);
 }
 
 int

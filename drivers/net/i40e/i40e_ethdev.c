@@ -434,7 +434,6 @@ static const struct rte_pci_id pci_id_i40e_map[] = {
 	{ RTE_PCI_DEVICE(I40E_INTEL_VENDOR_ID, I40E_DEV_ID_10G_BASE_T4) },
 	{ RTE_PCI_DEVICE(I40E_INTEL_VENDOR_ID, I40E_DEV_ID_25G_B) },
 	{ RTE_PCI_DEVICE(I40E_INTEL_VENDOR_ID, I40E_DEV_ID_25G_SFP28) },
-	{ RTE_PCI_DEVICE(I40E_INTEL_VENDOR_ID, I40E_DEV_ID_X722_A0) },
 	{ RTE_PCI_DEVICE(I40E_INTEL_VENDOR_ID, I40E_DEV_ID_KX_X722) },
 	{ RTE_PCI_DEVICE(I40E_INTEL_VENDOR_ID, I40E_DEV_ID_QSFP_X722) },
 	{ RTE_PCI_DEVICE(I40E_INTEL_VENDOR_ID, I40E_DEV_ID_SFP_X722) },
@@ -543,8 +542,11 @@ static const struct rte_i40e_xstats_name_off rte_i40e_stats_strings[] = {
 	{"rx_dropped_packets", offsetof(struct i40e_eth_stats, rx_discards)},
 	{"rx_unknown_protocol_packets", offsetof(struct i40e_eth_stats,
 		rx_unknown_protocol)},
-	{"rx_size_error_packets", offsetof(struct i40e_pf, rx_err1) -
-				  offsetof(struct i40e_pf, stats)},
+	/*
+	 * all other offsets are against i40e_eth_stats which is first member
+	 * in i40e_hw_port_stats, so these offsets are interchangeable
+	 */
+	{"rx_size_error_packets", offsetof(struct i40e_hw_port_stats, rx_err1)},
 	{"tx_unicast_packets", offsetof(struct i40e_eth_stats, tx_unicast)},
 	{"tx_multicast_packets", offsetof(struct i40e_eth_stats, tx_multicast)},
 	{"tx_broadcast_packets", offsetof(struct i40e_eth_stats, tx_broadcast)},
@@ -668,7 +670,7 @@ eth_i40e_pci_probe(struct rte_pci_driver *pci_drv __rte_unused,
 
 	if (eth_da.nb_representor_ports > 0 &&
 	    eth_da.type != RTE_ETH_REPRESENTOR_VF) {
-		PMD_DRV_LOG(ERR, "unsupported representor type: %s\n",
+		PMD_DRV_LOG(ERR, "unsupported representor type: %s",
 			    pci_dev->device.devargs->args);
 		return -ENOTSUP;
 	}
@@ -1583,10 +1585,7 @@ eth_i40e_dev_init(struct rte_eth_dev *dev, void *init_params __rte_unused)
 
 	val = I40E_READ_REG(hw, I40E_GL_FWSTS);
 	if (val & I40E_GL_FWSTS_FWS1B_MASK) {
-		PMD_INIT_LOG(ERR, "\nERROR: "
-			"Firmware recovery mode detected. Limiting functionality.\n"
-			"Refer to the Intel(R) Ethernet Adapters and Devices "
-			"User Guide for details on firmware recovery mode.");
+		PMD_INIT_LOG(ERR, "ERROR: Firmware recovery mode detected. Limiting functionality.");
 		return -EIO;
 	}
 
@@ -2326,7 +2325,7 @@ i40e_phy_conf_link(struct i40e_hw *hw,
 	status = i40e_aq_get_phy_capabilities(hw, false, true, &phy_ab,
 					      NULL);
 	if (status) {
-		PMD_DRV_LOG(ERR, "Failed to get PHY capabilities: %d\n",
+		PMD_DRV_LOG(ERR, "Failed to get PHY capabilities: %d",
 				status);
 		return ret;
 	}
@@ -2336,7 +2335,7 @@ i40e_phy_conf_link(struct i40e_hw *hw,
 	status = i40e_aq_get_phy_capabilities(hw, false, false, &phy_ab,
 					      NULL);
 	if (status) {
-		PMD_DRV_LOG(ERR, "Failed to get the current PHY config: %d\n",
+		PMD_DRV_LOG(ERR, "Failed to get the current PHY config: %d",
 				status);
 		return ret;
 	}
@@ -2361,7 +2360,7 @@ i40e_phy_conf_link(struct i40e_hw *hw,
 	 * Warn users and config the default available speeds.
 	 */
 	if (is_up && !(force_speed & avail_speed)) {
-		PMD_DRV_LOG(WARNING, "Invalid speed setting, set to default!\n");
+		PMD_DRV_LOG(WARNING, "Invalid speed setting, set to default!");
 		phy_conf.link_speed = avail_speed;
 	} else {
 		phy_conf.link_speed = is_up ? force_speed : avail_speed;
@@ -3286,10 +3285,10 @@ i40e_read_stats_registers(struct i40e_pf *pf, struct i40e_hw *hw)
 			    pf->offset_loaded,
 			    &os->eth.rx_unknown_protocol,
 			    &ns->eth.rx_unknown_protocol);
-	i40e_stat_update_48(hw, I40E_GL_RXERR1_H(hw->pf_id + I40E_MAX_VF),
-			    I40E_GL_RXERR1_L(hw->pf_id + I40E_MAX_VF),
-			    pf->offset_loaded, &pf->rx_err1_offset,
-			    &pf->rx_err1);
+	i40e_stat_update_48(hw, I40E_GL_RXERR1H(hw->pf_id + I40E_MAX_VF),
+			    I40E_GL_RXERR1L(hw->pf_id + I40E_MAX_VF),
+			    pf->offset_loaded, &os->rx_err1,
+			    &ns->rx_err1);
 	i40e_stat_update_48_in_64(hw, I40E_GLPRT_GOTCH(hw->port),
 				  I40E_GLPRT_GOTCL(hw->port),
 				  pf->offset_loaded, &os->eth.tx_bytes,
@@ -3490,7 +3489,7 @@ i40e_dev_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats)
 			pf->main_vsi->eth_stats.rx_multicast +
 			pf->main_vsi->eth_stats.rx_broadcast -
 			pf->main_vsi->eth_stats.rx_discards -
-			pf->rx_err1;
+			ns->rx_err1;
 	stats->opackets = ns->eth.tx_unicast +
 			ns->eth.tx_multicast +
 			ns->eth.tx_broadcast;
@@ -3505,7 +3504,7 @@ i40e_dev_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats)
 	stats->ierrors  = ns->crc_errors +
 			ns->rx_length_errors + ns->rx_undersize +
 			ns->rx_oversize + ns->rx_fragments + ns->rx_jabber +
-			pf->rx_err1;
+			ns->rx_err1;
 
 	if (pf->vfs) {
 		for (i = 0; i < pf->vf_num; i++) {
@@ -6408,8 +6407,6 @@ i40e_pf_setup(struct i40e_pf *pf)
 	memset(&pf->stats_offset, 0, sizeof(struct i40e_hw_port_stats));
 	memset(&pf->internal_stats, 0, sizeof(struct i40e_eth_stats));
 	memset(&pf->internal_stats_offset, 0, sizeof(struct i40e_eth_stats));
-	pf->rx_err1 = 0;
-	pf->rx_err1_offset = 0;
 
 	ret = i40e_pf_get_switch_config(pf);
 	if (ret != I40E_SUCCESS) {
@@ -6959,7 +6956,7 @@ i40e_handle_mdd_event(struct rte_eth_dev *dev)
 				I40E_GL_MDET_TX_QUEUE_SHIFT) -
 					hw->func_caps.base_queue;
 		PMD_DRV_LOG(WARNING, "Malicious Driver Detection event 0x%02x on TX "
-			"queue %d PF number 0x%02x VF number 0x%02x device %s\n",
+			"queue %d PF number 0x%02x VF number 0x%02x device %s",
 				event, queue, pf_num, vf_num, dev->data->name);
 		I40E_WRITE_REG(hw, I40E_GL_MDET_TX, I40E_MDD_CLEAR32);
 		mdd_detected = true;
@@ -6975,7 +6972,7 @@ i40e_handle_mdd_event(struct rte_eth_dev *dev)
 					hw->func_caps.base_queue;
 
 		PMD_DRV_LOG(WARNING, "Malicious Driver Detection event 0x%02x on RX "
-				"queue %d of function 0x%02x device %s\n",
+				"queue %d of function 0x%02x device %s",
 					event, queue, func, dev->data->name);
 		I40E_WRITE_REG(hw, I40E_GL_MDET_RX, I40E_MDD_CLEAR32);
 		mdd_detected = true;
@@ -6985,13 +6982,13 @@ i40e_handle_mdd_event(struct rte_eth_dev *dev)
 		reg = I40E_READ_REG(hw, I40E_PF_MDET_TX);
 		if (reg & I40E_PF_MDET_TX_VALID_MASK) {
 			I40E_WRITE_REG(hw, I40E_PF_MDET_TX, I40E_MDD_CLEAR16);
-			PMD_DRV_LOG(WARNING, "TX driver issue detected on PF\n");
+			PMD_DRV_LOG(WARNING, "TX driver issue detected on PF");
 		}
 		reg = I40E_READ_REG(hw, I40E_PF_MDET_RX);
 		if (reg & I40E_PF_MDET_RX_VALID_MASK) {
 			I40E_WRITE_REG(hw, I40E_PF_MDET_RX,
 					I40E_MDD_CLEAR16);
-			PMD_DRV_LOG(WARNING, "RX driver issue detected on PF\n");
+			PMD_DRV_LOG(WARNING, "RX driver issue detected on PF");
 		}
 	}
 
@@ -7004,7 +7001,7 @@ i40e_handle_mdd_event(struct rte_eth_dev *dev)
 					I40E_MDD_CLEAR16);
 			vf->num_mdd_events++;
 			PMD_DRV_LOG(WARNING, "TX driver issue detected on VF %d %-"
-					PRIu64 "times\n",
+					PRIu64 "times",
 					i, vf->num_mdd_events);
 		}
 
@@ -7014,7 +7011,7 @@ i40e_handle_mdd_event(struct rte_eth_dev *dev)
 					I40E_MDD_CLEAR16);
 			vf->num_mdd_events++;
 			PMD_DRV_LOG(WARNING, "RX driver issue detected on VF %d %-"
-					PRIu64 "times\n",
+					PRIu64 "times",
 					i, vf->num_mdd_events);
 		}
 	}
@@ -11449,7 +11446,7 @@ static int i40e_get_module_info(struct rte_eth_dev *dev,
 	if (!(hw->flags & I40E_HW_FLAG_AQ_PHY_ACCESS_CAPABLE)) {
 		PMD_DRV_LOG(ERR,
 			    "Module EEPROM memory read not supported. "
-			    "Please update the NVM image.\n");
+			    "Please update the NVM image.");
 		return -EINVAL;
 	}
 
@@ -11460,7 +11457,7 @@ static int i40e_get_module_info(struct rte_eth_dev *dev,
 	if (hw->phy.link_info.phy_type == I40E_PHY_TYPE_EMPTY) {
 		PMD_DRV_LOG(ERR,
 			    "Cannot read module EEPROM memory. "
-			    "No module connected.\n");
+			    "No module connected.");
 		return -EINVAL;
 	}
 
@@ -11490,7 +11487,7 @@ static int i40e_get_module_info(struct rte_eth_dev *dev,
 		if (sff8472_swap & I40E_MODULE_SFF_ADDR_MODE) {
 			PMD_DRV_LOG(WARNING,
 				    "Module address swap to access "
-				    "page 0xA2 is not supported.\n");
+				    "page 0xA2 is not supported.");
 			modinfo->type = RTE_ETH_MODULE_SFF_8079;
 			modinfo->eeprom_len = RTE_ETH_MODULE_SFF_8079_LEN;
 		} else if (sff8472_comp == 0x00) {
@@ -11526,7 +11523,7 @@ static int i40e_get_module_info(struct rte_eth_dev *dev,
 		modinfo->eeprom_len = I40E_MODULE_QSFP_MAX_LEN;
 		break;
 	default:
-		PMD_DRV_LOG(ERR, "Module type unrecognized\n");
+		PMD_DRV_LOG(ERR, "Module type unrecognized");
 		return -EINVAL;
 	}
 	return 0;
@@ -11828,7 +11825,7 @@ i40e_update_customized_pctype(struct rte_eth_dev *dev, uint8_t *pkg,
 			}
 		}
 		name[strlen(name) - 1] = '\0';
-		PMD_DRV_LOG(INFO, "name = %s\n", name);
+		PMD_DRV_LOG(INFO, "name = %s", name);
 		if (!strcmp(name, "GTPC"))
 			new_pctype =
 				i40e_find_customized_pctype(pf,
@@ -11972,7 +11969,7 @@ i40e_update_customized_ptype(struct rte_eth_dev *dev, uint8_t *pkg,
 					continue;
 				memset(name, 0, sizeof(name));
 				strcpy(name, proto[n].name);
-				PMD_DRV_LOG(INFO, "name = %s\n", name);
+				PMD_DRV_LOG(INFO, "name = %s", name);
 				if (!strncasecmp(name, "PPPOE", 5))
 					ptype_mapping[i].sw_ptype |=
 						RTE_PTYPE_L2_ETHER_PPPOE;
@@ -12317,7 +12314,7 @@ i40e_fec_get_capability(struct rte_eth_dev *dev,
 	if (hw->mac.type == I40E_MAC_X722 &&
 	    !(hw->flags & I40E_HW_FLAG_X722_FEC_REQUEST_CAPABLE)) {
 		PMD_DRV_LOG(ERR, "Setting FEC encoding not supported by"
-			 " firmware. Please update the NVM image.\n");
+			 " firmware. Please update the NVM image.");
 		return -ENOTSUP;
 	}
 
@@ -12359,7 +12356,7 @@ i40e_fec_get(struct rte_eth_dev *dev, uint32_t *fec_capa)
 	/* Get link info */
 	ret = i40e_aq_get_link_info(hw, enable_lse, &link_status, NULL);
 	if (ret != I40E_SUCCESS) {
-		PMD_DRV_LOG(ERR, "Failed to get link information: %d\n",
+		PMD_DRV_LOG(ERR, "Failed to get link information: %d",
 				ret);
 		return -ENOTSUP;
 	}
@@ -12369,7 +12366,7 @@ i40e_fec_get(struct rte_eth_dev *dev, uint32_t *fec_capa)
 	ret = i40e_aq_get_phy_capabilities(hw, false, false, &abilities,
 						  NULL);
 	if (ret) {
-		PMD_DRV_LOG(ERR, "Failed to get PHY capabilities: %d\n",
+		PMD_DRV_LOG(ERR, "Failed to get PHY capabilities: %d",
 				ret);
 		return -ENOTSUP;
 	}
@@ -12435,7 +12432,7 @@ i40e_fec_set(struct rte_eth_dev *dev, uint32_t fec_capa)
 	if (hw->mac.type == I40E_MAC_X722 &&
 	    !(hw->flags & I40E_HW_FLAG_X722_FEC_REQUEST_CAPABLE)) {
 		PMD_DRV_LOG(ERR, "Setting FEC encoding not supported by"
-			 " firmware. Please update the NVM image.\n");
+			 " firmware. Please update the NVM image.");
 		return -ENOTSUP;
 	}
 
@@ -12507,7 +12504,7 @@ i40e_fec_set(struct rte_eth_dev *dev, uint32_t fec_capa)
 	status = i40e_aq_get_phy_capabilities(hw, false, false, &abilities,
 					      NULL);
 	if (status) {
-		PMD_DRV_LOG(ERR, "Failed to get PHY capabilities: %d\n",
+		PMD_DRV_LOG(ERR, "Failed to get PHY capabilities: %d",
 				status);
 		return -ENOTSUP;
 	}
@@ -12524,7 +12521,7 @@ i40e_fec_set(struct rte_eth_dev *dev, uint32_t fec_capa)
 		config.fec_config = req_fec & I40E_AQ_PHY_FEC_CONFIG_MASK;
 		status = i40e_aq_set_phy_config(hw, &config, NULL);
 		if (status) {
-			PMD_DRV_LOG(ERR, "Failed to set PHY capabilities: %d\n",
+			PMD_DRV_LOG(ERR, "Failed to set PHY capabilities: %d",
 			status);
 			return -ENOTSUP;
 		}
@@ -12532,7 +12529,7 @@ i40e_fec_set(struct rte_eth_dev *dev, uint32_t fec_capa)
 
 	status = i40e_update_link_info(hw);
 	if (status) {
-		PMD_DRV_LOG(ERR, "Failed to set PHY capabilities: %d\n",
+		PMD_DRV_LOG(ERR, "Failed to set PHY capabilities: %d",
 			status);
 		return -ENOTSUP;
 	}

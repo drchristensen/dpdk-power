@@ -198,6 +198,8 @@ cpfl_flow_js_pattern_key_proto_field(json_t *ob_fields,
 	for (i = 0; i < len; i++) {
 		json_t *object;
 		const char *name, *mask;
+		uint32_t mask_32b = 0;
+		int ret;
 
 		object = json_array_get(ob_fields, i);
 		name = cpfl_json_t_to_string(object, "name");
@@ -213,20 +215,28 @@ cpfl_flow_js_pattern_key_proto_field(json_t *ob_fields,
 
 		if (js_field->type == RTE_FLOW_ITEM_TYPE_ETH ||
 		    js_field->type == RTE_FLOW_ITEM_TYPE_IPV4) {
-			mask = cpfl_json_t_to_string(object, "mask");
-			if (!mask) {
-				PMD_DRV_LOG(ERR, "Can not parse string 'mask'.");
-				goto err;
+			/* Added a check for parsing mask value of the next_proto_id field. */
+			if (strcmp(name, "next_proto_id") == 0) {
+				ret = cpfl_json_t_to_uint32(object, "mask", &mask_32b);
+				if (ret < 0) {
+					PMD_DRV_LOG(ERR, "Cannot parse uint32 'mask'.");
+					goto err;
+				}
+				js_field->fields[i].mask_32b = mask_32b;
+			} else {
+				mask = cpfl_json_t_to_string(object, "mask");
+				if (!mask) {
+					PMD_DRV_LOG(ERR, "Can not parse string 'mask'.");
+					goto err;
+				}
+				if (rte_strscpy(js_field->fields[i].mask,
+						mask, CPFL_JS_STR_SIZE) < 0) {
+					PMD_DRV_LOG(ERR, "The 'mask' is too long.");
+					goto err;
+				}
 			}
-			if (strlen(mask) > CPFL_JS_STR_SIZE - 1) {
-				PMD_DRV_LOG(ERR, "The 'mask' is too long.");
-				goto err;
-			}
-			strncpy(js_field->fields[i].mask, mask, CPFL_JS_STR_SIZE - 1);
-		} else {
-			uint32_t mask_32b;
-			int ret;
 
+		} else {
 			ret = cpfl_json_t_to_uint32(object, "mask", &mask_32b);
 			if (ret < 0) {
 				PMD_DRV_LOG(ERR, "Can not parse uint32 'mask'.");
@@ -737,7 +747,6 @@ cpfl_flow_js_mr_layout(json_t *ob_layouts, struct cpfl_flow_js_mr_action_mod *js
 	return 0;
 
 err:
-	rte_free(js_mod->layout);
 	return -EINVAL;
 }
 
@@ -2020,7 +2029,7 @@ cpfl_metadata_write_port_id(struct cpfl_itf *itf)
 
 	dev_id = cpfl_get_port_id(itf);
 	if (dev_id == CPFL_INVALID_HW_ID) {
-		PMD_DRV_LOG(ERR, "fail to get hw ID\n");
+		PMD_DRV_LOG(ERR, "fail to get hw ID");
 		return false;
 	}
 	cpfl_metadata_write16(&itf->adapter->meta, type, offset, dev_id << 3);

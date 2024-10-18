@@ -527,6 +527,7 @@ cn10k_sso_fp_fns_set(struct rte_eventdev *event_dev)
 
 	event_dev->dma_enqueue = cn10k_dma_adapter_enqueue;
 	event_dev->profile_switch = cn10k_sso_hws_profile_switch;
+	event_dev->preschedule_modify = cn10k_sso_hws_preschedule_modify;
 #else
 	RTE_SET_USED(event_dev);
 #endif
@@ -541,6 +542,9 @@ cn10k_sso_info_get(struct rte_eventdev *event_dev,
 	dev_info->driver_name = RTE_STR(EVENTDEV_NAME_CN10K_PMD);
 	cnxk_sso_info_get(dev, dev_info);
 	dev_info->max_event_port_enqueue_depth = UINT32_MAX;
+	dev_info->event_dev_cap |= RTE_EVENT_DEV_CAP_EVENT_PRESCHEDULE |
+				   RTE_EVENT_DEV_CAP_EVENT_PRESCHEDULE_ADAPTIVE |
+				   RTE_EVENT_DEV_CAP_PER_PORT_PRESCHEDULE;
 }
 
 static int
@@ -565,6 +569,19 @@ cn10k_sso_dev_configure(const struct rte_eventdev *event_dev)
 	rc = cnxk_sso_xaq_allocate(dev);
 	if (rc < 0)
 		goto cnxk_rsrc_fini;
+
+	switch (event_dev->data->dev_conf.preschedule_type) {
+	default:
+	case RTE_EVENT_PRESCHEDULE_NONE:
+		dev->gw_mode = CN10K_GW_MODE_NONE;
+		break;
+	case RTE_EVENT_PRESCHEDULE:
+		dev->gw_mode = CN10K_GW_MODE_PREF;
+		break;
+	case RTE_EVENT_PRESCHEDULE_ADAPTIVE:
+		dev->gw_mode = CN10K_GW_MODE_PREF_WFE;
+		break;
+	}
 
 	rc = cnxk_setup_event_ports(event_dev, cn10k_sso_init_hws_mem,
 				    cn10k_sso_hws_setup);
@@ -825,12 +842,53 @@ cn10k_sso_set_priv_mem(const struct rte_eventdev *event_dev, void *lookup_mem)
 	}
 }
 
+static void
+eventdev_fops_update(struct rte_eventdev *event_dev)
+{
+	struct rte_event_fp_ops *fp_op =
+		rte_event_fp_ops + event_dev->data->dev_id;
+
+	fp_op->dequeue = event_dev->dequeue;
+	fp_op->dequeue_burst = event_dev->dequeue_burst;
+}
+
+static void
+cn10k_sso_tstamp_hdl_update(uint16_t port_id, uint16_t flags, bool ptp_en)
+{
+	struct rte_eth_dev *dev = &rte_eth_devices[port_id];
+	struct cnxk_eth_dev *cnxk_eth_dev = dev->data->dev_private;
+	struct rte_eventdev *event_dev = cnxk_eth_dev->evdev_priv;
+	struct cnxk_sso_evdev *evdev = cnxk_sso_pmd_priv(event_dev);
+
+	evdev->rx_offloads |= flags;
+	if (ptp_en)
+		evdev->tstamp[port_id] = &cnxk_eth_dev->tstamp;
+	else
+		evdev->tstamp[port_id] = NULL;
+	cn10k_sso_fp_fns_set((struct rte_eventdev *)(uintptr_t)event_dev);
+	eventdev_fops_update(event_dev);
+}
+
+static void
+cn10k_sso_rx_offload_cb(uint16_t port_id, uint64_t flags)
+{
+	struct rte_eth_dev *dev = &rte_eth_devices[port_id];
+	struct cnxk_eth_dev *cnxk_eth_dev = dev->data->dev_private;
+	struct rte_eventdev *event_dev = cnxk_eth_dev->evdev_priv;
+	struct cnxk_sso_evdev *evdev = cnxk_sso_pmd_priv(event_dev);
+
+	evdev->rx_offloads |= flags;
+	cn10k_sso_fp_fns_set((struct rte_eventdev *)(uintptr_t)event_dev);
+	eventdev_fops_update(event_dev);
+}
+
 static int
 cn10k_sso_rx_adapter_queue_add(
 	const struct rte_eventdev *event_dev, const struct rte_eth_dev *eth_dev,
 	int32_t rx_queue_id,
 	const struct rte_event_eth_rx_adapter_queue_conf *queue_conf)
 {
+	struct cnxk_eth_dev *cnxk_eth_dev = eth_dev->data->dev_private;
 	struct cnxk_sso_evdev *dev = cnxk_sso_pmd_priv(event_dev);
 	struct roc_sso_hwgrp_stash stash;
 	struct cn10k_eth_rxq *rxq;
@@ -845,6 +903,10 @@ cn10k_sso_rx_adapter_queue_add(
 					   queue_conf);
 	if (rc)
 		return -EINVAL;
+
+	cnxk_eth_dev->cnxk_sso_ptp_tstamp_cb = cn10k_sso_tstamp_hdl_update;
+	cnxk_eth_dev->evdev_priv = (struct rte_eventdev *)(uintptr_t)event_dev;
+
 	rxq = eth_dev->data->rx_queues[0];
 	lookup_mem = rxq->lookup_mem;
 	cn10k_sso_set_priv_mem(event_dev, lookup_mem);
@@ -1192,6 +1254,7 @@ cn10k_sso_init(struct rte_eventdev *event_dev)
 		return rc;
 	}
 
+	cnxk_ethdev_rx_offload_cb_register(cn10k_sso_rx_offload_cb);
 	event_dev->dev_ops = &cn10k_sso_dev_ops;
 	/* For secondary processes, the primary has done all the work */
 	if (rte_eal_process_type() != RTE_PROC_PRIMARY) {
@@ -1199,7 +1262,6 @@ cn10k_sso_init(struct rte_eventdev *event_dev)
 		return 0;
 	}
 
-	dev->gw_mode = CN10K_GW_MODE_PREF_WFE;
 	rc = cnxk_sso_init(event_dev);
 	if (rc < 0)
 		return rc;
@@ -1256,7 +1318,6 @@ RTE_PMD_REGISTER_KMOD_DEP(event_cn10k, "vfio-pci");
 RTE_PMD_REGISTER_PARAM_STRING(event_cn10k, CNXK_SSO_XAE_CNT "=<int>"
 			      CNXK_SSO_GGRP_QOS "=<string>"
 			      CNXK_SSO_FORCE_BP "=1"
-			      CN10K_SSO_GW_MODE "=<int>"
 			      CN10K_SSO_STASH "=<string>"
 			      CNXK_TIM_DISABLE_NPA "=1"
 			      CNXK_TIM_CHNK_SLOTS "=<int>"

@@ -97,8 +97,7 @@ eal_pmd_path = join_paths(get_option('prefix'), driver_install_path)
 if not is_windows
     meson.add_install_script('../buildtools/symlink-drivers-solibs.sh',
             get_option('libdir'), pmd_subdir_opt)
-elif meson.version().version_compare('>=0.55.0')
-    # 0.55.0 is required to use external program with add_install_script
+else
     meson.add_install_script(py3,
             files('../buildtools/symlink-drivers-solibs.py'),
             get_option('libdir'), pmd_subdir_opt, get_option('bindir'))
@@ -227,7 +226,7 @@ endif
 # check for libraries used in multiple places in DPDK
 has_libnuma = false
 find_libnuma = true
-if meson.is_cross_build() and not meson.get_cross_property('numa', true)
+if meson.is_cross_build() and not meson.get_external_property('numa', true)
     # don't look for libnuma if explicitly disabled in cross build
     find_libnuma = false
 endif
@@ -330,10 +329,7 @@ warning_flags = [
         '-Wno-packed-not-aligned',
         '-Wno-missing-field-initializers',
 ]
-if cc.get_id() == 'gcc' and cc.version().version_compare('>=10.0')
-# FIXME: Bugzilla 396
-    warning_flags += '-Wno-zero-length-bounds'
-endif
+
 if not dpdk_conf.get('RTE_ARCH_64')
 # for 32-bit, don't warn about casting a 32-bit pointer to 64-bit int - it's fine!!
     warning_flags += '-Wno-pointer-to-int-cast'
@@ -377,12 +373,12 @@ dpdk_conf.set('RTE_COMPILE_TIME_CPUFLAGS', ','.join(compile_time_cpuflags))
 # apply cross-specific options
 if meson.is_cross_build()
     # configure RTE_MAX_LCORE and RTE_MAX_NUMA_NODES from cross file
-    cross_max_lcores = meson.get_cross_property('max_lcores', 0)
+    cross_max_lcores = meson.get_external_property('max_lcores', 0)
     if cross_max_lcores != 0
         message('Setting RTE_MAX_LCORE from cross file')
         dpdk_conf.set('RTE_MAX_LCORE', cross_max_lcores)
     endif
-    cross_max_numa_nodes = meson.get_cross_property('max_numa_nodes', 0)
+    cross_max_numa_nodes = meson.get_external_property('max_numa_nodes', 0)
     if cross_max_numa_nodes != 0
         message('Setting RTE_MAX_NUMA_NODES from cross file')
         dpdk_conf.set('RTE_MAX_NUMA_NODES', cross_max_numa_nodes)

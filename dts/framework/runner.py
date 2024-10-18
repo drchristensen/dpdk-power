@@ -20,12 +20,13 @@ and the test case stage runs test cases individually.
 import importlib
 import inspect
 import os
-import re
+import random
 import sys
 from pathlib import Path
-from types import FunctionType
-from typing import Iterable, Sequence
+from types import MethodType
+from typing import Iterable
 
+from framework.testbed_model.capability import Capability, get_supported_capabilities
 from framework.testbed_model.sut_node import SutNode
 from framework.testbed_model.tg_node import TGNode
 
@@ -53,7 +54,8 @@ from .test_result import (
     TestSuiteResult,
     TestSuiteWithCases,
 )
-from .test_suite import TestSuite
+from .test_suite import TestCase, TestSuite
+from .testbed_model.topology import Topology
 
 
 class DTSRunner:
@@ -147,6 +149,7 @@ class DTSRunner:
                 self._logger.info(
                     f"Running test run with SUT '{test_run_config.system_under_test_node.name}'."
                 )
+                self._init_random_seed(test_run_config)
                 test_run_result = self._result.add_test_run(test_run_config)
                 # we don't want to modify the original config, so create a copy
                 test_run_test_suites = list(
@@ -232,9 +235,9 @@ class DTSRunner:
 
         for test_suite_config in test_suite_configs:
             test_suite_class = self._get_test_suite_class(test_suite_config.test_suite)
-            test_cases = []
-            func_test_cases, perf_test_cases = self._filter_test_cases(
-                test_suite_class, test_suite_config.test_cases
+            test_cases: list[type[TestCase]] = []
+            func_test_cases, perf_test_cases = test_suite_class.get_test_cases(
+                test_suite_config.test_cases
             )
             if func:
                 test_cases.extend(func_test_cases)
@@ -308,57 +311,6 @@ class DTSRunner:
         raise ConfigurationError(
             f"Couldn't find any valid test suites in {test_suite_module.__name__}."
         )
-
-    def _filter_test_cases(
-        self, test_suite_class: type[TestSuite], test_cases_to_run: Sequence[str]
-    ) -> tuple[list[FunctionType], list[FunctionType]]:
-        """Filter `test_cases_to_run` from `test_suite_class`.
-
-        There are two rounds of filtering if `test_cases_to_run` is not empty.
-        The first filters `test_cases_to_run` from all methods of `test_suite_class`.
-        Then the methods are separated into functional and performance test cases.
-        If a method matches neither the functional nor performance name prefix, it's an error.
-
-        Args:
-            test_suite_class: The class of the test suite.
-            test_cases_to_run: Test case names to filter from `test_suite_class`.
-                If empty, return all matching test cases.
-
-        Returns:
-            A list of test case methods that should be executed.
-
-        Raises:
-            ConfigurationError: If a test case from `test_cases_to_run` is not found
-                or it doesn't match either the functional nor performance name prefix.
-        """
-        func_test_cases = []
-        perf_test_cases = []
-        name_method_tuples = inspect.getmembers(test_suite_class, inspect.isfunction)
-        if test_cases_to_run:
-            name_method_tuples = [
-                (name, method) for name, method in name_method_tuples if name in test_cases_to_run
-            ]
-            if len(name_method_tuples) < len(test_cases_to_run):
-                missing_test_cases = set(test_cases_to_run) - {
-                    name for name, _ in name_method_tuples
-                }
-                raise ConfigurationError(
-                    f"Test cases {missing_test_cases} not found among methods "
-                    f"of {test_suite_class.__name__}."
-                )
-
-        for test_case_name, test_case_method in name_method_tuples:
-            if re.match(self._func_test_case_regex, test_case_name):
-                func_test_cases.append(test_case_method)
-            elif re.match(self._perf_test_case_regex, test_case_name):
-                perf_test_cases.append(test_case_method)
-            elif test_cases_to_run:
-                raise ConfigurationError(
-                    f"Method '{test_case_name}' matches neither "
-                    f"a functional nor a performance test case name."
-                )
-
-        return func_test_cases, perf_test_cases
 
     def _connect_nodes_and_run_test_run(
         self,
@@ -503,6 +455,21 @@ class DTSRunner:
                 self._logger.exception("Build target teardown failed.")
                 build_target_result.update_teardown(Result.FAIL, e)
 
+    def _get_supported_capabilities(
+        self,
+        sut_node: SutNode,
+        topology_config: Topology,
+        test_suites_with_cases: Iterable[TestSuiteWithCases],
+    ) -> set[Capability]:
+
+        capabilities_to_check = set()
+        for test_suite_with_cases in test_suites_with_cases:
+            capabilities_to_check.update(test_suite_with_cases.required_capabilities)
+
+        self._logger.debug(f"Found capabilities to check: {capabilities_to_check}")
+
+        return get_supported_capabilities(sut_node, topology_config, capabilities_to_check)
+
     def _run_test_suites(
         self,
         sut_node: SutNode,
@@ -515,6 +482,12 @@ class DTSRunner:
         The method assumes the build target we're testing has already been built on the SUT node.
         The current build target thus corresponds to the current DPDK build present on the SUT node.
 
+        Before running any suites, the method determines whether they should be skipped
+        by inspecting any required capabilities the test suite needs and comparing those
+        to capabilities supported by the tested environment. If all capabilities are supported,
+        the suite is run. If all test cases in a test suite would be skipped, the whole test suite
+        is skipped (the setup and teardown is not run).
+
         If a blocking test suite (such as the smoke test suite) fails, the rest of the test suites
         in the current build target won't be executed.
 
@@ -526,10 +499,29 @@ class DTSRunner:
             test_suites_with_cases: The test suites with test cases to run.
         """
         end_build_target = False
+        topology = Topology(sut_node.ports, tg_node.ports)
+        supported_capabilities = self._get_supported_capabilities(
+            sut_node, topology, test_suites_with_cases
+        )
         for test_suite_with_cases in test_suites_with_cases:
+            test_suite_with_cases.mark_skip_unsupported(supported_capabilities)
             test_suite_result = build_target_result.add_test_suite(test_suite_with_cases)
             try:
-                self._run_test_suite(sut_node, tg_node, test_suite_result, test_suite_with_cases)
+                if not test_suite_with_cases.skip:
+                    self._run_test_suite(
+                        sut_node,
+                        tg_node,
+                        topology,
+                        test_suite_result,
+                        test_suite_with_cases,
+                    )
+                else:
+                    self._logger.info(
+                        f"Test suite execution SKIPPED: "
+                        f"'{test_suite_with_cases.test_suite_class.__name__}'. Reason: "
+                        f"{test_suite_with_cases.test_suite_class.skip_reason}"
+                    )
+                    test_suite_result.update_setup(Result.SKIP)
             except BlockingTestSuiteError as e:
                 self._logger.exception(
                     f"An error occurred within {test_suite_with_cases.test_suite_class.__name__}. "
@@ -545,6 +537,7 @@ class DTSRunner:
         self,
         sut_node: SutNode,
         tg_node: TGNode,
+        topology: Topology,
         test_suite_result: TestSuiteResult,
         test_suite_with_cases: TestSuiteWithCases,
     ) -> None:
@@ -572,7 +565,7 @@ class DTSRunner:
         self._logger.set_stage(
             DtsStage.test_suite_setup, Path(SETTINGS.output_dir, test_suite_name)
         )
-        test_suite = test_suite_with_cases.test_suite_class(sut_node, tg_node)
+        test_suite = test_suite_with_cases.test_suite_class(sut_node, tg_node, topology)
         try:
             self._logger.info(f"Starting test suite setup: {test_suite_name}")
             test_suite.set_up_suite()
@@ -607,7 +600,7 @@ class DTSRunner:
     def _execute_test_suite(
         self,
         test_suite: TestSuite,
-        test_cases: Iterable[FunctionType],
+        test_cases: Iterable[type[TestCase]],
         test_suite_result: TestSuiteResult,
     ) -> None:
         """Execute all `test_cases` in `test_suite`.
@@ -618,29 +611,36 @@ class DTSRunner:
 
         Args:
             test_suite: The test suite object.
-            test_cases: The list of test case methods.
+            test_cases: The list of test case functions.
             test_suite_result: The test suite level result object associated
                 with the current test suite.
         """
         self._logger.set_stage(DtsStage.test_suite)
-        for test_case_method in test_cases:
-            test_case_name = test_case_method.__name__
+        for test_case in test_cases:
+            test_case_name = test_case.__name__
             test_case_result = test_suite_result.add_test_case(test_case_name)
             all_attempts = SETTINGS.re_run + 1
             attempt_nr = 1
-            self._run_test_case(test_suite, test_case_method, test_case_result)
-            while not test_case_result and attempt_nr < all_attempts:
-                attempt_nr += 1
+            if not test_case.skip:
+                self._run_test_case(test_suite, test_case, test_case_result)
+                while not test_case_result and attempt_nr < all_attempts:
+                    attempt_nr += 1
+                    self._logger.info(
+                        f"Re-running FAILED test case '{test_case_name}'. "
+                        f"Attempt number {attempt_nr} out of {all_attempts}."
+                    )
+                    self._run_test_case(test_suite, test_case, test_case_result)
+            else:
                 self._logger.info(
-                    f"Re-running FAILED test case '{test_case_name}'. "
-                    f"Attempt number {attempt_nr} out of {all_attempts}."
+                    f"Test case execution SKIPPED: {test_case_name}. Reason: "
+                    f"{test_case.skip_reason}"
                 )
-                self._run_test_case(test_suite, test_case_method, test_case_result)
+                test_case_result.update_setup(Result.SKIP)
 
     def _run_test_case(
         self,
         test_suite: TestSuite,
-        test_case_method: FunctionType,
+        test_case: type[TestCase],
         test_case_result: TestCaseResult,
     ) -> None:
         """Setup, execute and teardown `test_case_method` from `test_suite`.
@@ -649,11 +649,11 @@ class DTSRunner:
 
         Args:
             test_suite: The test suite object.
-            test_case_method: The test case method.
+            test_case: The test case function.
             test_case_result: The test case level result object associated
                 with the current test case.
         """
-        test_case_name = test_case_method.__name__
+        test_case_name = test_case.__name__
 
         try:
             # run set_up function for each case
@@ -668,7 +668,7 @@ class DTSRunner:
 
         else:
             # run test case if setup was successful
-            self._execute_test_case(test_suite, test_case_method, test_case_result)
+            self._execute_test_case(test_suite, test_case, test_case_result)
 
         finally:
             try:
@@ -686,21 +686,22 @@ class DTSRunner:
     def _execute_test_case(
         self,
         test_suite: TestSuite,
-        test_case_method: FunctionType,
+        test_case: type[TestCase],
         test_case_result: TestCaseResult,
     ) -> None:
         """Execute `test_case_method` from `test_suite`, record the result and handle failures.
 
         Args:
             test_suite: The test suite object.
-            test_case_method: The test case method.
+            test_case: The test case function.
             test_case_result: The test case level result object associated
                 with the current test case.
         """
-        test_case_name = test_case_method.__name__
+        test_case_name = test_case.__name__
         try:
             self._logger.info(f"Starting test case execution: {test_case_name}")
-            test_case_method(test_suite)
+            # Explicit method binding is required, otherwise mypy complains
+            MethodType(test_case, test_suite)()
             test_case_result.update(Result.PASS)
             self._logger.info(f"Test case execution PASSED: {test_case_name}")
 
@@ -723,3 +724,9 @@ class DTSRunner:
             self._logger.info("DTS execution has ended.")
 
         sys.exit(self._result.get_return_code())
+
+    def _init_random_seed(self, conf: TestRunConfiguration) -> None:
+        """Initialize the random seed to use for the test run."""
+        seed = SETTINGS.random_seed or conf.random_seed or random.randrange(0xFFFF_FFFF)
+        self._logger.info(f"Initializing test run with random seed {seed}.")
+        random.seed(seed)

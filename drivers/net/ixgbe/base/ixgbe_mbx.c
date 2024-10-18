@@ -82,6 +82,9 @@ s32 ixgbe_poll_mbx(struct ixgbe_hw *hw, u32 *msg, u16 size, u16 mbx_id)
  *
  * returns SUCCESS if it successfully copied message into the buffer and
  * received an ACK to that message within specified period
+ *
+ * Note that the caller to this function must lock before calling, since
+ * multiple threads can destroy each other messages.
  **/
 s32 ixgbe_write_mbx(struct ixgbe_hw *hw, u32 *msg, u16 size, u16 mbx_id)
 {
@@ -165,6 +168,26 @@ s32 ixgbe_check_for_rst(struct ixgbe_hw *hw, u16 mbx_id)
 
 	if (mbx->ops[mbx_id].check_for_rst)
 		ret_val = mbx->ops[mbx_id].check_for_rst(hw, mbx_id);
+
+	return ret_val;
+}
+
+/**
+ * ixgbe_clear_mbx - Clear Mailbox Memory
+ * @hw: pointer to the HW structure
+ * @mbx_id: id of mailbox to write
+ *
+ * Set VFMBMEM of given VF to 0x0.
+ **/
+s32 ixgbe_clear_mbx(struct ixgbe_hw *hw, u16 mbx_id)
+{
+	struct ixgbe_mbx_info *mbx = &hw->mbx;
+	s32 ret_val = IXGBE_ERR_CONFIG;
+
+	DEBUGFUNC("ixgbe_clear_mbx");
+
+	if (mbx->ops[mbx_id].clear)
+		ret_val = mbx->ops[mbx_id].clear(hw, mbx_id);
 
 	return ret_val;
 }
@@ -628,6 +651,7 @@ void ixgbe_init_mbx_params_vf(struct ixgbe_hw *hw)
 	mbx->ops[0].check_for_msg = ixgbe_check_for_msg_vf;
 	mbx->ops[0].check_for_ack = ixgbe_check_for_ack_vf;
 	mbx->ops[0].check_for_rst = ixgbe_check_for_rst_vf;
+	mbx->ops[0].clear = NULL;
 
 	mbx->stats.msgs_tx = 0;
 	mbx->stats.msgs_rx = 0;
@@ -815,6 +839,11 @@ STATIC s32 ixgbe_obtain_mbx_lock_pf(struct ixgbe_hw *hw, u16 vf_id)
 	while (countdown--) {
 		/* Reserve mailbox for PF use */
 		pf_mailbox = IXGBE_READ_REG(hw, IXGBE_PFMAILBOX(vf_id));
+
+		/* Check if other thread holds the PF lock already */
+		if (pf_mailbox & IXGBE_PFMAILBOX_PFU)
+			goto retry;
+
 		pf_mailbox |= IXGBE_PFMAILBOX_PFU;
 		IXGBE_WRITE_REG(hw, IXGBE_PFMAILBOX(vf_id), pf_mailbox);
 
@@ -825,6 +854,7 @@ STATIC s32 ixgbe_obtain_mbx_lock_pf(struct ixgbe_hw *hw, u16 vf_id)
 			break;
 		}
 
+	retry:
 		/* Wait a bit before trying again */
 		usec_delay(mbx->usec_delay);
 	}
@@ -927,13 +957,14 @@ STATIC s32 ixgbe_write_mbx_pf(struct ixgbe_hw *hw, u32 *msg, u16 size,
 	for (i = 0; i < size; i++)
 		IXGBE_WRITE_REG_ARRAY(hw, IXGBE_PFMBMEM(vf_id), i, msg[i]);
 
-	/* Interrupt VF to tell it a message has been sent */
+	/* interrupt VF to tell it a message has been sent */
 	pf_mailbox = IXGBE_READ_REG(hw, IXGBE_PFMAILBOX(vf_id));
 	pf_mailbox |= IXGBE_PFMAILBOX_STS;
 	IXGBE_WRITE_REG(hw, IXGBE_PFMAILBOX(vf_id), pf_mailbox);
 
 	/* if msg sent wait until we receive an ack */
-	ixgbe_poll_for_ack(hw, vf_id);
+	if (msg[0] & IXGBE_VT_MSGTYPE_CTS)
+		ixgbe_poll_for_ack(hw, vf_id);
 
 	/* update stats */
 	hw->mbx.stats.msgs_tx++;
@@ -1025,6 +1056,27 @@ STATIC s32 ixgbe_read_mbx_pf(struct ixgbe_hw *hw, u32 *msg, u16 size,
 }
 
 /**
+ * ixgbe_clear_mbx_pf - Clear Mailbox Memory
+ * @hw: pointer to the HW structure
+ * @vf_id: the VF index
+ *
+ * Set VFMBMEM of given VF to 0x0.
+ **/
+STATIC s32 ixgbe_clear_mbx_pf(struct ixgbe_hw *hw, u16 vf_id)
+{
+	u16 mbx_size = hw->mbx.size;
+	u16 i;
+
+	if (vf_id > 63)
+		return IXGBE_ERR_PARAM;
+
+	for (i = 0; i < mbx_size; ++i)
+		IXGBE_WRITE_REG_ARRAY(hw, IXGBE_PFMBMEM(vf_id), i, 0x0);
+
+	return IXGBE_SUCCESS;
+}
+
+/**
  * ixgbe_init_mbx_params_pf_id - set initial values for pf mailbox
  * @hw: pointer to the HW structure
  * @vf_id: the VF index
@@ -1042,6 +1094,7 @@ void ixgbe_init_mbx_params_pf_id(struct ixgbe_hw *hw, u16 vf_id)
 	mbx->ops[vf_id].check_for_msg = ixgbe_check_for_msg_pf;
 	mbx->ops[vf_id].check_for_ack = ixgbe_check_for_ack_pf;
 	mbx->ops[vf_id].check_for_rst = ixgbe_check_for_rst_pf;
+	mbx->ops[vf_id].clear = ixgbe_clear_mbx_pf;
 }
 
 /**
@@ -1119,6 +1172,7 @@ void ixgbe_upgrade_mbx_params_pf(struct ixgbe_hw *hw, u16 vf_id)
 	mbx->ops[vf_id].check_for_msg = ixgbe_check_for_msg_pf;
 	mbx->ops[vf_id].check_for_ack = ixgbe_check_for_ack_pf;
 	mbx->ops[vf_id].check_for_rst = ixgbe_check_for_rst_pf;
+	mbx->ops[vf_id].clear = ixgbe_clear_mbx_pf;
 
 	mbx->stats.msgs_tx = 0;
 	mbx->stats.msgs_rx = 0;

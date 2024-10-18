@@ -419,11 +419,12 @@ check_scale(unsigned int lcore)
 {
 	enum power_management_env env;
 
-	/* only PSTATE and ACPI modes are supported */
+	/* only PSTATE, AMD-PSTATE, ACPI and CPPC modes are supported */
 	if (!rte_power_check_env_supported(PM_ENV_ACPI_CPUFREQ) &&
 			!rte_power_check_env_supported(PM_ENV_PSTATE_CPUFREQ) &&
-			!rte_power_check_env_supported(PM_ENV_AMD_PSTATE_CPUFREQ)) {
-		POWER_LOG(DEBUG, "Neither ACPI nor PSTATE modes are supported");
+			!rte_power_check_env_supported(PM_ENV_AMD_PSTATE_CPUFREQ) &&
+			!rte_power_check_env_supported(PM_ENV_CPPC_CPUFREQ)) {
+		POWER_LOG(DEBUG, "Only ACPI, PSTATE, AMD-PSTATE, or CPPC modes are supported");
 		return -ENOTSUP;
 	}
 	/* ensure we could initialize the power library */
@@ -433,8 +434,8 @@ check_scale(unsigned int lcore)
 	/* ensure we initialized the correct env */
 	env = rte_power_get_env();
 	if (env != PM_ENV_ACPI_CPUFREQ && env != PM_ENV_PSTATE_CPUFREQ &&
-			env != PM_ENV_AMD_PSTATE_CPUFREQ) {
-		POWER_LOG(DEBUG, "Neither ACPI nor PSTATE modes were initialized");
+			env != PM_ENV_AMD_PSTATE_CPUFREQ && env != PM_ENV_CPPC_CPUFREQ) {
+		POWER_LOG(DEBUG, "Unable to initialize ACPI, PSTATE, AMD-PSTATE, or CPPC modes");
 		return -ENOTSUP;
 	}
 
@@ -664,7 +665,7 @@ rte_power_ethdev_pmgmt_queue_disable(unsigned int lcore_id,
 	 * ports before calling any of these API's, so we can assume that the
 	 * callbacks can be freed. we're intentionally casting away const-ness.
 	 */
-	rte_free((void *)queue_cfg->cb);
+	rte_free((void *)(uintptr_t)queue_cfg->cb);
 	free(queue_cfg);
 
 	return 0;

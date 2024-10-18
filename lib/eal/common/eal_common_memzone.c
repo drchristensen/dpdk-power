@@ -331,9 +331,10 @@ rte_memzone_free(const struct rte_memzone *mz)
 
 	rte_rwlock_write_unlock(&mcfg->mlock);
 
+	rte_eal_trace_memzone_free(name, addr, ret);
+
 	rte_free(addr);
 
-	rte_eal_trace_memzone_free(name, addr, ret);
 	return ret;
 }
 
@@ -358,18 +359,25 @@ rte_memzone_lookup(const char *name)
 	return memzone;
 }
 
+struct memzone_info {
+	FILE *f;
+	uint64_t total_size;
+};
+
 static void
 dump_memzone(const struct rte_memzone *mz, void *arg)
 {
 	struct rte_mem_config *mcfg = rte_eal_get_configuration()->mem_config;
 	struct rte_memseg_list *msl = NULL;
+	struct memzone_info *info = arg;
 	void *cur_addr, *mz_end;
 	struct rte_memseg *ms;
 	int mz_idx, ms_idx;
+	FILE *f = info->f;
 	size_t page_sz;
-	FILE *f = arg;
 
 	mz_idx = rte_fbarray_find_idx(&mcfg->memzones, mz);
+	info->total_size += mz->len;
 
 	fprintf(f, "Zone %u: name:<%s>, len:0x%zx, virt:%p, "
 				"socket_id:%"PRId32", flags:%"PRIx32"\n",
@@ -412,7 +420,11 @@ dump_memzone(const struct rte_memzone *mz, void *arg)
 void
 rte_memzone_dump(FILE *f)
 {
-	rte_memzone_walk(dump_memzone, f);
+	struct memzone_info info = { .f = f };
+
+	rte_memzone_walk(dump_memzone, &info);
+	fprintf(f, "Total Memory Zones size = %"PRIu64"M\n",
+		info.total_size / (1024 * 1024));
 }
 
 /*

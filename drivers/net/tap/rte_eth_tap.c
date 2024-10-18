@@ -20,6 +20,7 @@
 #include <rte_errno.h>
 #include <rte_cycles.h>
 
+#include <assert.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/socket.h>
@@ -70,6 +71,8 @@
 /* IPC key for queue fds sync */
 #define TAP_MP_KEY "tap_mp_sync_queues"
 #define TAP_MP_REQ_START_RXTX "tap_mp_req_start_rxtx"
+
+static_assert(RTE_PMD_TAP_MAX_QUEUES <= RTE_MP_MAX_FD_NUM, "TAP max queues exceeds MP fd limit");
 
 #define TAP_IOV_DEFAULT_MAX 1024
 
@@ -948,22 +951,6 @@ tap_dev_configure(struct rte_eth_dev *dev)
 {
 	struct pmd_internals *pmd = dev->data->dev_private;
 
-	if (dev->data->nb_rx_queues > RTE_PMD_TAP_MAX_QUEUES) {
-		TAP_LOG(ERR,
-			"%s: number of rx queues %d exceeds max num of queues %d",
-			dev->device->name,
-			dev->data->nb_rx_queues,
-			RTE_PMD_TAP_MAX_QUEUES);
-		return -1;
-	}
-	if (dev->data->nb_tx_queues > RTE_PMD_TAP_MAX_QUEUES) {
-		TAP_LOG(ERR,
-			"%s: number of tx queues %d exceeds max num of queues %d",
-			dev->device->name,
-			dev->data->nb_tx_queues,
-			RTE_PMD_TAP_MAX_QUEUES);
-		return -1;
-	}
 	if (dev->data->nb_rx_queues != dev->data->nb_tx_queues) {
 		TAP_LOG(ERR,
 			"%s: number of rx queues %d must be equal to number of tx queues %d",
@@ -2291,7 +2278,7 @@ rte_pmd_tun_probe(struct rte_vdev_device *dev)
 		kvlist = rte_kvargs_parse(params, valid_arguments);
 		if (kvlist) {
 			if (rte_kvargs_count(kvlist, ETH_TAP_IFACE_ARG) == 1) {
-				ret = rte_kvargs_process(kvlist,
+				ret = rte_kvargs_process_opt(kvlist,
 					ETH_TAP_IFACE_ARG,
 					&set_interface_name,
 					tun_name);
@@ -2391,9 +2378,10 @@ tap_mp_sync_queues(const struct rte_mp_msg *request, const void *peer)
 	reply_param->q_count = 0;
 
 	RTE_ASSERT(dev->data->nb_rx_queues == dev->data->nb_tx_queues);
-	if (dev->data->nb_rx_queues > RTE_MP_MAX_FD_NUM) {
+
+	if (dev->data->nb_rx_queues > RTE_PMD_TAP_MAX_QUEUES) {
 		TAP_LOG(ERR, "Number of rx/tx queues %u exceeds max number of fds %u",
-			dev->data->nb_rx_queues, RTE_MP_MAX_FD_NUM);
+			dev->data->nb_rx_queues, RTE_PMD_TAP_MAX_QUEUES);
 		return -1;
 	}
 
@@ -2487,10 +2475,10 @@ rte_pmd_tap_probe(struct rte_vdev_device *dev)
 		kvlist = rte_kvargs_parse(params, valid_arguments);
 		if (kvlist) {
 			if (rte_kvargs_count(kvlist, ETH_TAP_IFACE_ARG) == 1) {
-				ret = rte_kvargs_process(kvlist,
-							 ETH_TAP_IFACE_ARG,
-							 &set_interface_name,
-							 tap_name);
+				ret = rte_kvargs_process_opt(kvlist,
+							     ETH_TAP_IFACE_ARG,
+							     &set_interface_name,
+							     tap_name);
 				if (ret == -1)
 					goto leave;
 			}

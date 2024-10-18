@@ -18,7 +18,14 @@
 
 /* Space for ctrl_word(8B), IV(48B), passthrough alignment(8B) */
 #define CNXK_CPT_MIN_HEADROOM_REQ 64
-#define CNXK_CPT_MIN_TAILROOM_REQ 102
+/* Tailroom required for RX-inject path.
+ * In RX-inject path, space is required for below entities:
+ * WQE header and NIX_RX_PARSE_S
+ * SG list format for 6 IOVA pointers
+ * Space for 128 byte alignment.
+ */
+#define CNXK_CPT_MIN_TAILROOM_REQ 256
+#define CNXK_CPT_MAX_SG_SEGS	  6
 
 /* Default command timeout in seconds */
 #define DEFAULT_COMMAND_TIMEOUT 4
@@ -104,6 +111,8 @@ struct cnxk_cpt_qp {
 	/**< Session mempool */
 };
 
+int cnxk_cpt_asym_get_mlen(void);
+
 int cnxk_cpt_dev_config(struct rte_cryptodev *dev,
 			struct rte_cryptodev_config *conf);
 
@@ -119,6 +128,9 @@ void cnxk_cpt_dev_info_get(struct rte_cryptodev *dev,
 int cnxk_cpt_queue_pair_setup(struct rte_cryptodev *dev, uint16_t qp_id,
 			      const struct rte_cryptodev_qp_conf *conf,
 			      int socket_id __rte_unused);
+
+int cnxk_cpt_queue_pair_reset(struct rte_cryptodev *dev, uint16_t qp_id,
+			      const struct rte_cryptodev_qp_conf *conf, int socket_id);
 
 int cnxk_cpt_queue_pair_release(struct rte_cryptodev *dev, uint16_t qp_id);
 

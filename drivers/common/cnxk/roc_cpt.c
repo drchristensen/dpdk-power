@@ -826,7 +826,7 @@ roc_cpt_lf_ctx_flush(struct roc_cpt_lf *lf, void *cptr, bool inval)
 
 	if (err.s.flush_st_flt) {
 		plt_err("CTX flush could not complete due to store fault");
-		abort();
+		return -EFAULT;
 	}
 
 	return 0;
@@ -951,6 +951,20 @@ cpt_lf_fini(struct roc_cpt_lf *lf)
 	/* Free memory */
 	plt_free(lf->iq_vaddr);
 	lf->iq_vaddr = NULL;
+}
+
+void
+roc_cpt_lf_reset(struct roc_cpt_lf *lf)
+{
+	if (lf == NULL)
+		return;
+
+	cpt_lf_misc_intr_enb_dis(lf, false);
+	cpt_lf_done_intr_enb_dis(lf, false);
+	roc_cpt_iq_disable(lf);
+	roc_cpt_iq_reset(lf);
+	cpt_lf_misc_intr_enb_dis(lf, true);
+	cpt_lf_done_intr_enb_dis(lf, true);
 }
 
 void
@@ -1173,6 +1187,11 @@ roc_cpt_ctx_write(struct roc_cpt_lf *lf, void *sa_dptr, void *sa_cptr,
 	uint16_t lmt_id;
 	uint64_t *dptr;
 	int i;
+
+	if (!plt_is_aligned(sa_cptr, 128)) {
+		plt_err("Context pointer should be 128B aligned");
+		return -EINVAL;
+	}
 
 	/* Use this lcore's LMT line as no one else is using it */
 	ROC_LMT_BASE_ID_GET(lmt_base, lmt_id);

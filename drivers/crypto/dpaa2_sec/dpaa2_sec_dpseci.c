@@ -348,11 +348,11 @@ build_authenc_gcm_sg_fd(dpaa2_sec_session *sess,
 	DPAA2_SET_FD_COMPOUND_FMT(fd);
 	DPAA2_SET_FD_FLC(fd, DPAA2_VADDR_TO_IOVA(flc));
 
-	DPAA2_SEC_DP_DEBUG("GCM SG: auth_off: 0x%x/length %d, digest-len=%d\n"
-		   "iv-len=%d data_off: 0x%x\n",
+	DPAA2_SEC_DP_DEBUG("GCM SG: auth_off: 0x%x/length %d, digest-len=%d",
 		   sym_op->aead.data.offset,
 		   sym_op->aead.data.length,
-		   sess->digest_length,
+		   sess->digest_length);
+	DPAA2_SEC_DP_DEBUG("iv-len=%d data_off: 0x%x",
 		   sess->iv.length,
 		   sym_op->m_src->data_off);
 
@@ -506,11 +506,11 @@ build_authenc_gcm_fd(dpaa2_sec_session *sess,
 	DPAA2_SET_FD_COMPOUND_FMT(fd);
 	DPAA2_SET_FD_FLC(fd, DPAA2_VADDR_TO_IOVA(flc));
 
-	DPAA2_SEC_DP_DEBUG("GCM: auth_off: 0x%x/length %d, digest-len=%d\n"
-		   "iv-len=%d data_off: 0x%x\n",
+	DPAA2_SEC_DP_DEBUG("GCM: auth_off: 0x%x/length %d, digest-len=%d",
 		   sym_op->aead.data.offset,
 		   sym_op->aead.data.length,
-		   sess->digest_length,
+		   sess->digest_length);
+	DPAA2_SEC_DP_DEBUG("iv-len=%d data_off: 0x%x",
 		   sess->iv.length,
 		   sym_op->m_src->data_off);
 
@@ -631,11 +631,12 @@ build_authenc_sg_fd(dpaa2_sec_session *sess,
 	DPAA2_SET_FD_FLC(fd, DPAA2_VADDR_TO_IOVA(flc));
 
 	DPAA2_SEC_DP_DEBUG(
-		"AUTHENC SG: auth_off: 0x%x/length %d, digest-len=%d\n"
-		"cipher_off: 0x%x/length %d, iv-len=%d data_off: 0x%x\n",
+		"AUTHENC SG: auth_off: 0x%x/length %d, digest-len=%d",
 		sym_op->auth.data.offset,
 		sym_op->auth.data.length,
-		sess->digest_length,
+		sess->digest_length);
+	DPAA2_SEC_DP_DEBUG(
+		"cipher_off: 0x%x/length %d, iv-len=%d data_off: 0x%x",
 		sym_op->cipher.data.offset,
 		sym_op->cipher.data.length,
 		sess->iv.length,
@@ -791,11 +792,12 @@ build_authenc_fd(dpaa2_sec_session *sess,
 	DPAA2_SET_FD_FLC(fd, DPAA2_VADDR_TO_IOVA(flc));
 
 	DPAA2_SEC_DP_DEBUG(
-		"AUTHENC: auth_off: 0x%x/length %d, digest-len=%d\n"
-		"cipher_off: 0x%x/length %d, iv-len=%d data_off: 0x%x\n",
+		"AUTHENC: auth_off: 0x%x/length %d, digest-len=%d",
 		sym_op->auth.data.offset,
 		sym_op->auth.data.length,
-		sess->digest_length,
+		sess->digest_length);
+	DPAA2_SEC_DP_DEBUG(
+		"cipher_off: 0x%x/length %d, iv-len=%d data_off: 0x%x",
 		sym_op->cipher.data.offset,
 		sym_op->cipher.data.length,
 		sess->iv.length,
@@ -1095,7 +1097,7 @@ build_auth_fd(dpaa2_sec_session *sess, struct rte_crypto_op *op,
 
 static int
 build_cipher_sg_fd(dpaa2_sec_session *sess, struct rte_crypto_op *op,
-		struct qbman_fd *fd, __rte_unused uint16_t bpid)
+		struct qbman_fd *fd, uint16_t bpid)
 {
 	struct rte_crypto_sym_op *sym_op = op->sym;
 	struct qbman_fle *ip_fle, *op_fle, *sge, *fle;
@@ -1105,6 +1107,10 @@ build_cipher_sg_fd(dpaa2_sec_session *sess, struct rte_crypto_op *op,
 	struct rte_mbuf *mbuf;
 	uint8_t *iv_ptr = rte_crypto_op_ctod_offset(op, uint8_t *,
 			sess->iv.offset);
+#if (RTE_LOG_DEBUG <= RTE_LOG_DP_LEVEL)
+	char debug_str[1024];
+	int offset;
+#endif
 
 	data_len = sym_op->cipher.data.length;
 	data_offset = sym_op->cipher.data.offset;
@@ -1146,7 +1152,7 @@ build_cipher_sg_fd(dpaa2_sec_session *sess, struct rte_crypto_op *op,
 
 	DPAA2_SEC_DP_DEBUG(
 		"CIPHER SG: cipher_off: 0x%x/length %d, ivlen=%d"
-		" data_off: 0x%x\n",
+		" data_off: 0x%x",
 		data_offset,
 		data_len,
 		sess->iv.length,
@@ -1172,7 +1178,7 @@ build_cipher_sg_fd(dpaa2_sec_session *sess, struct rte_crypto_op *op,
 	DPAA2_SET_FLE_FIN(sge);
 
 	DPAA2_SEC_DP_DEBUG(
-		"CIPHER SG: 1 - flc = %p, fle = %p FLEaddr = %x-%x, len %d\n",
+		"CIPHER SG: 1 - flc = %p, fle = %p FLEaddr = %x-%x, len %d",
 		flc, fle, fle->addr_hi, fle->addr_lo,
 		fle->length);
 
@@ -1210,14 +1216,26 @@ build_cipher_sg_fd(dpaa2_sec_session *sess, struct rte_crypto_op *op,
 	DPAA2_SET_FD_COMPOUND_FMT(fd);
 	DPAA2_SET_FD_FLC(fd, DPAA2_VADDR_TO_IOVA(flc));
 
-	DPAA2_SEC_DP_DEBUG(
-		"CIPHER SG: fdaddr =%" PRIx64 " bpid =%d meta =%d"
-		" off =%d, len =%d\n",
+#if (RTE_LOG_DEBUG <= RTE_LOG_DP_LEVEL)
+	offset = sprintf(debug_str,
+		"CIPHER SG: fdaddr =%" PRIx64 ", from %s pool ",
 		DPAA2_GET_FD_ADDR(fd),
-		DPAA2_GET_FD_BPID(fd),
-		rte_dpaa2_bpid_info[bpid].meta_data_size,
-		DPAA2_GET_FD_OFFSET(fd),
-		DPAA2_GET_FD_LEN(fd));
+		bpid < MAX_BPID ? "SW" : "BMAN");
+	if (bpid < MAX_BPID) {
+		offset += sprintf(&debug_str[offset],
+			"bpid = %d ", bpid);
+	}
+	offset += sprintf(&debug_str[offset],
+		"private size = %d ",
+		mbuf->pool->private_data_size);
+	offset += sprintf(&debug_str[offset],
+		"off =%d, len =%d",
+		DPAA2_GET_FD_OFFSET(fd), DPAA2_GET_FD_LEN(fd));
+	DPAA2_SEC_DP_DEBUG("%s", debug_str);
+#else
+	RTE_SET_USED(bpid);
+#endif
+
 	return 0;
 }
 
@@ -1233,6 +1251,10 @@ build_cipher_fd(dpaa2_sec_session *sess, struct rte_crypto_op *op,
 	uint8_t *iv_ptr = rte_crypto_op_ctod_offset(op, uint8_t *,
 			sess->iv.offset);
 	struct rte_mbuf *dst;
+#if (RTE_LOG_DEBUG <= RTE_LOG_DP_LEVEL)
+	char debug_str[1024];
+	int offset;
+#endif
 
 	data_len = sym_op->cipher.data.length;
 	data_offset = sym_op->cipher.data.offset;
@@ -1292,7 +1314,7 @@ build_cipher_fd(dpaa2_sec_session *sess, struct rte_crypto_op *op,
 
 	DPAA2_SEC_DP_DEBUG(
 		"CIPHER: cipher_off: 0x%x/length %d, ivlen=%d,"
-		" data_off: 0x%x\n",
+		" data_off: 0x%x",
 		data_offset,
 		data_len,
 		sess->iv.length,
@@ -1303,7 +1325,7 @@ build_cipher_fd(dpaa2_sec_session *sess, struct rte_crypto_op *op,
 	fle->length = data_len + sess->iv.length;
 
 	DPAA2_SEC_DP_DEBUG(
-		"CIPHER: 1 - flc = %p, fle = %p FLEaddr = %x-%x, length %d\n",
+		"CIPHER: 1 - flc = %p, fle = %p FLEaddr = %x-%x, length %d",
 		flc, fle, fle->addr_hi, fle->addr_lo,
 		fle->length);
 
@@ -1324,14 +1346,23 @@ build_cipher_fd(dpaa2_sec_session *sess, struct rte_crypto_op *op,
 	DPAA2_SET_FLE_FIN(sge);
 	DPAA2_SET_FLE_FIN(fle);
 
-	DPAA2_SEC_DP_DEBUG(
-		"CIPHER: fdaddr =%" PRIx64 " bpid =%d meta =%d"
-		" off =%d, len =%d\n",
+#if (RTE_LOG_DEBUG <= RTE_LOG_DP_LEVEL)
+	offset = sprintf(debug_str,
+		"CIPHER: fdaddr =%" PRIx64 ", from %s pool ",
 		DPAA2_GET_FD_ADDR(fd),
-		DPAA2_GET_FD_BPID(fd),
-		rte_dpaa2_bpid_info[bpid].meta_data_size,
-		DPAA2_GET_FD_OFFSET(fd),
-		DPAA2_GET_FD_LEN(fd));
+		bpid < MAX_BPID ? "SW" : "BMAN");
+	if (bpid < MAX_BPID) {
+		offset += sprintf(&debug_str[offset],
+			"bpid = %d ", bpid);
+	}
+	offset += sprintf(&debug_str[offset],
+			"private size = %d ",
+			dst->pool->private_data_size);
+	offset += sprintf(&debug_str[offset],
+			"off =%d, len =%d",
+			DPAA2_GET_FD_OFFSET(fd), DPAA2_GET_FD_LEN(fd));
+	DPAA2_SEC_DP_DEBUG("%s", debug_str);
+#endif
 
 	return 0;
 }
@@ -1348,12 +1379,12 @@ build_sec_fd(struct rte_crypto_op *op,
 	} else if (op->sess_type == RTE_CRYPTO_OP_SECURITY_SESSION) {
 		sess = SECURITY_GET_SESS_PRIV(op->sym->session);
 	} else {
-		DPAA2_SEC_DP_ERR("Session type invalid\n");
+		DPAA2_SEC_DP_ERR("Session type invalid");
 		return -ENOTSUP;
 	}
 
 	if (!sess) {
-		DPAA2_SEC_DP_ERR("Session not available\n");
+		DPAA2_SEC_DP_ERR("Session not available");
 		return -EINVAL;
 	}
 
@@ -1447,7 +1478,7 @@ dpaa2_sec_enqueue_burst(void *qp, struct rte_crypto_op **ops,
 		ret = dpaa2_affine_qbman_swp();
 		if (ret) {
 			DPAA2_SEC_ERR(
-				"Failed to allocate IO portal, tid: %d\n",
+				"Failed to allocate IO portal, tid: %d",
 				rte_gettid());
 			return 0;
 		}
@@ -1476,7 +1507,7 @@ dpaa2_sec_enqueue_burst(void *qp, struct rte_crypto_op **ops,
 			bpid = mempool_to_bpid(mb_pool);
 			ret = build_sec_fd(*ops, &fd_arr[loop], bpid, dpaa2_qp);
 			if (ret) {
-				DPAA2_SEC_DP_DEBUG("FD build failed\n");
+				DPAA2_SEC_DP_DEBUG("FD build failed");
 				goto skip_tx;
 			}
 			ops++;
@@ -1494,7 +1525,7 @@ dpaa2_sec_enqueue_burst(void *qp, struct rte_crypto_op **ops,
 				if (retry_count > DPAA2_MAX_TX_RETRY_COUNT) {
 					num_tx += loop;
 					nb_ops -= loop;
-					DPAA2_SEC_DP_DEBUG("Enqueue fail\n");
+					DPAA2_SEC_DP_DEBUG("Enqueue fail");
 					/* freeing the fle buffers */
 					while (loop < frames_to_send) {
 						free_fle(&fd_arr[loop],
@@ -1564,13 +1595,17 @@ sec_fd_to_mbuf(const struct qbman_fd *fd, struct dpaa2_sec_qp *qp)
 	struct qbman_fle *fle;
 	struct rte_crypto_op *op;
 	struct rte_mbuf *dst, *src;
+#if (RTE_LOG_DEBUG <= RTE_LOG_DP_LEVEL)
+	char debug_str[1024];
+	int offset;
+#endif
 
 	if (DPAA2_FD_GET_FORMAT(fd) == qbman_fd_single)
 		return sec_simple_fd_to_mbuf(fd);
 
 	fle = (struct qbman_fle *)DPAA2_IOVA_TO_VADDR(DPAA2_GET_FD_ADDR(fd));
 
-	DPAA2_SEC_DP_DEBUG("FLE addr = %x - %x, offset = %x\n",
+	DPAA2_SEC_DP_DEBUG("FLE addr = %x - %x, offset = %x",
 			   fle->addr_hi, fle->addr_lo, fle->fin_bpid_offset);
 
 	/* we are using the first FLE entry to store Mbuf.
@@ -1602,15 +1637,21 @@ sec_fd_to_mbuf(const struct qbman_fd *fd, struct dpaa2_sec_qp *qp)
 		dst->data_len = len;
 	}
 
-	DPAA2_SEC_DP_DEBUG("mbuf %p BMAN buf addr %p,"
-		" fdaddr =%" PRIx64 " bpid =%d meta =%d off =%d, len =%d\n",
-		(void *)dst,
-		dst->buf_addr,
-		DPAA2_GET_FD_ADDR(fd),
-		DPAA2_GET_FD_BPID(fd),
-		rte_dpaa2_bpid_info[DPAA2_GET_FD_BPID(fd)].meta_data_size,
-		DPAA2_GET_FD_OFFSET(fd),
-		DPAA2_GET_FD_LEN(fd));
+#if (RTE_LOG_DEBUG <= RTE_LOG_DP_LEVEL)
+	offset = sprintf(debug_str, "Mbuf %p from %s pool ",
+			dst, DPAA2_GET_FD_IVP(fd) ? "SW" : "BMAN");
+	if (!DPAA2_GET_FD_IVP(fd)) {
+		offset += sprintf(&debug_str[offset], "bpid = %d ",
+				DPAA2_GET_FD_BPID(fd));
+	}
+	offset += sprintf(&debug_str[offset],
+			"private size = %d ", dst->pool->private_data_size);
+	offset += sprintf(&debug_str[offset],
+			"addr %p, fdaddr =%" PRIx64 ", off =%d, len =%d",
+			dst->buf_addr, DPAA2_GET_FD_ADDR(fd),
+			DPAA2_GET_FD_OFFSET(fd), DPAA2_GET_FD_LEN(fd));
+	DPAA2_SEC_DP_DEBUG("%s", debug_str);
+#endif
 
 	/* free the fle memory */
 	if (likely(rte_pktmbuf_is_contiguous(src))) {
@@ -1825,7 +1866,7 @@ dpaa2_sec_enqueue_burst_ordered(void *qp, struct rte_crypto_op **ops,
 			bpid = mempool_to_bpid(mb_pool);
 			ret = build_sec_fd(*ops, &fd_arr[loop], bpid, dpaa2_qp);
 			if (ret) {
-				DPAA2_SEC_DP_DEBUG("FD build failed\n");
+				DPAA2_SEC_DP_DEBUG("FD build failed");
 				goto skip_tx;
 			}
 			ops++;
@@ -1842,7 +1883,7 @@ dpaa2_sec_enqueue_burst_ordered(void *qp, struct rte_crypto_op **ops,
 				if (retry_count > DPAA2_MAX_TX_RETRY_COUNT) {
 					num_tx += loop;
 					nb_ops -= loop;
-					DPAA2_SEC_DP_DEBUG("Enqueue fail\n");
+					DPAA2_SEC_DP_DEBUG("Enqueue fail");
 					/* freeing the fle buffers */
 					while (loop < frames_to_send) {
 						free_fle(&fd_arr[loop],
@@ -1885,7 +1926,7 @@ dpaa2_sec_dequeue_burst(void *qp, struct rte_crypto_op **ops,
 		ret = dpaa2_affine_qbman_swp();
 		if (ret) {
 			DPAA2_SEC_ERR(
-				"Failed to allocate IO portal, tid: %d\n",
+				"Failed to allocate IO portal, tid: %d",
 				rte_gettid());
 			return 0;
 		}
@@ -1938,7 +1979,7 @@ dpaa2_sec_dequeue_burst(void *qp, struct rte_crypto_op **ops,
 			status = (uint8_t)qbman_result_DQ_flags(dq_storage);
 			if (unlikely(
 				(status & QBMAN_DQ_STAT_VALIDFRAME) == 0)) {
-				DPAA2_SEC_DP_DEBUG("No frame is delivered\n");
+				DPAA2_SEC_DP_DEBUG("No frame is delivered");
 				continue;
 			}
 		}
@@ -1949,7 +1990,7 @@ dpaa2_sec_dequeue_burst(void *qp, struct rte_crypto_op **ops,
 		if (unlikely(fd->simple.frc)) {
 			/* TODO Parse SEC errors */
 			if (dpaa2_sec_dp_dump > DPAA2_SEC_DP_NO_DUMP) {
-				DPAA2_SEC_DP_ERR("SEC returned Error - %x\n",
+				DPAA2_SEC_DP_ERR("SEC returned Error - %x",
 						 fd->simple.frc);
 				if (dpaa2_sec_dp_dump > DPAA2_SEC_DP_ERR_DUMP)
 					dpaa2_sec_dump(ops[num_rx], stdout);
@@ -1967,7 +2008,7 @@ dpaa2_sec_dequeue_burst(void *qp, struct rte_crypto_op **ops,
 
 	dpaa2_qp->rx_vq.rx_pkts += num_rx;
 
-	DPAA2_SEC_DP_DEBUG("SEC RX pkts %d err pkts %" PRIu64 "\n", num_rx,
+	DPAA2_SEC_DP_DEBUG("SEC RX pkts %d err pkts %" PRIu64, num_rx,
 				dpaa2_qp->rx_vq.err_pkts);
 	/*Return the total number of packets received to DPAA2 app*/
 	return num_rx;
@@ -2005,7 +2046,7 @@ dpaa2_sec_queue_pair_setup(struct rte_cryptodev *dev, uint16_t qp_id,
 	struct fsl_mc_io *dpseci = (struct fsl_mc_io *)priv->hw;
 	struct dpseci_rx_queue_cfg cfg;
 	int32_t retcode;
-	char str[30];
+	char str[RTE_MEMZONE_NAMESIZE];
 
 	PMD_INIT_FUNC_TRACE();
 
@@ -2017,7 +2058,7 @@ dpaa2_sec_queue_pair_setup(struct rte_cryptodev *dev, uint16_t qp_id,
 
 	if (qp_conf->nb_descriptors < (2 * FLE_POOL_CACHE_SIZE)) {
 		DPAA2_SEC_ERR("Minimum supported nb_descriptors %d,"
-			      " but given %d\n", (2 * FLE_POOL_CACHE_SIZE),
+			      " but given %d", (2 * FLE_POOL_CACHE_SIZE),
 			      qp_conf->nb_descriptors);
 		return -EINVAL;
 	}
@@ -2065,8 +2106,7 @@ dpaa2_sec_queue_pair_setup(struct rte_cryptodev *dev, uint16_t qp_id,
 		return -ENOMEM;
 	}
 
-	cfg.options = cfg.options | DPSECI_QUEUE_OPT_USER_CTX;
-	cfg.user_ctx = (size_t)(&qp->rx_vq);
+	cfg.dest_cfg.dest_type = DPSECI_DEST_NONE;
 	retcode = dpseci_set_rx_queue(dpseci, CMD_PRI_LOW, priv->token,
 				      qp_id, &cfg);
 	return retcode;
@@ -2544,7 +2584,7 @@ dpaa2_sec_aead_init(struct rte_crypto_sym_xform *xform,
 #ifdef CAAM_DESC_DEBUG
 	int i;
 	for (i = 0; i < bufsize; i++)
-		DPAA2_SEC_DEBUG("DESC[%d]:0x%x\n",
+		DPAA2_SEC_DEBUG("DESC[%d]:0x%x",
 			    i, priv->flc_desc[0].desc[i]);
 #endif
 	return ret;
@@ -3060,14 +3100,19 @@ dpaa2_sec_set_ipsec_session(struct rte_cryptodev *dev,
 	struct alginfo authdata, cipherdata;
 	int bufsize;
 	struct sec_flow_context *flc;
+	uint64_t flc_iova;
 	int ret = -1;
 
 	PMD_INIT_FUNC_TRACE();
 
-	priv = (struct ctxt_priv *)rte_zmalloc(NULL,
-				sizeof(struct ctxt_priv) +
-				sizeof(struct sec_flc_desc),
-				RTE_CACHE_LINE_SIZE);
+	RTE_SET_USED(dev);
+
+	/** Make FLC address to align with stashing, low 6 bits are used
+	 * control stashing.
+	 */
+	priv = rte_zmalloc(NULL, sizeof(struct ctxt_priv) +
+		sizeof(struct sec_flc_desc),
+		DPAA2_STASHING_ALIGN_SIZE);
 
 	if (priv == NULL) {
 		DPAA2_SEC_ERR("No memory for priv CTXT");
@@ -3077,10 +3122,12 @@ dpaa2_sec_set_ipsec_session(struct rte_cryptodev *dev,
 	flc = &priv->flc_desc[0].flc;
 
 	if (ipsec_xform->life.bytes_hard_limit != 0 ||
-	    ipsec_xform->life.bytes_soft_limit != 0 ||
-	    ipsec_xform->life.packets_hard_limit != 0 ||
-	    ipsec_xform->life.packets_soft_limit != 0)
+		ipsec_xform->life.bytes_soft_limit != 0 ||
+		ipsec_xform->life.packets_hard_limit != 0 ||
+		ipsec_xform->life.packets_soft_limit != 0) {
+		rte_free(priv);
 		return -ENOTSUP;
+	}
 
 	memset(session, 0, sizeof(dpaa2_sec_session));
 
@@ -3330,24 +3377,26 @@ dpaa2_sec_set_ipsec_session(struct rte_cryptodev *dev,
 				1, 0, (rta_sec_era >= RTA_SEC_ERA_10) ?
 				SHR_WAIT : SHR_SERIAL,
 				&decap_pdb, &cipherdata, &authdata);
-	} else
+	} else {
+		ret = -EINVAL;
 		goto out;
+	}
 
 	if (bufsize < 0) {
+		ret = -EINVAL;
 		DPAA2_SEC_ERR("Crypto: Invalid SEC-DESC buffer length");
 		goto out;
 	}
 
 	flc->word1_sdl = (uint8_t)bufsize;
 
-	/* Enable the stashing control bit */
+	flc_iova = DPAA2_VADDR_TO_IOVA(flc);
+	/* Enable the stashing control bit and data stashing only.*/
 	DPAA2_SET_FLC_RSC(flc);
-	flc->word2_rflc_31_0 = lower_32_bits(
-			(size_t)&(((struct dpaa2_sec_qp *)
-			dev->data->queue_pairs[0])->rx_vq) | 0x14);
-	flc->word3_rflc_63_32 = upper_32_bits(
-			(size_t)&(((struct dpaa2_sec_qp *)
-			dev->data->queue_pairs[0])->rx_vq));
+	dpaa2_flc_stashing_set(DPAA2_FLC_DATA_STASHING, 1,
+		&flc_iova);
+	flc->word2_rflc_31_0 = lower_32_bits(flc_iova);
+	flc->word3_rflc_63_32 = upper_32_bits(flc_iova);
 
 	/* Set EWS bit i.e. enable write-safe */
 	DPAA2_SET_FLC_EWS(flc);
@@ -3381,6 +3430,7 @@ dpaa2_sec_set_pdcp_session(struct rte_cryptodev *dev,
 	struct alginfo *p_authdata = NULL;
 	int bufsize = -1;
 	struct sec_flow_context *flc;
+	uint64_t flc_iova;
 #if RTE_BYTE_ORDER == RTE_BIG_ENDIAN
 	int swap = true;
 #else
@@ -3388,6 +3438,8 @@ dpaa2_sec_set_pdcp_session(struct rte_cryptodev *dev,
 #endif
 
 	PMD_INIT_FUNC_TRACE();
+
+	RTE_SET_USED(dev);
 
 	memset(session, 0, sizeof(dpaa2_sec_session));
 
@@ -3420,6 +3472,7 @@ dpaa2_sec_set_pdcp_session(struct rte_cryptodev *dev,
 		}
 	} else {
 		DPAA2_SEC_ERR("Invalid crypto type");
+		rte_free(priv);
 		return -EINVAL;
 	}
 
@@ -3637,14 +3690,13 @@ dpaa2_sec_set_pdcp_session(struct rte_cryptodev *dev,
 		goto out;
 	}
 
-	/* Enable the stashing control bit */
+	flc_iova = DPAA2_VADDR_TO_IOVA(flc);
+	/* Enable the stashing control bit and data stashing only.*/
 	DPAA2_SET_FLC_RSC(flc);
-	flc->word2_rflc_31_0 = lower_32_bits(
-			(size_t)&(((struct dpaa2_sec_qp *)
-			dev->data->queue_pairs[0])->rx_vq) | 0x14);
-	flc->word3_rflc_63_32 = upper_32_bits(
-			(size_t)&(((struct dpaa2_sec_qp *)
-			dev->data->queue_pairs[0])->rx_vq));
+	dpaa2_flc_stashing_set(DPAA2_FLC_DATA_STASHING, 1,
+		&flc_iova);
+	flc->word2_rflc_31_0 = lower_32_bits(flc_iova);
+	flc->word3_rflc_63_32 = upper_32_bits(flc_iova);
 
 	flc->word1_sdl = (uint8_t)bufsize;
 
@@ -3931,20 +3983,20 @@ void dpaa2_sec_stats_get(struct rte_cryptodev *dev,
 	if (ret) {
 		DPAA2_SEC_ERR("SEC counters failed");
 	} else {
-		DPAA2_SEC_INFO("dpseci hardware stats:"
-			    "\n\tNum of Requests Dequeued = %" PRIu64
-			    "\n\tNum of Outbound Encrypt Requests = %" PRIu64
-			    "\n\tNum of Inbound Decrypt Requests = %" PRIu64
-			    "\n\tNum of Outbound Bytes Encrypted = %" PRIu64
-			    "\n\tNum of Outbound Bytes Protected = %" PRIu64
-			    "\n\tNum of Inbound Bytes Decrypted = %" PRIu64
-			    "\n\tNum of Inbound Bytes Validated = %" PRIu64,
-			    counters.dequeued_requests,
-			    counters.ob_enc_requests,
-			    counters.ib_dec_requests,
-			    counters.ob_enc_bytes,
-			    counters.ob_prot_bytes,
-			    counters.ib_dec_bytes,
+		DPAA2_SEC_INFO("dpseci hardware stats:");
+		DPAA2_SEC_INFO("\tNum of Requests Dequeued = %" PRIu64,
+			    counters.dequeued_requests);
+		DPAA2_SEC_INFO("\tNum of Outbound Encrypt Requests = %" PRIu64,
+			    counters.ob_enc_requests);
+		DPAA2_SEC_INFO("\tNum of Inbound Decrypt Requests = %" PRIu64,
+			    counters.ib_dec_requests);
+		DPAA2_SEC_INFO("\tNum of Outbound Bytes Encrypted = %" PRIu64,
+			    counters.ob_enc_bytes);
+		DPAA2_SEC_INFO("\tNum of Outbound Bytes Protected = %" PRIu64,
+			    counters.ob_prot_bytes);
+		DPAA2_SEC_INFO("\tNum of Inbound Bytes Decrypted = %" PRIu64,
+			    counters.ib_dec_bytes);
+		DPAA2_SEC_INFO("\tNum of Inbound Bytes Validated = %" PRIu64,
 			    counters.ib_valid_bytes);
 	}
 }
@@ -3980,12 +4032,6 @@ dpaa2_sec_process_parallel_event(struct qbman_swp *swp,
 				 struct rte_event *ev)
 {
 	struct dpaa2_sec_qp *qp;
-	/* Prefetching mbuf */
-	rte_prefetch0((void *)(size_t)(DPAA2_GET_FD_ADDR(fd)-
-		rte_dpaa2_bpid_info[DPAA2_GET_FD_BPID(fd)].meta_data_size));
-
-	/* Prefetching ipsec crypto_op stored in priv data of mbuf */
-	rte_prefetch0((void *)(size_t)(DPAA2_GET_FD_ADDR(fd)-64));
 
 	qp = container_of(rxq, struct dpaa2_sec_qp, rx_vq);
 	ev->flow_id = rxq->ev.flow_id;
@@ -3999,6 +4045,7 @@ dpaa2_sec_process_parallel_event(struct qbman_swp *swp,
 
 	qbman_swp_dqrr_consume(swp, dq);
 }
+
 static void
 dpaa2_sec_process_atomic_event(struct qbman_swp *swp __rte_unused,
 				 const struct qbman_fd *fd,
@@ -4009,12 +4056,6 @@ dpaa2_sec_process_atomic_event(struct qbman_swp *swp __rte_unused,
 	uint8_t dqrr_index;
 	struct dpaa2_sec_qp *qp;
 	struct rte_crypto_op *crypto_op;
-	/* Prefetching mbuf */
-	rte_prefetch0((void *)(size_t)(DPAA2_GET_FD_ADDR(fd)-
-		rte_dpaa2_bpid_info[DPAA2_GET_FD_BPID(fd)].meta_data_size));
-
-	/* Prefetching ipsec crypto_op stored in priv data of mbuf */
-	rte_prefetch0((void *)(size_t)(DPAA2_GET_FD_ADDR(fd)-64));
 
 	qp = container_of(rxq, struct dpaa2_sec_qp, rx_vq);
 	ev->flow_id = rxq->ev.flow_id;
@@ -4043,13 +4084,6 @@ dpaa2_sec_process_ordered_event(struct qbman_swp *swp,
 {
 	struct rte_crypto_op *crypto_op;
 	struct dpaa2_sec_qp *qp;
-
-	/* Prefetching mbuf */
-	rte_prefetch0((void *)(size_t)(DPAA2_GET_FD_ADDR(fd)-
-		rte_dpaa2_bpid_info[DPAA2_GET_FD_BPID(fd)].meta_data_size));
-
-	/* Prefetching ipsec crypto_op stored in priv data of mbuf */
-	rte_prefetch0((void *)(size_t)(DPAA2_GET_FD_ADDR(fd)-64));
 
 	qp = container_of(rxq, struct dpaa2_sec_qp, rx_vq);
 	ev->flow_id = rxq->ev.flow_id;
@@ -4254,7 +4288,7 @@ check_devargs_handler(const char *key, const char *value,
 		if (dpaa2_sec_dp_dump > DPAA2_SEC_DP_FULL_DUMP) {
 			DPAA2_SEC_WARN("WARN: DPAA2_SEC_DP_DUMP_LEVEL is not "
 				      "supported, changing to FULL error"
-				      " prints\n");
+				      " prints");
 			dpaa2_sec_dp_dump = DPAA2_SEC_DP_FULL_DUMP;
 		}
 	} else

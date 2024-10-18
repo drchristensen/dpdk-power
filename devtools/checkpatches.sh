@@ -53,11 +53,20 @@ print_usage () {
 check_forbidden_additions() { # <patch>
 	res=0
 
-	# refrain from new calls to RTE_LOG
+	# refrain from new calls to RTE_LOG in libraries
 	awk -v FOLDERS="lib" \
 		-v EXPRESSIONS="RTE_LOG\\\(" \
 		-v RET_ON_FAIL=1 \
 		-v MESSAGE='Prefer RTE_LOG_LINE' \
+		-f $(dirname $(readlink -f $0))/check-forbidden-tokens.awk \
+		"$1" || res=1
+
+	# refrain from new calls to RTE_LOG in drivers (but leave some leeway for base drivers)
+	awk -v FOLDERS="drivers" \
+		-v SKIP_FILES='osdep.h$' \
+		-v EXPRESSIONS="RTE_LOG\\\( RTE_LOG_DP\\\( rte_log\\\(" \
+		-v RET_ON_FAIL=1 \
+		-v MESSAGE='Prefer RTE_LOG_LINE/RTE_LOG_DP_LINE' \
 		-f $(dirname $(readlink -f $0))/check-forbidden-tokens.awk \
 		"$1" || res=1
 
@@ -80,6 +89,7 @@ check_forbidden_additions() { # <patch>
 
 	# refrain from using compiler attribute without defining a common macro
 	awk -v FOLDERS="lib drivers app examples" \
+		-v SKIP_FILES='lib/eal/include/rte_common.h' \
 		-v EXPRESSIONS="__attribute__" \
 		-v RET_ON_FAIL=1 \
 		-v MESSAGE='Using compiler attribute directly' \
@@ -169,7 +179,7 @@ check_forbidden_additions() { # <patch>
 
 	# forbid use of non abstracted bit count operations
 	awk -v FOLDERS="lib drivers app examples" \
-		-v EXPRESSIONS='\\<__builtin_(clz|clzll|ctz|ctzll|popcount|popcountll)\\>' \
+		-v EXPRESSIONS='\\<__builtin_(clz|ctz|ffs|popcount)(ll)?\\>' \
 		-v RET_ON_FAIL=1 \
 		-v MESSAGE='Using __builtin helpers for bit count operations' \
 		-f $(dirname $(readlink -f $0))/check-forbidden-tokens.awk \

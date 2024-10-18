@@ -1044,7 +1044,7 @@ iavf_dev_start(struct rte_eth_dev *dev)
 		if (iavf_configure_queues(adapter,
 				IAVF_CFG_Q_NUM_PER_BUF, index) != 0) {
 			PMD_DRV_LOG(ERR, "configure queues failed");
-			goto err_queue;
+			goto error;
 		}
 		num_queue_pairs -= IAVF_CFG_Q_NUM_PER_BUF;
 		index += IAVF_CFG_Q_NUM_PER_BUF;
@@ -1052,12 +1052,12 @@ iavf_dev_start(struct rte_eth_dev *dev)
 
 	if (iavf_configure_queues(adapter, num_queue_pairs, index) != 0) {
 		PMD_DRV_LOG(ERR, "configure queues failed");
-		goto err_queue;
+		goto error;
 	}
 
 	if (iavf_config_rx_queues_irqs(dev, intr_handle) != 0) {
 		PMD_DRV_LOG(ERR, "configure irq failed");
-		goto err_queue;
+		goto error;
 	}
 	/* re-enable intr again, because efd assign may change */
 	if (dev->data->dev_conf.intr_conf.rxq != 0) {
@@ -1077,14 +1077,12 @@ iavf_dev_start(struct rte_eth_dev *dev)
 
 	if (iavf_start_queues(dev) != 0) {
 		PMD_DRV_LOG(ERR, "enable queues failed");
-		goto err_mac;
+		goto error;
 	}
 
 	return 0;
 
-err_mac:
-	iavf_add_del_all_mac_addr(adapter, false);
-err_queue:
+error:
 	return -1;
 }
 
@@ -1112,16 +1110,6 @@ iavf_dev_stop(struct rte_eth_dev *dev)
 	rte_intr_efd_disable(intr_handle);
 	/* Rx interrupt vector mapping free */
 	rte_intr_vec_list_free(intr_handle);
-
-	/* adminq will be disabled when vf is resetting. */
-	if (!vf->in_reset_recovery) {
-		/* remove all mac addrs */
-		iavf_add_del_all_mac_addr(adapter, false);
-
-		/* remove all multicast addresses */
-		iavf_add_del_mc_addr_list(adapter, vf->mc_addrs, vf->mc_addrs_num,
-				  false);
-	}
 
 	iavf_stop_queues(dev);
 
@@ -2383,7 +2371,7 @@ static int iavf_parse_devargs(struct rte_eth_dev *dev)
 
 	kvlist = rte_kvargs_parse(devargs->args, iavf_valid_args);
 	if (!kvlist) {
-		PMD_INIT_LOG(ERR, "invalid kvargs key\n");
+		PMD_INIT_LOG(ERR, "invalid kvargs key");
 		return -EINVAL;
 	}
 
@@ -2418,7 +2406,7 @@ static int iavf_parse_devargs(struct rte_eth_dev *dev)
 	if (ad->devargs.quanta_size != 0 &&
 	    (ad->devargs.quanta_size < 256 || ad->devargs.quanta_size > 4096 ||
 	     ad->devargs.quanta_size & 0x40)) {
-		PMD_INIT_LOG(ERR, "invalid quanta size\n");
+		PMD_INIT_LOG(ERR, "invalid quanta size");
 		ret = -EINVAL;
 		goto bail;
 	}
@@ -2962,6 +2950,7 @@ iavf_dev_close(struct rte_eth_dev *dev)
 	if (vf->promisc_unicast_enabled || vf->promisc_multicast_enabled)
 		iavf_config_promisc(adapter, false, false);
 
+	iavf_vf_reset(hw);
 	iavf_shutdown_adminq(hw);
 	if (vf->vf_res->vf_cap_flags & VIRTCHNL_VF_OFFLOAD_WB_ON_ITR) {
 		/* disable uio intr before callback unregister */
@@ -3041,17 +3030,6 @@ iavf_dev_reset(struct rte_eth_dev *dev)
 	struct iavf_adapter *adapter =
 		IAVF_DEV_PRIVATE_TO_ADAPTER(dev->data->dev_private);
 	struct iavf_hw *hw = IAVF_DEV_PRIVATE_TO_HW(dev->data->dev_private);
-	struct iavf_info *vf = IAVF_DEV_PRIVATE_TO_VF(dev->data->dev_private);
-
-	if (!vf->in_reset_recovery) {
-		ret = iavf_aq_send_msg_to_pf(hw, VIRTCHNL_OP_RESET_VF,
-						IAVF_SUCCESS, NULL, 0, NULL);
-		if (ret) {
-			PMD_DRV_LOG(ERR, "fail to send cmd VIRTCHNL_OP_RESET_VF");
-			return ret;
-		}
-	}
-
 	/*
 	 * Check whether the VF reset has been done and inform application,
 	 * to avoid calling the virtual channel command, which may cause
@@ -3059,12 +3037,12 @@ iavf_dev_reset(struct rte_eth_dev *dev)
 	 */
 	ret = iavf_check_vf_reset_done(hw);
 	if (ret) {
-		PMD_DRV_LOG(ERR, "Wait too long for reset done!\n");
+		PMD_DRV_LOG(ERR, "Wait too long for reset done!");
 		return ret;
 	}
 	iavf_set_no_poll(adapter, false);
 
-	PMD_DRV_LOG(DEBUG, "Start dev_reset ...\n");
+	PMD_DRV_LOG(DEBUG, "Start dev_reset ...");
 	ret = iavf_dev_uninit(dev);
 	if (ret)
 		return ret;
@@ -3109,7 +3087,7 @@ iavf_handle_hw_reset(struct rte_eth_dev *dev)
 		return;
 
 	if (!iavf_is_reset_detected(adapter)) {
-		PMD_DRV_LOG(DEBUG, "reset not start\n");
+		PMD_DRV_LOG(DEBUG, "reset not start");
 		return;
 	}
 
@@ -3136,7 +3114,7 @@ iavf_handle_hw_reset(struct rte_eth_dev *dev)
 	goto exit;
 
 error:
-	PMD_DRV_LOG(DEBUG, "RESET recover with error code=%d\n", ret);
+	PMD_DRV_LOG(DEBUG, "RESET recover with error code=%dn", ret);
 exit:
 	vf->in_reset_recovery = false;
 	iavf_set_no_poll(adapter, false);

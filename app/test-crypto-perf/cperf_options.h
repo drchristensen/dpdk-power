@@ -32,6 +32,8 @@
 #define CPERF_TEST_FILE		("test-file")
 #define CPERF_TEST_NAME		("test-name")
 
+#define CPERF_LOW_PRIO_QP_MASK	("low-prio-qp-mask")
+
 #define CPERF_CIPHER_ALGO	("cipher-algo")
 #define CPERF_CIPHER_OP		("cipher-op")
 #define CPERF_CIPHER_KEY_SZ	("cipher-key-sz")
@@ -89,6 +91,7 @@ enum cperf_op_type {
 	CPERF_IPSEC,
 	CPERF_ASYM_MODEX,
 	CPERF_ASYM_SECP256R1,
+	CPERF_ASYM_ED25519,
 	CPERF_ASYM_SM2,
 	CPERF_TLS,
 };
@@ -107,6 +110,7 @@ struct cperf_options {
 	uint32_t *imix_buffer_sizes;
 	uint32_t nb_descriptors;
 	uint16_t nb_qps;
+	uint64_t low_prio_qp_mask;
 
 	uint32_t sessionless:1;
 	uint32_t shared_session:1;
@@ -169,6 +173,7 @@ struct cperf_options {
 	struct cperf_modex_test_data *modex_data;
 	uint16_t modex_len;
 	struct cperf_ecdsa_test_data *secp256r1_data;
+	struct cperf_eddsa_test_data *eddsa_data;
 	struct cperf_sm2_test_data *sm2_data;
 	enum rte_crypto_asym_op_type asym_op_type;
 	enum rte_crypto_auth_algorithm asym_hash_alg;

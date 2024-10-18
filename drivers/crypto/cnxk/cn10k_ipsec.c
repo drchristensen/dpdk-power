@@ -135,7 +135,11 @@ cn10k_ipsec_outb_sa_create(struct roc_cpt *roc_cpt, struct roc_cpt_lf *lf,
 	}
 
 	/* Trigger CTX flush so that data is written back to DRAM */
-	roc_cpt_lf_ctx_flush(lf, out_sa, false);
+	ret = roc_cpt_lf_ctx_flush(lf, out_sa, false);
+	if (ret == -EFAULT) {
+		plt_err("Could not flush outbound session");
+		goto sa_dptr_free;
+	}
 
 	sec_sess->proto = RTE_SECURITY_PROTOCOL_IPSEC;
 	plt_atomic_thread_fence(__ATOMIC_SEQ_CST);
@@ -236,7 +240,11 @@ cn10k_ipsec_inb_sa_create(struct roc_cpt *roc_cpt, struct roc_cpt_lf *lf,
 	}
 
 	/* Trigger CTX flush so that data is written back to DRAM */
-	roc_cpt_lf_ctx_flush(lf, in_sa, true);
+	ret = roc_cpt_lf_ctx_flush(lf, in_sa, true);
+	if (ret == -EFAULT) {
+		plt_err("Could not flush inbound session");
+		goto sa_dptr_free;
+	}
 
 	sec_sess->proto = RTE_SECURITY_PROTOCOL_IPSEC;
 	plt_atomic_thread_fence(__ATOMIC_SEQ_CST);
@@ -342,13 +350,11 @@ cn10k_ipsec_stats_get(struct cnxk_cpt_qp *qp, struct cn10k_sec_session *sess,
 	if (sess->ipsec.is_outbound) {
 		out_sa = &sa->out_sa;
 		roc_cpt_lf_ctx_flush(&qp->lf, out_sa, false);
-		rte_delay_ms(1);
 		stats->ipsec.opackets = out_sa->ctx.mib_pkts;
 		stats->ipsec.obytes = out_sa->ctx.mib_octs;
 	} else {
 		in_sa = &sa->in_sa;
 		roc_cpt_lf_ctx_flush(&qp->lf, in_sa, false);
-		rte_delay_ms(1);
 		stats->ipsec.ipackets = in_sa->ctx.mib_pkts;
 		stats->ipsec.ibytes = in_sa->ctx.mib_octs;
 	}

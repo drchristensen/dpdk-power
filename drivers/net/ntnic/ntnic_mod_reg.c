@@ -5,6 +5,20 @@
 
 #include "ntnic_mod_reg.h"
 
+static struct sg_ops_s *sg_ops;
+
+void register_sg_ops(struct sg_ops_s *ops)
+{
+	sg_ops = ops;
+}
+
+const struct sg_ops_s *get_sg_ops(void)
+{
+	if (sg_ops == NULL)
+		sg_init();
+	return sg_ops;
+}
+
 static struct link_ops_s *link_100g_ops;
 
 void register_100g_link_ops(struct link_ops_s *ops)
@@ -87,4 +101,34 @@ struct rst9563_ops *get_rst9563_ops(void)
 	if (rst9563_ops == NULL)
 		rst9563_ops_init();
 	return rst9563_ops;
+}
+
+static const struct flow_backend_ops *flow_backend_ops;
+
+void register_flow_backend_ops(const struct flow_backend_ops *ops)
+{
+	flow_backend_ops = ops;
+}
+
+const struct flow_backend_ops *get_flow_backend_ops(void)
+{
+	if (flow_backend_ops == NULL)
+		flow_backend_init();
+
+	return flow_backend_ops;
+}
+
+static const struct flow_filter_ops *flow_filter_ops;
+
+void register_flow_filter_ops(const struct flow_filter_ops *ops)
+{
+	flow_filter_ops = ops;
+}
+
+const struct flow_filter_ops *get_flow_filter_ops(void)
+{
+	if (flow_filter_ops == NULL)
+		init_flow_filter();
+
+	return flow_filter_ops;
 }

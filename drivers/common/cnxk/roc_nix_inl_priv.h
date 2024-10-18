@@ -94,12 +94,15 @@ struct nix_inl_dev {
 	uint32_t nb_meta_bufs;
 	uint32_t meta_buf_sz;
 	uint8_t rx_inj_ena; /* Rx Inject Enable */
+	uint8_t custom_inb_sa;
 
 	/* NPC */
 	int *ipsec_index;
 	uint32_t curr_ipsec_idx;
 	uint32_t max_ipsec_rules;
 	uint32_t alloc_ipsec_rules;
+
+	struct roc_nix_inl_dev_q q_info[NIX_INL_CPT_LF];
 };
 
 int nix_inl_sso_register_irqs(struct nix_inl_dev *inl_dev);

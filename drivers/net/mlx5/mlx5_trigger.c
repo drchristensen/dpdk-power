@@ -1446,12 +1446,7 @@ continue_dev_stop:
 	mlx5_mp_os_req_stop_rxtx(dev);
 	rte_delay_us_sleep(1000 * priv->rxqs_n);
 	DRV_LOG(DEBUG, "port %u stopping device", dev->data->port_id);
-	if (priv->sh->config.dv_flow_en == 2) {
-		if (!rte_atomic_load_explicit(&priv->hws_mark_refcnt, rte_memory_order_relaxed))
-			flow_hw_rxq_flag_set(dev, false);
-	} else {
-		mlx5_flow_stop_default(dev);
-	}
+	mlx5_flow_stop_default(dev);
 	/* Control flows for default traffic can be removed firstly. */
 	mlx5_traffic_disable(dev);
 	/* All RX queue flags will be cleared in the flush interface. */
@@ -1568,23 +1563,23 @@ mlx5_traffic_enable(struct rte_eth_dev *dev)
 {
 	struct mlx5_priv *priv = dev->data->dev_private;
 	struct rte_flow_item_eth bcast = {
-		.hdr.dst_addr.addr_bytes = "\xff\xff\xff\xff\xff\xff",
+		.hdr.dst_addr.addr_bytes = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff },
 	};
 	struct rte_flow_item_eth ipv6_multi_spec = {
-		.hdr.dst_addr.addr_bytes = "\x33\x33\x00\x00\x00\x00",
+		.hdr.dst_addr.addr_bytes = { 0x33, 0x33, 0x00, 0x00, 0x00, 0x00 },
 	};
 	struct rte_flow_item_eth ipv6_multi_mask = {
-		.hdr.dst_addr.addr_bytes = "\xff\xff\x00\x00\x00\x00",
+		.hdr.dst_addr.addr_bytes = { 0xff, 0xff, 0x00, 0x00, 0x00, 0x00 },
 	};
 	struct rte_flow_item_eth unicast = {
-		.hdr.src_addr.addr_bytes = "\x00\x00\x00\x00\x00\x00",
+		.hdr.src_addr.addr_bytes = { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 },
 	};
 	struct rte_flow_item_eth unicast_mask = {
-		.hdr.dst_addr.addr_bytes = "\xff\xff\xff\xff\xff\xff",
+		.hdr.dst_addr.addr_bytes = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff },
 	};
 	const unsigned int vlan_filter_n = priv->vlan_filter_n;
 	const struct rte_ether_addr cmp = {
-		.addr_bytes = "\x00\x00\x00\x00\x00\x00",
+		.addr_bytes = { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 },
 	};
 	unsigned int i;
 	unsigned int j;
@@ -1653,8 +1648,8 @@ mlx5_traffic_enable(struct rte_eth_dev *dev)
 		return 0;
 	if (dev->data->promiscuous) {
 		struct rte_flow_item_eth promisc = {
-			.hdr.dst_addr.addr_bytes = "\x00\x00\x00\x00\x00\x00",
-			.hdr.src_addr.addr_bytes = "\x00\x00\x00\x00\x00\x00",
+			.hdr.dst_addr.addr_bytes = { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 },
+			.hdr.src_addr.addr_bytes = { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 },
 			.hdr.ether_type = 0,
 		};
 
@@ -1664,8 +1659,8 @@ mlx5_traffic_enable(struct rte_eth_dev *dev)
 	}
 	if (dev->data->all_multicast) {
 		struct rte_flow_item_eth multicast = {
-			.hdr.dst_addr.addr_bytes = "\x01\x00\x00\x00\x00\x00",
-			.hdr.src_addr.addr_bytes = "\x00\x00\x00\x00\x00\x00",
+			.hdr.dst_addr.addr_bytes = { 0x01, 0x00, 0x00, 0x00, 0x00, 0x00 },
+			.hdr.src_addr.addr_bytes = { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 },
 			.hdr.ether_type = 0,
 		};
 

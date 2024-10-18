@@ -223,6 +223,25 @@ Display the EEPROM information of a port::
 
    testpmd> show port (port_id) (module_eeprom|eeprom)
 
+set eeprom
+~~~~~~~~~~
+
+Write a value to the device EEPROM of a port at a specific offset::
+
+   testpmd> set port (port_id) eeprom (accept_risk) magic (magic_num) value (value) \
+            offset (offset)
+
+Value should be given in the form of a hex-as-string, with no leading ``0x``.
+The offset field here is optional,
+if not specified then the offset will default to 0.
+
+.. note::
+
+   This is a high-risk command
+   and its misuse may result in unexpected behaviour from the NIC.
+   By inserting "accept_risk" into the command,
+   the user is acknowledging and taking responsibility for this risk.
+
 show port rss reta
 ~~~~~~~~~~~~~~~~~~
 
@@ -1837,6 +1856,13 @@ during the flow rule creation::
 
 Otherwise the default index ``0`` is used.
 
+set port led
+~~~~~~~~~~~~
+
+Set a controllable LED associated with a certain port on or off::
+
+   testpmd> set port (port_id) led (on|off)
+
 Port Functions
 --------------
 
@@ -2789,6 +2815,33 @@ where:
 * ``stats_mask``: Mask of statistics counter types to be enabled for this node.
 * ``n_shared_shapers``: Number of shared shapers.
 * ``shared_shaper_id``: Shared shaper id.
+
+Query port traffic management hierarchy node
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+An added traffic management hierarchy node, whether leaf of non-leaf,
+can be queried using::
+
+    testpmd> show port tm node (port_id) (node_id)
+
+where ``port_id`` and ``node_id`` are the numeric identifiers of the ethernet port
+and the previously added traffic management node, respectively.
+The output of this command are the parameters previously provided to the add call,
+printed with appropriate labels.
+For example::
+
+   testpmd> show port tm node 0 90
+   Port 0 TM Node 90
+     Parent Node ID: 100
+     Level ID: 1
+     Priority: 0
+     Weight: 1
+     Shaper Profile ID: <none>
+     Shared Shaper IDs: <none>
+     Stats Mask: 0
+     Nonleaf Node Parameters
+       Num Strict Priorities: 1
+       WFQ Weights Mode: WFQ
 
 Delete port traffic management hierarchy node
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

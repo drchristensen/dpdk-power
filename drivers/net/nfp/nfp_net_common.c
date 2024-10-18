@@ -14,6 +14,7 @@
 #include "nfdk/nfp_nfdk.h"
 #include "nfpcore/nfp_mip.h"
 #include "nfpcore/nfp_nsp.h"
+#include "nfpcore/nfp_rtsym.h"
 #include "nfp_logs.h"
 #include "nfp_net_meta.h"
 
@@ -157,10 +158,10 @@ static const uint32_t nfp_net_link_speed_nfp2rte[] = {
 	[NFP_NET_CFG_STS_LINK_RATE_100G]        = RTE_ETH_SPEED_NUM_100G,
 };
 
-static uint16_t
-nfp_net_link_speed_rte2nfp(uint16_t speed)
+static size_t
+nfp_net_link_speed_rte2nfp(uint32_t speed)
 {
-	uint16_t i;
+	size_t i;
 
 	for (i = 0; i < RTE_DIM(nfp_net_link_speed_nfp2rte); i++) {
 		if (speed == nfp_net_link_speed_nfp2rte[i])
@@ -170,7 +171,20 @@ nfp_net_link_speed_rte2nfp(uint16_t speed)
 	return NFP_NET_CFG_STS_LINK_RATE_UNKNOWN;
 }
 
-static void
+static uint32_t
+nfp_net_link_speed_nfp2rte_check(uint32_t speed)
+{
+	size_t i;
+
+	for (i = 0; i < RTE_DIM(nfp_net_link_speed_nfp2rte); i++) {
+		if (speed == nfp_net_link_speed_nfp2rte[i])
+			return nfp_net_link_speed_nfp2rte[i];
+	}
+
+	return RTE_ETH_SPEED_NUM_NONE;
+}
+
+void
 nfp_net_notify_port_speed(struct nfp_net_hw *hw,
 		struct rte_eth_link *link)
 {
@@ -298,6 +312,24 @@ nfp_net_get_hw(const struct rte_eth_dev *dev)
 	return hw;
 }
 
+uint8_t
+nfp_net_get_idx(const struct rte_eth_dev *dev)
+{
+	uint8_t idx;
+
+	if (rte_eth_dev_is_repr(dev)) {
+		struct nfp_flower_representor *repr;
+		repr = dev->data->dev_private;
+		idx = repr->idx;
+	} else {
+		struct nfp_net_hw *hw;
+		hw = dev->data->dev_private;
+		idx = hw->idx;
+	}
+
+	return idx;
+}
+
 /*
  * Configure an Ethernet device.
  *
@@ -349,13 +381,14 @@ nfp_net_configure(struct rte_eth_dev *dev)
 }
 
 void
-nfp_net_log_device_information(const struct nfp_net_hw *hw)
+nfp_net_log_device_information(const struct nfp_net_hw *hw,
+		struct nfp_pf_dev *pf_dev)
 {
 	uint32_t cap = hw->super.cap;
 	uint32_t cap_ext = hw->super.cap_ext;
 
 	PMD_INIT_LOG(INFO, "VER: %u.%u, Maximum supported MTU: %d",
-			hw->ver.major, hw->ver.minor, hw->max_mtu);
+			pf_dev->ver.major, pf_dev->ver.minor, hw->max_mtu);
 
 	PMD_INIT_LOG(INFO, "CAP: %#x", cap);
 	PMD_INIT_LOG(INFO, "%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s",
@@ -728,20 +761,19 @@ nfp_net_allmulticast_disable(struct rte_eth_dev *dev)
 }
 
 static void
-nfp_net_speed_aneg_update(struct rte_eth_dev *dev,
-		struct nfp_net_hw *hw,
+nfp_net_pf_speed_update(struct rte_eth_dev *dev,
 		struct nfp_net_hw_priv *hw_priv,
 		struct rte_eth_link *link)
 {
-	uint32_t i;
-	uint32_t speed;
+	uint8_t idx;
 	enum nfp_eth_aneg aneg;
 	struct nfp_pf_dev *pf_dev;
 	struct nfp_eth_table *nfp_eth_table;
 	struct nfp_eth_table_port *eth_port;
 
 	pf_dev = hw_priv->pf_dev;
-	aneg = pf_dev->nfp_eth_table->ports[hw->idx].aneg;
+	idx = nfp_net_get_idx(dev);
+	aneg = pf_dev->nfp_eth_table->ports[idx].aneg;
 
 	/* Compare whether the current status has changed. */
 	if (pf_dev->speed_updated || aneg == NFP_ANEG_AUTO) {
@@ -749,57 +781,59 @@ nfp_net_speed_aneg_update(struct rte_eth_dev *dev,
 		if (nfp_eth_table == NULL) {
 			PMD_DRV_LOG(WARNING, "Failed to update port speed.");
 		} else {
-			pf_dev->nfp_eth_table->ports[hw->idx] = nfp_eth_table->ports[hw->idx];
+			pf_dev->nfp_eth_table->ports[idx] = nfp_eth_table->ports[idx];
 			free(nfp_eth_table);
 			pf_dev->speed_updated = false;
 		}
 	}
 
 	nfp_eth_table = pf_dev->nfp_eth_table;
-	eth_port = &nfp_eth_table->ports[hw->idx];
-	speed = eth_port->speed;
+	eth_port = &nfp_eth_table->ports[idx];
 
-	for (i = 0; i < RTE_DIM(nfp_net_link_speed_nfp2rte); i++) {
-		if (nfp_net_link_speed_nfp2rte[i] == speed) {
-			link->link_speed = speed;
-			break;
-		}
-	}
+	link->link_speed = nfp_net_link_speed_nfp2rte_check(eth_port->speed);
 
 	if (dev->data->dev_conf.link_speeds == RTE_ETH_LINK_SPEED_AUTONEG &&
 			eth_port->supp_aneg)
 		link->link_autoneg = RTE_ETH_LINK_AUTONEG;
 }
 
+static void
+nfp_net_vf_speed_update(struct rte_eth_link *link,
+		uint32_t link_status)
+{
+	size_t link_rate_index;
+
+	/*
+	 * Shift and mask link_status so that it is effectively the value
+	 * at offset NFP_NET_CFG_STS_NSP_LINK_RATE.
+	 */
+	link_rate_index = (link_status >> NFP_NET_CFG_STS_LINK_RATE_SHIFT) &
+			NFP_NET_CFG_STS_LINK_RATE_MASK;
+	if (link_rate_index < RTE_DIM(nfp_net_link_speed_nfp2rte))
+		link->link_speed = nfp_net_link_speed_nfp2rte[link_rate_index];
+	else
+		link->link_speed = RTE_ETH_SPEED_NUM_NONE;
+}
+
 int
 nfp_net_link_update_common(struct rte_eth_dev *dev,
-		struct nfp_net_hw *hw,
 		struct rte_eth_link *link,
 		uint32_t link_status)
 {
 	int ret;
-	uint32_t nn_link_status;
 	struct nfp_net_hw_priv *hw_priv;
 
 	hw_priv = dev->process_private;
 	if (link->link_status == RTE_ETH_LINK_UP) {
-		if (hw_priv->pf_dev != NULL) {
-			nfp_net_speed_aneg_update(dev, hw, hw_priv, link);
-		} else {
-			/*
-			 * Shift and mask nn_link_status so that it is effectively the value
-			 * at offset NFP_NET_CFG_STS_NSP_LINK_RATE.
-			 */
-			nn_link_status = (link_status >> NFP_NET_CFG_STS_LINK_RATE_SHIFT) &
-					NFP_NET_CFG_STS_LINK_RATE_MASK;
-			if (nn_link_status < RTE_DIM(nfp_net_link_speed_nfp2rte))
-				link->link_speed = nfp_net_link_speed_nfp2rte[nn_link_status];
-		}
+		if (hw_priv->is_pf)
+			nfp_net_pf_speed_update(dev, hw_priv, link);
+		else
+			nfp_net_vf_speed_update(link, link_status);
 	}
 
 	ret = rte_eth_linkstatus_set(dev, link);
 	if (ret == 0) {
-		if (link->link_status != 0)
+		if (link->link_status == RTE_ETH_LINK_UP)
 			PMD_DRV_LOG(INFO, "NIC Link is Up");
 		else
 			PMD_DRV_LOG(INFO, "NIC Link is Down");
@@ -836,7 +870,7 @@ nfp_net_link_update(struct rte_eth_dev *dev,
 
 	link.link_duplex = RTE_ETH_LINK_FULL_DUPLEX;
 
-	ret = nfp_net_link_update_common(dev, hw, &link, nn_link_status);
+	ret = nfp_net_link_update_common(dev, &link, nn_link_status);
 	if (ret == -EIO)
 		return ret;
 
@@ -845,7 +879,7 @@ nfp_net_link_update(struct rte_eth_dev *dev,
 	 * Not applicable for VFs as the associated PF is still attached to the
 	 * kernel driver.
 	 */
-	if (hw_priv != NULL && hw_priv->pf_dev != NULL)
+	if (hw_priv != NULL && hw_priv->is_pf)
 		nfp_net_notify_port_speed(hw, &link);
 
 	return ret;
@@ -1235,14 +1269,13 @@ nfp_net_rx_desc_limits(struct nfp_net_hw_priv *hw_priv,
 }
 
 void
-nfp_net_tx_desc_limits(struct nfp_net_hw *hw,
-		struct nfp_net_hw_priv *hw_priv,
+nfp_net_tx_desc_limits(struct nfp_net_hw_priv *hw_priv,
 		uint16_t *min_tx_desc,
 		uint16_t *max_tx_desc)
 {
 	uint16_t tx_dpp;
 
-	if (hw->ver.extend == NFP_NET_CFG_VERSION_DP_NFD3)
+	if (hw_priv->pf_dev->ver.extend == NFP_NET_CFG_VERSION_DP_NFD3)
 		tx_dpp = NFD3_TX_DESC_PER_PKT;
 	else
 		tx_dpp = NFDK_TX_DESC_PER_SIMPLE_PKT;
@@ -1269,7 +1302,7 @@ nfp_net_infos_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 		return -EINVAL;
 
 	nfp_net_rx_desc_limits(hw_priv, &min_rx_desc, &max_rx_desc);
-	nfp_net_tx_desc_limits(hw, hw_priv, &min_tx_desc, &max_tx_desc);
+	nfp_net_tx_desc_limits(hw_priv, &min_tx_desc, &max_tx_desc);
 
 	dev_info->max_rx_queues = (uint16_t)hw->max_rx_queues;
 	dev_info->max_tx_queues = (uint16_t)hw->max_tx_queues;
@@ -1366,18 +1399,20 @@ nfp_net_infos_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 	}
 
 	/* Only PF supports getting speed capability. */
-	if (hw_priv->pf_dev != NULL)
+	if (hw_priv->is_pf)
 		dev_info->speed_capa = hw_priv->pf_dev->speed_capa;
 
 	return 0;
 }
 
 int
-nfp_net_common_init(struct rte_pci_device *pci_dev,
+nfp_net_common_init(struct nfp_pf_dev *pf_dev,
 		struct nfp_net_hw *hw)
 {
 	const int stride = 4;
+	struct rte_pci_device *pci_dev;
 
+	pci_dev = pf_dev->pci_dev;
 	hw->device_id = pci_dev->id.device_id;
 	hw->vendor_id = pci_dev->id.vendor_id;
 	hw->subsystem_device_id = pci_dev->id.subsystem_device_id;
@@ -1391,11 +1426,7 @@ nfp_net_common_init(struct rte_pci_device *pci_dev,
 		return -ENODEV;
 	}
 
-	nfp_net_cfg_read_version(hw);
-	if (!nfp_net_is_valid_nfd_version(hw->ver))
-		return -EINVAL;
-
-	if (nfp_net_check_dma_mask(hw, pci_dev->name) != 0)
+	if (nfp_net_check_dma_mask(pf_dev, pci_dev->name) != 0)
 		return -ENODEV;
 
 	/* Get some of the read-only fields from the config BAR */
@@ -1404,10 +1435,10 @@ nfp_net_common_init(struct rte_pci_device *pci_dev,
 	hw->max_mtu = nn_cfg_readl(&hw->super, NFP_NET_CFG_MAX_MTU);
 	hw->flbufsz = DEFAULT_FLBUF_SIZE;
 
-	nfp_net_meta_init_format(hw);
+	nfp_net_meta_init_format(hw, pf_dev);
 
 	/* Read the Rx offset configured from firmware */
-	if (hw->ver.major < 2)
+	if (pf_dev->ver.major < 2)
 		hw->rx_offset = NFP_NET_RX_OFFSET;
 	else
 		hw->rx_offset = nn_cfg_readl(&hw->super, NFP_NET_CFG_RX_OFFSET);
@@ -1459,11 +1490,51 @@ nfp_net_supported_ptypes_get(struct rte_eth_dev *dev, size_t *no_of_elements)
 		return NULL;
 
 	net_hw = dev->data->dev_private;
-	if ((net_hw->super.ctrl_ext & NFP_NET_CFG_CTRL_PKT_TYPE) == 0)
+	if ((net_hw->super.cap_ext & NFP_NET_CFG_CTRL_PKT_TYPE) == 0)
 		return NULL;
 
 	*no_of_elements = RTE_DIM(ptypes);
 	return ptypes;
+}
+
+int
+nfp_net_ptypes_set(struct rte_eth_dev *dev,
+		uint32_t ptype_mask)
+{
+	int ret;
+	uint32_t update;
+	uint32_t ctrl_ext;
+	struct nfp_hw *hw;
+	struct nfp_net_hw *net_hw;
+
+	net_hw = dev->data->dev_private;
+	hw = &net_hw->super;
+
+	if ((hw->cap_ext & NFP_NET_CFG_CTRL_PKT_TYPE) == 0)
+		return -ENOTSUP;
+
+	ctrl_ext = hw->ctrl_ext;
+	if (ptype_mask == 0) {
+		if ((ctrl_ext & NFP_NET_CFG_CTRL_PKT_TYPE) == 0)
+			return 0;
+
+		ctrl_ext &= ~NFP_NET_CFG_CTRL_PKT_TYPE;
+	} else {
+		if ((ctrl_ext & NFP_NET_CFG_CTRL_PKT_TYPE) != 0)
+			return 0;
+
+		ctrl_ext |= NFP_NET_CFG_CTRL_PKT_TYPE;
+	}
+
+	update = NFP_NET_CFG_UPDATE_GEN;
+
+	ret = nfp_ext_reconfig(hw, ctrl_ext, update);
+	if (ret != 0)
+		return ret;
+
+	hw->ctrl_ext = ctrl_ext;
+
+	return 0;
 }
 
 int
@@ -2118,10 +2189,10 @@ nfp_net_set_vxlan_port(struct nfp_net_hw *net_hw,
  * than 40 bits.
  */
 int
-nfp_net_check_dma_mask(struct nfp_net_hw *hw,
+nfp_net_check_dma_mask(struct nfp_pf_dev *pf_dev,
 		char *name)
 {
-	if (hw->ver.extend == NFP_NET_CFG_VERSION_DP_NFD3 &&
+	if (pf_dev->ver.extend == NFP_NET_CFG_VERSION_DP_NFD3 &&
 			rte_mem_check_dma_mask(40) != 0) {
 		PMD_DRV_LOG(ERR, "Device %s can't be used: restricted dma mask to 40 bits!",
 				name);
@@ -2165,16 +2236,31 @@ nfp_net_txrwb_free(struct rte_eth_dev *eth_dev)
 	net_hw->txrwb_mz = NULL;
 }
 
-void
-nfp_net_cfg_read_version(struct nfp_net_hw *hw)
+static void
+nfp_net_cfg_read_version(struct nfp_hw *hw,
+		struct nfp_pf_dev *pf_dev)
 {
 	union {
 		uint32_t whole;
 		struct nfp_net_fw_ver split;
 	} version;
 
-	version.whole = nn_cfg_readl(&hw->super, NFP_NET_CFG_VERSION);
-	hw->ver = version.split;
+	version.whole = nn_cfg_readl(hw, NFP_NET_CFG_VERSION);
+	pf_dev->ver = version.split;
+}
+
+bool
+nfp_net_version_check(struct nfp_hw *hw,
+		struct nfp_pf_dev *pf_dev)
+{
+	nfp_net_cfg_read_version(hw, pf_dev);
+	if (!nfp_net_is_valid_nfd_version(pf_dev->ver))
+		return false;
+
+	if (!nfp_net_is_valid_version_class(pf_dev->ver))
+		return false;
+
+	return true;
 }
 
 static void
@@ -2221,7 +2307,7 @@ nfp_net_get_mip_name(struct nfp_net_hw_priv *hw_priv,
 	if (mip == NULL)
 		return;
 
-	snprintf(mip_name, FW_VER_LEN, "%s", nfp_mip_name(mip));
+	strlcpy(mip_name, nfp_mip_name(mip), FW_VER_LEN);
 
 	nfp_mip_close(mip);
 }
@@ -2232,13 +2318,13 @@ nfp_net_get_app_name(struct nfp_net_hw_priv *hw_priv,
 {
 	switch (hw_priv->pf_dev->app_fw_id) {
 	case NFP_APP_FW_CORE_NIC:
-		snprintf(app_name, FW_VER_LEN, "%s", "nic");
+		strlcpy(app_name, "nic", FW_VER_LEN);
 		break;
 	case NFP_APP_FW_FLOWER_NIC:
-		snprintf(app_name, FW_VER_LEN, "%s", "flower");
+		strlcpy(app_name, "flower", FW_VER_LEN);
 		break;
 	default:
-		snprintf(app_name, FW_VER_LEN, "%s", "unknown");
+		strlcpy(app_name, "unknown", FW_VER_LEN);
 		break;
 	}
 }
@@ -2249,6 +2335,7 @@ nfp_net_firmware_version_get(struct rte_eth_dev *dev,
 		size_t fw_size)
 {
 	struct nfp_net_hw *hw;
+	struct nfp_pf_dev *pf_dev;
 	struct nfp_net_hw_priv *hw_priv;
 	char app_name[FW_VER_LEN] = {0};
 	char mip_name[FW_VER_LEN] = {0};
@@ -2260,6 +2347,7 @@ nfp_net_firmware_version_get(struct rte_eth_dev *dev,
 
 	hw = nfp_net_get_hw(dev);
 	hw_priv = dev->process_private;
+	pf_dev = hw_priv->pf_dev;
 
 	if (hw->fw_version[0] != 0) {
 		snprintf(fw_version, FW_VER_LEN, "%s", hw->fw_version);
@@ -2268,8 +2356,8 @@ nfp_net_firmware_version_get(struct rte_eth_dev *dev,
 
 	if (!rte_eth_dev_is_repr(dev)) {
 		snprintf(vnic_version, FW_VER_LEN, "%d.%d.%d.%d",
-			hw->ver.extend, hw->ver.class,
-			hw->ver.major, hw->ver.minor);
+			pf_dev->ver.extend, pf_dev->ver.class,
+			pf_dev->ver.major, pf_dev->ver.minor);
 	} else {
 		snprintf(vnic_version, FW_VER_LEN, "*");
 	}
@@ -2313,10 +2401,33 @@ nfp_net_is_valid_nfd_version(struct nfp_net_fw_ver version)
 	return false;
 }
 
+bool
+nfp_net_is_valid_version_class(struct nfp_net_fw_ver version)
+{
+	switch (version.class) {
+	case NFP_NET_CFG_VERSION_CLASS_GENERIC:
+		return true;
+	case NFP_NET_CFG_VERSION_CLASS_NO_EMEM:
+		return true;
+	default:
+		return false;
+	}
+}
+
+void
+nfp_net_ctrl_bar_size_set(struct nfp_pf_dev *pf_dev)
+{
+	if (pf_dev->ver.class == NFP_NET_CFG_VERSION_CLASS_GENERIC)
+		pf_dev->ctrl_bar_size = NFP_NET_CFG_BAR_SZ_32K;
+	else
+		pf_dev->ctrl_bar_size = NFP_NET_CFG_BAR_SZ_8K;
+}
+
 /* Disable rx and tx functions to allow for reconfiguring. */
 int
 nfp_net_stop(struct rte_eth_dev *dev)
 {
+	int ret;
 	struct nfp_net_hw *hw;
 	struct nfp_net_hw_priv *hw_priv;
 
@@ -2329,7 +2440,9 @@ nfp_net_stop(struct rte_eth_dev *dev)
 	nfp_net_stop_tx_queue(dev);
 	nfp_net_stop_rx_queue(dev);
 
-	nfp_eth_set_configured(hw_priv->pf_dev->cpp, hw->nfp_idx, 0);
+	ret = nfp_eth_set_configured(hw_priv->pf_dev->cpp, hw->nfp_idx, 0);
+	if (ret < 0)
+		return ret;
 
 	return 0;
 }
@@ -2407,7 +2520,7 @@ nfp_net_pause_frame_set(struct nfp_net_hw_priv *hw_priv,
 	}
 
 	err = nfp_eth_config_commit_end(nsp);
-	if (err != 0) {
+	if (err < 0) {
 		PMD_DRV_LOG(ERR, "Failed to configure pause frame.");
 		return err;
 	}
@@ -2420,20 +2533,20 @@ nfp_net_flow_ctrl_set(struct rte_eth_dev *dev,
 		struct rte_eth_fc_conf *fc_conf)
 {
 	int ret;
-	struct nfp_net_hw *net_hw;
+	uint8_t idx;
 	enum rte_eth_fc_mode set_mode;
 	struct nfp_net_hw_priv *hw_priv;
 	enum rte_eth_fc_mode original_mode;
 	struct nfp_eth_table *nfp_eth_table;
 	struct nfp_eth_table_port *eth_port;
 
-	net_hw = nfp_net_get_hw(dev);
+	idx = nfp_net_get_idx(dev);
 	hw_priv = dev->process_private;
 	if (hw_priv == NULL || hw_priv->pf_dev == NULL)
 		return -EINVAL;
 
 	nfp_eth_table = hw_priv->pf_dev->nfp_eth_table;
-	eth_port = &nfp_eth_table->ports[net_hw->idx];
+	eth_port = &nfp_eth_table->ports[idx];
 
 	original_mode = nfp_net_get_pause_mode(eth_port);
 	set_mode = fc_conf->mode;
@@ -2457,20 +2570,20 @@ nfp_net_fec_get_capability(struct rte_eth_dev *dev,
 		struct rte_eth_fec_capa *speed_fec_capa,
 		__rte_unused unsigned int num)
 {
+	uint8_t idx;
 	uint16_t speed;
-	struct nfp_net_hw *hw;
 	uint32_t supported_fec;
 	struct nfp_net_hw_priv *hw_priv;
 	struct nfp_eth_table *nfp_eth_table;
 	struct nfp_eth_table_port *eth_port;
 
-	hw = nfp_net_get_hw(dev);
+	idx = nfp_net_get_idx(dev);
 	hw_priv = dev->process_private;
 	if (hw_priv == NULL || hw_priv->pf_dev == NULL)
 		return -EINVAL;
 
 	nfp_eth_table = hw_priv->pf_dev->nfp_eth_table;
-	eth_port = &nfp_eth_table->ports[hw->idx];
+	eth_port = &nfp_eth_table->ports[idx];
 
 	speed = eth_port->speed;
 	supported_fec = nfp_eth_supported_fec_modes(eth_port);
@@ -2518,24 +2631,24 @@ int
 nfp_net_fec_get(struct rte_eth_dev *dev,
 		uint32_t *fec_capa)
 {
-	struct nfp_net_hw *hw;
+	uint8_t idx;
 	struct nfp_net_hw_priv *hw_priv;
 	struct nfp_eth_table *nfp_eth_table;
 	struct nfp_eth_table_port *eth_port;
 
-	hw = nfp_net_get_hw(dev);
+	idx = nfp_net_get_idx(dev);
 	hw_priv = dev->process_private;
 	if (hw_priv == NULL || hw_priv->pf_dev == NULL)
 		return -EINVAL;
 
 	if (dev->data->dev_link.link_status == RTE_ETH_LINK_DOWN) {
 		nfp_eth_table = nfp_eth_read_ports(hw_priv->pf_dev->cpp);
-		hw_priv->pf_dev->nfp_eth_table->ports[hw->idx] = nfp_eth_table->ports[hw->idx];
+		hw_priv->pf_dev->nfp_eth_table->ports[idx] = nfp_eth_table->ports[idx];
 		free(nfp_eth_table);
 	}
 
 	nfp_eth_table = hw_priv->pf_dev->nfp_eth_table;
-	eth_port = &nfp_eth_table->ports[hw->idx];
+	eth_port = &nfp_eth_table->ports[idx];
 
 	if (!nfp_eth_can_support_fec(eth_port)) {
 		PMD_DRV_LOG(ERR, "NFP can not support FEC.");
@@ -2579,20 +2692,21 @@ int
 nfp_net_fec_set(struct rte_eth_dev *dev,
 		uint32_t fec_capa)
 {
+	int ret;
+	uint8_t idx;
 	enum nfp_eth_fec fec;
-	struct nfp_net_hw *hw;
 	uint32_t supported_fec;
 	struct nfp_net_hw_priv *hw_priv;
 	struct nfp_eth_table *nfp_eth_table;
 	struct nfp_eth_table_port *eth_port;
 
-	hw = nfp_net_get_hw(dev);
+	idx = nfp_net_get_idx(dev);
 	hw_priv = dev->process_private;
 	if (hw_priv == NULL || hw_priv->pf_dev == NULL)
 		return -EINVAL;
 
 	nfp_eth_table = hw_priv->pf_dev->nfp_eth_table;
-	eth_port = &nfp_eth_table->ports[hw->idx];
+	eth_port = &nfp_eth_table->ports[idx];
 
 	supported_fec = nfp_eth_supported_fec_modes(eth_port);
 	if (supported_fec == 0) {
@@ -2611,17 +2725,41 @@ nfp_net_fec_set(struct rte_eth_dev *dev,
 		return -EIO;
 	}
 
-	return nfp_eth_set_fec(hw_priv->pf_dev->cpp, eth_port->index, fec);
+	ret = nfp_eth_set_fec(hw_priv->pf_dev->cpp, eth_port->index, fec);
+	if (ret < 0) {
+		PMD_DRV_LOG(ERR, "NFP set FEC mode failed.");
+		return ret;
+	}
+
+	return 0;
 }
 
 uint32_t
-nfp_net_get_port_num(struct nfp_pf_dev *pf_dev,
-		struct nfp_eth_table *nfp_eth_table)
+nfp_net_get_phyports_from_nsp(struct nfp_pf_dev *pf_dev)
 {
 	if (pf_dev->multi_pf.enabled)
 		return 1;
 	else
-		return nfp_eth_table->count;
+		return pf_dev->nfp_eth_table->count;
+}
+
+uint32_t
+nfp_net_get_phyports_from_fw(struct nfp_pf_dev *pf_dev)
+{
+	int ret = 0;
+	uint8_t total_phyports;
+	char pf_name[RTE_ETH_NAME_MAX_LEN];
+
+	/* Read the number of vNIC's created for the PF */
+	snprintf(pf_name, sizeof(pf_name), "nfd_cfg_pf%u_num_ports",
+			pf_dev->multi_pf.function_id);
+	total_phyports = nfp_rtsym_read_le(pf_dev->sym_tbl, pf_name, &ret);
+	if (ret != 0 || total_phyports == 0 || total_phyports > 8) {
+		PMD_INIT_LOG(ERR, "%s symbol with wrong value", pf_name);
+		return 0;
+	}
+
+	return total_phyports;
 }
 
 uint8_t

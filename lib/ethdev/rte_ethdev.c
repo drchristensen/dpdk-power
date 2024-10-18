@@ -1648,13 +1648,9 @@ eth_dev_mac_restore(struct rte_eth_dev *dev,
 }
 
 static int
-eth_dev_config_restore(struct rte_eth_dev *dev,
-		struct rte_eth_dev_info *dev_info, uint16_t port_id)
+eth_dev_promiscuous_restore(struct rte_eth_dev *dev, uint16_t port_id)
 {
 	int ret;
-
-	if (!(*dev_info->dev_flags & RTE_ETH_DEV_NOLIVE_MAC_ADDR))
-		eth_dev_mac_restore(dev, dev_info);
 
 	/* replay promiscuous configuration */
 	/*
@@ -1682,6 +1678,14 @@ eth_dev_config_restore(struct rte_eth_dev *dev,
 			return ret;
 		}
 	}
+
+	return 0;
+}
+
+static int
+eth_dev_allmulticast_restore(struct rte_eth_dev *dev, uint16_t port_id)
+{
+	int ret;
 
 	/* replay all multicast configuration */
 	/*
@@ -1713,11 +1717,39 @@ eth_dev_config_restore(struct rte_eth_dev *dev,
 	return 0;
 }
 
+static int
+eth_dev_config_restore(struct rte_eth_dev *dev,
+		struct rte_eth_dev_info *dev_info,
+		uint64_t restore_flags,
+		uint16_t port_id)
+{
+	int ret;
+
+	if (!(*dev_info->dev_flags & RTE_ETH_DEV_NOLIVE_MAC_ADDR) &&
+	    (restore_flags & RTE_ETH_RESTORE_MAC_ADDR))
+		eth_dev_mac_restore(dev, dev_info);
+
+	if (restore_flags & RTE_ETH_RESTORE_PROMISC) {
+		ret = eth_dev_promiscuous_restore(dev, port_id);
+		if (ret != 0)
+			return ret;
+	}
+
+	if (restore_flags & RTE_ETH_RESTORE_ALLMULTI) {
+		ret = eth_dev_allmulticast_restore(dev, port_id);
+		if (ret != 0)
+			return ret;
+	}
+
+	return 0;
+}
+
 int
 rte_eth_dev_start(uint16_t port_id)
 {
 	struct rte_eth_dev *dev;
 	struct rte_eth_dev_info dev_info;
+	uint64_t restore_flags;
 	int diag;
 	int ret, ret_stop;
 
@@ -1745,8 +1777,11 @@ rte_eth_dev_start(uint16_t port_id)
 	if (ret != 0)
 		return ret;
 
+	restore_flags = rte_eth_get_restore_flags(dev, RTE_ETH_START);
+
 	/* Lets restore MAC now if device does not support live change */
-	if (*dev_info.dev_flags & RTE_ETH_DEV_NOLIVE_MAC_ADDR)
+	if ((*dev_info.dev_flags & RTE_ETH_DEV_NOLIVE_MAC_ADDR) &&
+	    (restore_flags & RTE_ETH_RESTORE_MAC_ADDR))
 		eth_dev_mac_restore(dev, &dev_info);
 
 	diag = (*dev->dev_ops->dev_start)(dev);
@@ -1755,7 +1790,7 @@ rte_eth_dev_start(uint16_t port_id)
 	else
 		return eth_err(port_id, diag);
 
-	ret = eth_dev_config_restore(dev, &dev_info, port_id);
+	ret = eth_dev_config_restore(dev, &dev_info, restore_flags, port_id);
 	if (ret != 0) {
 		RTE_ETHDEV_LOG_LINE(ERR,
 			"Error during restoring configuration for device (port %u): %s",
@@ -1847,6 +1882,58 @@ rte_eth_dev_set_link_down(uint16_t port_id)
 	rte_ethdev_trace_set_link_down(port_id, ret);
 
 	return ret;
+}
+
+int
+rte_eth_speed_lanes_get(uint16_t port_id, uint32_t *lane)
+{
+	struct rte_eth_dev *dev;
+
+	RTE_ETH_VALID_PORTID_OR_ERR_RET(port_id, -ENODEV);
+	dev = &rte_eth_devices[port_id];
+
+	if (*dev->dev_ops->speed_lanes_get == NULL)
+		return -ENOTSUP;
+	return eth_err(port_id, (*dev->dev_ops->speed_lanes_get)(dev, lane));
+}
+
+int
+rte_eth_speed_lanes_get_capability(uint16_t port_id,
+				   struct rte_eth_speed_lanes_capa *speed_lanes_capa,
+				   unsigned int num)
+{
+	struct rte_eth_dev *dev;
+	int ret;
+
+	RTE_ETH_VALID_PORTID_OR_ERR_RET(port_id, -ENODEV);
+	dev = &rte_eth_devices[port_id];
+
+	if (*dev->dev_ops->speed_lanes_get_capa == NULL)
+		return -ENOTSUP;
+
+	if (speed_lanes_capa == NULL && num > 0) {
+		RTE_ETHDEV_LOG_LINE(ERR,
+				    "Cannot get ethdev port %u speed lanes capability to NULL when array size is non zero",
+				    port_id);
+		return -EINVAL;
+	}
+
+	ret = (*dev->dev_ops->speed_lanes_get_capa)(dev, speed_lanes_capa, num);
+
+	return ret;
+}
+
+int
+rte_eth_speed_lanes_set(uint16_t port_id, uint32_t speed_lanes_capa)
+{
+	struct rte_eth_dev *dev;
+
+	RTE_ETH_VALID_PORTID_OR_ERR_RET(port_id, -ENODEV);
+	dev = &rte_eth_devices[port_id];
+
+	if (*dev->dev_ops->speed_lanes_set == NULL)
+		return -ENOTSUP;
+	return eth_err(port_id, (*dev->dev_ops->speed_lanes_set)(dev, speed_lanes_capa));
 }
 
 int
@@ -2822,6 +2909,12 @@ rte_eth_tx_done_cleanup(uint16_t port_id, uint16_t queue_id, uint32_t free_cnt)
 
 	RTE_ETH_VALID_PORTID_OR_ERR_RET(port_id, -ENODEV);
 	dev = &rte_eth_devices[port_id];
+
+#ifdef RTE_ETHDEV_DEBUG_TX
+	ret = eth_dev_validate_tx_queue(dev, queue_id);
+	if (ret != 0)
+		return ret;
+#endif
 
 	if (*dev->dev_ops->tx_done_cleanup == NULL)
 		return -ENOTSUP;
@@ -6311,6 +6404,24 @@ rte_eth_timesync_adjust_time(uint16_t port_id, int64_t delta)
 }
 
 int
+rte_eth_timesync_adjust_freq(uint16_t port_id, int64_t ppm)
+{
+	struct rte_eth_dev *dev;
+	int ret;
+
+	RTE_ETH_VALID_PORTID_OR_ERR_RET(port_id, -ENODEV);
+	dev = &rte_eth_devices[port_id];
+
+	if (*dev->dev_ops->timesync_adjust_freq == NULL)
+		return -ENOTSUP;
+	ret = eth_err(port_id, (*dev->dev_ops->timesync_adjust_freq)(dev, ppm));
+
+	rte_eth_trace_timesync_adjust_freq(port_id, ppm, ret);
+
+	return ret;
+}
+
+int
 rte_eth_timesync_read_time(uint16_t port_id, struct timespec *timestamp)
 {
 	struct rte_eth_dev *dev;
@@ -6389,7 +6500,36 @@ rte_eth_read_clock(uint16_t port_id, uint64_t *clock)
 int
 rte_eth_dev_get_reg_info(uint16_t port_id, struct rte_dev_reg_info *info)
 {
+	struct rte_dev_reg_info reg_info = { 0 };
+	int ret;
+
+	if (info == NULL) {
+		RTE_ETHDEV_LOG_LINE(ERR,
+			"Cannot get ethdev port %u register info to NULL",
+			port_id);
+		return -EINVAL;
+	}
+
+	reg_info.length = info->length;
+	reg_info.data = info->data;
+
+	ret = rte_eth_dev_get_reg_info_ext(port_id, &reg_info);
+	if (ret != 0)
+		return ret;
+
+	info->length = reg_info.length;
+	info->width = reg_info.width;
+	info->version = reg_info.version;
+	info->offset = reg_info.offset;
+
+	return 0;
+}
+
+int
+rte_eth_dev_get_reg_info_ext(uint16_t port_id, struct rte_dev_reg_info *info)
+{
 	struct rte_eth_dev *dev;
+	uint32_t i;
 	int ret;
 
 	RTE_ETH_VALID_PORTID_OR_ERR_RET(port_id, -ENODEV);
@@ -6402,12 +6542,21 @@ rte_eth_dev_get_reg_info(uint16_t port_id, struct rte_dev_reg_info *info)
 		return -EINVAL;
 	}
 
+	if (info->names != NULL && info->length != 0)
+		memset(info->names, 0, sizeof(struct rte_eth_reg_name) * info->length);
+
 	if (*dev->dev_ops->get_reg == NULL)
 		return -ENOTSUP;
 	ret = eth_err(port_id, (*dev->dev_ops->get_reg)(dev, info));
 
 	rte_ethdev_trace_get_reg_info(port_id, info, ret);
 
+	/* Report the default names if drivers not report. */
+	if (ret == 0 && info->names != NULL && strlen(info->names[0].name) == 0) {
+		for (i = 0; i < info->length; i++)
+			snprintf(info->names[i].name, RTE_ETH_REG_NAME_SIZE,
+				"index_%u", info->offset + i);
+	}
 	return ret;
 }
 
@@ -6577,13 +6726,19 @@ static void
 eth_dev_adjust_nb_desc(uint16_t *nb_desc,
 		const struct rte_eth_desc_lim *desc_lim)
 {
+	/* Upcast to uint32 to avoid potential overflow with RTE_ALIGN_CEIL(). */
+	uint32_t nb_desc_32 = (uint32_t)*nb_desc;
+
 	if (desc_lim->nb_align != 0)
-		*nb_desc = RTE_ALIGN_CEIL(*nb_desc, desc_lim->nb_align);
+		nb_desc_32 = RTE_ALIGN_CEIL(nb_desc_32, desc_lim->nb_align);
 
 	if (desc_lim->nb_max != 0)
-		*nb_desc = RTE_MIN(*nb_desc, desc_lim->nb_max);
+		nb_desc_32 = RTE_MIN(nb_desc_32, desc_lim->nb_max);
 
-	*nb_desc = RTE_MAX(*nb_desc, desc_lim->nb_min);
+	nb_desc_32 = RTE_MAX(nb_desc_32, desc_lim->nb_min);
+
+	/* Assign clipped u32 back to u16. */
+	*nb_desc = (uint16_t)nb_desc_32;
 }
 
 int

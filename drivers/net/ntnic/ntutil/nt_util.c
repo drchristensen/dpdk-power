@@ -23,6 +23,12 @@ void nt_os_wait_usec(int val)
 	rte_delay_us_sleep(val);
 }
 
+/* spins in a waiting loop calling pause asm instruction uses RDTSC - precise wait */
+void nt_os_wait_usec_poll(int val)
+{
+	rte_delay_us(val);
+}
+
 uint64_t nt_os_get_time_monotonic_counter(void)
 {
 	return rte_get_timer_cycles();
@@ -31,7 +37,8 @@ uint64_t nt_os_get_time_monotonic_counter(void)
 /* Allocation size matching minimum alignment of specified size */
 uint64_t nt_util_align_size(uint64_t size)
 {
-	return 1 << rte_log2_u64(size);
+	uint64_t alignment_size = 1ULL << rte_log2_u64(size);
+	return alignment_size;
 }
 
 void nt_util_vfio_init(struct nt_util_vfio_impl *impl)
@@ -47,7 +54,7 @@ struct nt_dma_s *nt_dma_alloc(uint64_t size, uint64_t align, int numa)
 	vfio_addr = rte_malloc(NULL, sizeof(struct nt_dma_s), 0);
 
 	if (!vfio_addr) {
-		NT_LOG(ERR, GENERAL, "VFIO rte_malloc failed\n");
+		NT_LOG(ERR, GENERAL, "VFIO rte_malloc failed");
 		return NULL;
 	}
 
@@ -55,7 +62,7 @@ struct nt_dma_s *nt_dma_alloc(uint64_t size, uint64_t align, int numa)
 
 	if (!addr) {
 		rte_free(vfio_addr);
-		NT_LOG(ERR, GENERAL, "VFIO rte_malloc_socket failed\n");
+		NT_LOG(ERR, GENERAL, "VFIO rte_malloc_socket failed");
 		return NULL;
 	}
 
@@ -64,7 +71,7 @@ struct nt_dma_s *nt_dma_alloc(uint64_t size, uint64_t align, int numa)
 	if (res != 0) {
 		rte_free(addr);
 		rte_free(vfio_addr);
-		NT_LOG(ERR, GENERAL, "VFIO nt_dma_map failed\n");
+		NT_LOG(ERR, GENERAL, "VFIO nt_dma_map failed");
 		return NULL;
 	}
 
@@ -73,7 +80,7 @@ struct nt_dma_s *nt_dma_alloc(uint64_t size, uint64_t align, int numa)
 
 	NT_LOG(DBG, GENERAL,
 		"VFIO DMA alloc addr=%" PRIX64 ", iova=%" PRIX64
-		", size=%" PRIX64 "align=0x%" PRIX64 "\n",
+		", size=%" PRIX64 "align=0x%" PRIX64,
 		vfio_addr->addr, vfio_addr->iova, vfio_addr->size, align);
 
 	return vfio_addr;
@@ -81,7 +88,7 @@ struct nt_dma_s *nt_dma_alloc(uint64_t size, uint64_t align, int numa)
 
 void nt_dma_free(struct nt_dma_s *vfio_addr)
 {
-	NT_LOG(DBG, GENERAL, "VFIO DMA free addr=%" PRIX64 ", iova=%" PRIX64 ", size=%" PRIX64 "\n",
+	NT_LOG(DBG, GENERAL, "VFIO DMA free addr=%" PRIX64 ", iova=%" PRIX64 ", size=%" PRIX64,
 		vfio_addr->addr, vfio_addr->iova, vfio_addr->size);
 
 	int res = vfio_cb.vfio_dma_unmap(0, (void *)vfio_addr->addr, vfio_addr->iova,
@@ -89,7 +96,7 @@ void nt_dma_free(struct nt_dma_s *vfio_addr)
 
 	if (res != 0) {
 		NT_LOG(WRN, GENERAL,
-			"VFIO DMA free FAILED addr=%" PRIX64 ", iova=%" PRIX64 ", size=%" PRIX64 "\n",
+			"VFIO DMA free FAILED addr=%" PRIX64 ", iova=%" PRIX64 ", size=%" PRIX64,
 			vfio_addr->addr, vfio_addr->iova, vfio_addr->size);
 	}
 
@@ -226,4 +233,14 @@ int nt_link_duplex_to_eth_duplex(enum nt_link_duplex_e nt_link_duplex)
 	}
 
 	return eth_link_duplex;
+}
+
+int string_to_u32(const char *key_str __rte_unused, const char *value_str, void *extra_args)
+{
+	if (!value_str || !extra_args)
+		return -1;
+
+	const uint32_t value = strtol(value_str, NULL, 0);
+	*(uint32_t *)extra_args = value;
+	return 0;
 }

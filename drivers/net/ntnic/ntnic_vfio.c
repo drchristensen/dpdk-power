@@ -49,19 +49,20 @@ vfio_get(int vf_num)
 int
 nt_vfio_setup(struct rte_pci_device *dev)
 {
+	int ret;
 	char devname[RTE_DEV_NAME_MAX_LEN] = { 0 };
 	int iommu_group_num;
 	int vf_num;
 	struct vfio_dev *vfio;
 
-	NT_LOG(INF, NTNIC, "NT VFIO device setup %s\n", dev->name);
+	NT_LOG(INF, NTNIC, "NT VFIO device setup %s", dev->name);
 
 	vf_num = nt_vfio_vf_num(dev);
 
 	vfio = vfio_get(vf_num);
 
 	if (vfio == NULL) {
-		NT_LOG(ERR, NTNIC, "VFIO device setup failed. Illegal device id\n");
+		NT_LOG(ERR, NTNIC, "VFIO device setup failed. Illegal device id");
 		return -1;
 	}
 
@@ -71,7 +72,9 @@ nt_vfio_setup(struct rte_pci_device *dev)
 	vfio->iova_addr = START_VF_IOVA;
 
 	rte_pci_device_name(&dev->addr, devname, RTE_DEV_NAME_MAX_LEN);
-	rte_vfio_get_group_num(rte_pci_get_sysfs_path(), devname, &iommu_group_num);
+	ret = rte_vfio_get_group_num(rte_pci_get_sysfs_path(), devname, &iommu_group_num);
+	if (ret <= 0)
+		return -1;
 
 	if (vf_num == 0) {
 		/* use default container for pf0 */
@@ -82,7 +85,7 @@ nt_vfio_setup(struct rte_pci_device *dev)
 
 		if (vfio->container_fd < 0) {
 			NT_LOG(ERR, NTNIC,
-				"VFIO device setup failed. VFIO container creation failed.\n");
+				"VFIO device setup failed. VFIO container creation failed.");
 			return -1;
 		}
 	}
@@ -91,14 +94,14 @@ nt_vfio_setup(struct rte_pci_device *dev)
 
 	if (vfio->group_fd < 0) {
 		NT_LOG(ERR, NTNIC,
-			"VFIO device setup failed. VFIO container group bind failed.\n");
+			"VFIO device setup failed. VFIO container group bind failed.");
 		goto err;
 	}
 
 	if (vf_num > 0) {
 		if (rte_pci_map_device(dev)) {
 			NT_LOG(ERR, NTNIC,
-				"Map VFIO device failed. is the vfio-pci driver loaded?\n");
+				"Map VFIO device failed. is the vfio-pci driver loaded?");
 			goto err;
 		}
 	}
@@ -106,7 +109,7 @@ nt_vfio_setup(struct rte_pci_device *dev)
 	vfio->dev_fd = rte_intr_dev_fd_get(dev->intr_handle);
 
 	NT_LOG(DBG, NTNIC,
-		"%s: VFIO id=%d, dev_fd=%d, container_fd=%d, group_fd=%d, iommu_group_num=%d\n",
+		"%s: VFIO id=%d, dev_fd=%d, container_fd=%d, group_fd=%d, iommu_group_num=%d",
 		dev->name, vf_num, vfio->dev_fd, vfio->container_fd, vfio->group_fd,
 		iommu_group_num);
 
@@ -125,12 +128,12 @@ nt_vfio_remove(int vf_num)
 {
 	struct vfio_dev *vfio;
 
-	NT_LOG(DBG, NTNIC, "NT VFIO device remove VF=%d\n", vf_num);
+	NT_LOG(DBG, NTNIC, "NT VFIO device remove VF=%d", vf_num);
 
 	vfio = vfio_get(vf_num);
 
 	if (!vfio) {
-		NT_LOG(ERR, NTNIC, "VFIO device remove failed. Illegal device id\n");
+		NT_LOG(ERR, NTNIC, "VFIO device remove failed. Illegal device id");
 		return -1;
 	}
 
@@ -158,24 +161,24 @@ nt_vfio_dma_map(int vf_num, void *virt_addr, uint64_t *iova_addr, uint64_t size)
 	vfio = vfio_get(vf_num);
 
 	if (vfio == NULL) {
-		NT_LOG(ERR, NTNIC, "VFIO MAP: VF number %d invalid\n", vf_num);
+		NT_LOG(ERR, NTNIC, "VFIO MAP: VF number %d invalid", vf_num);
 		return -1;
 	}
 
 	NT_LOG(DBG, NTNIC,
 		"VFIO MMAP VF=%d VirtAddr=%p HPA=%" PRIX64 " VirtBase=%" PRIX64
-		" IOVA Addr=%" PRIX64 " size=%" PRIX64 "\n",
+		" IOVA Addr=%" PRIX64 " size=%" PRIX64,
 		vf_num, virt_addr, rte_malloc_virt2iova(virt_addr), gp_virt_base, vfio->iova_addr,
 		size);
 
 	int res = rte_vfio_container_dma_map(vfio->container_fd, gp_virt_base, vfio->iova_addr,
 			size);
 
-	NT_LOG(DBG, NTNIC, "VFIO MMAP res %i, container_fd %i, vf_num %i\n", res,
+	NT_LOG(DBG, NTNIC, "VFIO MMAP res %i, container_fd %i, vf_num %i", res,
 		vfio->container_fd, vf_num);
 
 	if (res) {
-		NT_LOG(ERR, NTNIC, "rte_vfio_container_dma_map failed: res %d\n", res);
+		NT_LOG(ERR, NTNIC, "rte_vfio_container_dma_map failed: res %d", res);
 		return -1;
 	}
 
@@ -205,7 +208,7 @@ nt_vfio_dma_unmap(int vf_num, void *virt_addr, uint64_t iova_addr, uint64_t size
 	vfio = vfio_get(vf_num);
 
 	if (vfio == NULL) {
-		NT_LOG(ERR, NTNIC, "VFIO UNMAP: VF number %d invalid\n", vf_num);
+		NT_LOG(ERR, NTNIC, "VFIO UNMAP: VF number %d invalid", vf_num);
 		return -1;
 	}
 
@@ -217,7 +220,7 @@ nt_vfio_dma_unmap(int vf_num, void *virt_addr, uint64_t iova_addr, uint64_t size
 	if (res != 0) {
 		NT_LOG(ERR, NTNIC,
 			"VFIO UNMMAP FAILED! res %i, container_fd %i, vf_num %i, virt_base=%" PRIX64
-			", IOVA=%" PRIX64 ", size=%" PRIX64 "\n",
+			", IOVA=%" PRIX64 ", size=%" PRIX64,
 			res, vfio->container_fd, vf_num, gp_virt_base, iova_addr, size);
 		return -1;
 	}

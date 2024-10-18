@@ -12,6 +12,7 @@
 
 #include <pthread.h>
 
+#define RAB_DMA_WAIT (1000000)
 
 #define RAB_READ (0x01)
 #define RAB_WRITE (0x02)
@@ -46,7 +47,7 @@ int nthw_rac_init(nthw_rac_t *p, nthw_fpga_t *p_fpga, struct fpga_info_s *p_fpga
 		return p_mod == NULL ? -1 : 0;
 
 	if (p_mod == NULL) {
-		NT_LOG(ERR, NTHW, "%s: RAC %d: no such instance\n", p_adapter_id_str, 0);
+		NT_LOG(ERR, NTHW, "%s: RAC %d: no such instance", p_adapter_id_str, 0);
 		return -1;
 	}
 
@@ -55,12 +56,12 @@ int nthw_rac_init(nthw_rac_t *p, nthw_fpga_t *p_fpga, struct fpga_info_s *p_fpga
 
 	p->mn_param_rac_rab_interfaces =
 		nthw_fpga_get_product_param(p->mp_fpga, NT_RAC_RAB_INTERFACES, 3);
-	NT_LOG(DBG, NTHW, "%s: NT_RAC_RAB_INTERFACES=%d\n", p_adapter_id_str,
+	NT_LOG(DBG, NTHW, "%s: NT_RAC_RAB_INTERFACES=%d", p_adapter_id_str,
 		p->mn_param_rac_rab_interfaces);
 
 	p->mn_param_rac_rab_ob_update =
 		nthw_fpga_get_product_param(p->mp_fpga, NT_RAC_RAB_OB_UPDATE, 0);
-	NT_LOG(DBG, NTHW, "%s: NT_RAC_RAB_OB_UPDATE=%d\n", p_adapter_id_str,
+	NT_LOG(DBG, NTHW, "%s: NT_RAC_RAB_OB_UPDATE=%d", p_adapter_id_str,
 		p->mn_param_rac_rab_ob_update);
 
 	/* Optional dummy test registers */
@@ -262,7 +263,7 @@ static inline int _nthw_rac_wait_for_rab_done(const nthw_rac_t *p, uint32_t addr
 	}
 
 	if (used < word_cnt) {
-		NT_LOG(ERR, NTHW, "%s: Fail rab bus r/w addr=0x%08X used=%x wordcount=%d\n",
+		NT_LOG(ERR, NTHW, "%s: Fail rab bus r/w addr=0x%08X used=%x wordcount=%d",
 			p_adapter_id_str, address, used, word_cnt);
 		return -1;
 	}
@@ -307,7 +308,7 @@ int nthw_rac_rab_reset(nthw_rac_t *p)
 	const int n_rac_rab_bus_count = nthw_rac_get_rab_interface_count(p);
 	const int n_rac_rab_bus_mask = (1 << n_rac_rab_bus_count) - 1;
 
-	NT_LOG(DBG, NTHW, "%s: NT_RAC_RAB_INTERFACES=%d (0x%02X)\n", p_adapter_id_str,
+	NT_LOG(DBG, NTHW, "%s: NT_RAC_RAB_INTERFACES=%d (0x%02X)", p_adapter_id_str,
 		n_rac_rab_bus_count, n_rac_rab_bus_mask);
 	assert(n_rac_rab_bus_count);
 	assert(n_rac_rab_bus_mask);
@@ -337,7 +338,7 @@ int nthw_rac_rab_setup(nthw_rac_t *p)
 		vfio_dma = nt_dma_alloc(align_size, 0x1000, numa_node);
 
 		if (vfio_dma == NULL) {
-			NT_LOG(ERR, NTNIC, "nt_dma_alloc failed\n");
+			NT_LOG(ERR, NTNIC, "nt_dma_alloc failed");
 			return -1;
 		}
 
@@ -386,6 +387,186 @@ void nthw_rac_bar0_write32(const struct fpga_info_s *p_fpga_info, uint32_t reg_a
 		dst_addr[i] = p_data[i];
 }
 
+int nthw_rac_rab_dma_begin(nthw_rac_t *p)
+{
+	const struct fpga_info_s *const p_fpga_info = p->mp_fpga->p_fpga_info;
+	const char *const p_adapter_id_str = p_fpga_info->mp_adapter_id_str;
+
+	pthread_mutex_lock(&p->m_mutex);
+
+	if (p->m_dma_active) {
+		pthread_mutex_unlock(&p->m_mutex);
+		NT_LOG(ERR, NTHW,
+			"%s: DMA begin requested, but a DMA transaction is already active",
+			p_adapter_id_str);
+		return -1;
+	}
+
+	p->m_dma_active = true;
+
+	return 0;
+}
+
+static void nthw_rac_rab_dma_activate(nthw_rac_t *p)
+{
+	const struct fpga_info_s *const p_fpga_info = p->mp_fpga->p_fpga_info;
+	const uint32_t completion = RAB_COMPLETION << RAB_OPR_LO;
+
+	/* Write completion word */
+	p->m_dma_in_buf[p->m_dma_in_ptr_wr] = completion;
+	p->m_dma_in_ptr_wr = (uint16_t)((p->m_dma_in_ptr_wr + 1) & (RAB_DMA_BUF_CNT - 1));
+
+	/* Clear output completion word */
+	p->m_dma_out_buf[p->m_dma_out_ptr_rd] = 0;
+
+	/* Update DMA pointer and start transfer */
+	nthw_rac_reg_write32(p_fpga_info, p->RAC_RAB_DMA_IB_WR_ADDR,
+		(uint32_t)(p->m_dma_in_ptr_wr * sizeof(uint32_t)));
+}
+
+static int nthw_rac_rab_dma_wait(nthw_rac_t *p)
+{
+	const struct fpga_info_s *const p_fpga_info = p->mp_fpga->p_fpga_info;
+	const char *const p_adapter_id_str = p_fpga_info->mp_adapter_id_str;
+	const uint32_t completion = RAB_COMPLETION << RAB_OPR_LO;
+	uint32_t i;
+
+	for (i = 0; i < RAB_DMA_WAIT; i++) {
+		nt_os_wait_usec_poll(1);
+
+		if ((p->m_dma_out_buf[p->m_dma_out_ptr_rd] & completion) == completion)
+			break;
+	}
+
+	if (i == RAB_DMA_WAIT) {
+		NT_LOG(ERR, NTHW, "%s: RAB: Unexpected value of completion (0x%08X)",
+			p_adapter_id_str, p->m_dma_out_buf[p->m_dma_out_ptr_rd]);
+		return -1;
+	}
+
+	p->m_dma_out_ptr_rd = (uint16_t)((p->m_dma_out_ptr_rd + 1) & (RAB_DMA_BUF_CNT - 1));
+	p->m_in_free = RAB_DMA_BUF_CNT;
+
+	return 0;
+}
+
+int nthw_rac_rab_dma_commit(nthw_rac_t *p)
+{
+	int ret;
+
+	if (!p->m_dma_active) {
+		/* Expecting mutex not to be locked! */
+		assert(0);      /* alert developer that something is wrong */
+		return -1;
+	}
+
+	nthw_rac_rab_dma_activate(p);
+	ret = nthw_rac_rab_dma_wait(p);
+
+	p->m_dma_active = false;
+
+	pthread_mutex_unlock(&p->m_mutex);
+
+	return ret;
+}
+
+uint32_t nthw_rac_rab_get_free(nthw_rac_t *p)
+{
+	if (!p->m_dma_active) {
+		/* Expecting mutex not to be locked! */
+		assert(0);      /* alert developer that something is wrong */
+		return -1;
+	}
+
+	return p->m_in_free;
+}
+
+int nthw_rac_rab_write32_dma(nthw_rac_t *p, nthw_rab_bus_id_t bus_id, uint32_t address,
+	uint32_t word_cnt, const uint32_t *p_data)
+{
+	const struct fpga_info_s *const p_fpga_info = p->mp_fpga->p_fpga_info;
+	const char *const p_adapter_id_str = p_fpga_info->mp_adapter_id_str;
+
+	if (word_cnt == 0 || word_cnt > 256) {
+		NT_LOG(ERR, NTHW,
+			"%s: Failed rab dma write length check - bus: %d addr: 0x%08X wordcount: %d - inBufFree: 0x%08X",
+			p_adapter_id_str, bus_id, address, word_cnt, p->m_in_free);
+		assert(0);      /* alert developer that something is wrong */
+		return -1;
+	}
+
+	if (p->m_in_free < (word_cnt + 3)) {
+		/*
+		 * No more memory available.
+		 * nthw_rac_rab_dma_commit() needs to be called to start and finish pending
+		 * transfers.
+		 */
+		return -1;
+	}
+
+	p->m_in_free -= (word_cnt + 1);
+
+	/* Write the command word */
+	p->m_dma_in_buf[p->m_dma_in_ptr_wr] = (RAB_WRITE << RAB_OPR_LO) |
+		((word_cnt & ((1 << RAB_CNT_BW) - 1)) << RAB_CNT_LO) | (bus_id << RAB_BUSID_LO) |
+		address;
+	p->m_dma_in_ptr_wr = (uint16_t)((p->m_dma_in_ptr_wr + 1) & (RAB_DMA_BUF_CNT - 1));
+
+	for (uint32_t i = 0; i < word_cnt; i++) {
+		p->m_dma_in_buf[p->m_dma_in_ptr_wr] = p_data[i];
+		p->m_dma_in_ptr_wr = (uint16_t)((p->m_dma_in_ptr_wr + 1) & (RAB_DMA_BUF_CNT - 1));
+	}
+
+	return 0;
+}
+
+int nthw_rac_rab_read32_dma(nthw_rac_t *p, nthw_rab_bus_id_t bus_id, uint32_t address,
+	uint32_t word_cnt, struct dma_buf_ptr *buf_ptr)
+{
+	const struct fpga_info_s *const p_fpga_info = p->mp_fpga->p_fpga_info;
+	const char *const p_adapter_id_str = p_fpga_info->mp_adapter_id_str;
+
+	if (word_cnt == 0 || word_cnt > 256) {
+		NT_LOG(ERR, NTHW,
+			"%s: Failed rab dma read length check - bus: %d addr: 0x%08X wordcount: %d - inBufFree: 0x%08X",
+			p_adapter_id_str, bus_id, address, word_cnt, p->m_in_free);
+		assert(0);      /* alert developer that something is wrong */
+		return -1;
+	}
+
+	if ((word_cnt + 3) > RAB_DMA_BUF_CNT) {
+		NT_LOG(ERR, NTHW,
+			"%s: Failed rab dma read length check - bus: %d addr: 0x%08X wordcount: %d",
+			p_adapter_id_str, bus_id, address, word_cnt);
+		return -1;
+	}
+
+	if (p->m_in_free < 3) {
+		/*
+		 * No more memory available.
+		 * nthw_rac_rab_dma_commit() needs to be called to start and finish pending
+		 * transfers.
+		 */
+		return -1;
+	}
+
+	p->m_in_free -= 1;
+
+	/* Write the command word */
+	p->m_dma_in_buf[p->m_dma_in_ptr_wr] = (RAB_READ << RAB_OPR_LO) |
+		((word_cnt & ((1 << RAB_CNT_BW) - 1)) << RAB_CNT_LO) | (bus_id << RAB_BUSID_LO) |
+		address;
+	p->m_dma_in_ptr_wr = (uint16_t)((p->m_dma_in_ptr_wr + 1) & (RAB_DMA_BUF_CNT - 1));
+
+	buf_ptr->index = p->m_dma_out_ptr_rd;
+	buf_ptr->size = RAB_DMA_BUF_CNT;
+	buf_ptr->base = p->m_dma_out_buf;
+	p->m_dma_out_ptr_rd =
+		(uint16_t)((p->m_dma_out_ptr_rd + word_cnt) & (RAB_DMA_BUF_CNT - 1U));
+
+	return 0;
+}
+
 int nthw_rac_rab_write32(nthw_rac_t *p, bool trc, nthw_rab_bus_id_t bus_id, uint32_t address,
 	uint32_t word_cnt, const uint32_t *p_data)
 {
@@ -398,25 +579,25 @@ int nthw_rac_rab_write32(nthw_rac_t *p, bool trc, nthw_rab_bus_id_t bus_id, uint
 	int res = 0;
 
 	if (address > (1 << RAB_ADDR_BW)) {
-		NT_LOG(ERR, NTHW, "%s: RAB: Illegal address: value too large %d - max %d\n",
+		NT_LOG(ERR, NTHW, "%s: RAB: Illegal address: value too large %d - max %d",
 			p_adapter_id_str, address, (1 << RAB_ADDR_BW));
 		return -1;
 	}
 
 	if (bus_id > (1 << RAB_BUSID_BW)) {
-		NT_LOG(ERR, NTHW, "%s: RAB: Illegal bus id: value too large %d - max %d\n",
+		NT_LOG(ERR, NTHW, "%s: RAB: Illegal bus id: value too large %d - max %d",
 			p_adapter_id_str, bus_id, (1 << RAB_BUSID_BW));
 		return -1;
 	}
 
 	if (word_cnt == 0) {
-		NT_LOG(ERR, NTHW, "%s: RAB: Illegal word count: value is zero (%d)\n",
+		NT_LOG(ERR, NTHW, "%s: RAB: Illegal word count: value is zero (%d)",
 			p_adapter_id_str, word_cnt);
 		return -1;
 	}
 
 	if (word_cnt > (1 << RAB_CNT_BW)) {
-		NT_LOG(ERR, NTHW, "%s: RAB: Illegal word count: value too large %d - max %d\n",
+		NT_LOG(ERR, NTHW, "%s: RAB: Illegal word count: value too large %d - max %d",
 			p_adapter_id_str, word_cnt, (1 << RAB_CNT_BW));
 		return -1;
 	}
@@ -424,7 +605,7 @@ int nthw_rac_rab_write32(nthw_rac_t *p, bool trc, nthw_rab_bus_id_t bus_id, uint
 	pthread_mutex_lock(&p->m_mutex);
 
 	if (p->m_dma_active) {
-		NT_LOG(ERR, NTHW, "%s: RAB: Illegal operation: DMA enabled\n", p_adapter_id_str);
+		NT_LOG(ERR, NTHW, "%s: RAB: Illegal operation: DMA enabled", p_adapter_id_str);
 		res = -1;
 		goto exit_unlock_res;
 	}
@@ -489,7 +670,7 @@ int nthw_rac_rab_write32(nthw_rac_t *p, bool trc, nthw_rab_bus_id_t bus_id, uint
 
 			if (rab_oper_wr != rab_echo_oper_wr) {
 				NT_LOG(ERR, NTHW,
-					"%s: expected rab read echo oper (0x%08X) - read (0x%08X)\n",
+					"%s: expected rab read echo oper (0x%08X) - read (0x%08X)",
 					p_adapter_id_str, rab_oper_wr, rab_echo_oper_wr);
 			}
 		}
@@ -533,7 +714,7 @@ int nthw_rac_rab_write32(nthw_rac_t *p, bool trc, nthw_rab_bus_id_t bus_id, uint
 
 		if (rab_echo_oper_cmpl != rab_oper_cmpl) {
 			NT_LOG(ERR, NTHW,
-				"%s: RAB: Unexpected value of completion (0x%08X)- inBufFree: 0x%08X, outBufFree: 0x%08X, bufUsed: 0x%08X\n",
+				"%s: RAB: Unexpected value of completion (0x%08X)- inBufFree: 0x%08X, outBufFree: 0x%08X, bufUsed: 0x%08X",
 				p_adapter_id_str, rab_echo_oper_cmpl, in_buf_free, out_buf_free,
 				buf_used);
 			res = -1;
@@ -547,7 +728,7 @@ int nthw_rac_rab_write32(nthw_rac_t *p, bool trc, nthw_rab_bus_id_t bus_id, uint
 			/* Clear Timeout and overflow bits */
 			nthw_rac_reg_write32(p_fpga_info, p->RAC_RAB_BUF_FREE_ADDR, 0x0);
 			NT_LOG(ERR, NTHW,
-				"%s: RAB: timeout - Access outside register - bus: %d addr: 0x%08X - inBufFree: 0x%08X, outBufFree: 0x%08X, bufUsed: 0x%08X\n",
+				"%s: RAB: timeout - Access outside register - bus: %d addr: 0x%08X - inBufFree: 0x%08X, outBufFree: 0x%08X, bufUsed: 0x%08X",
 				p_adapter_id_str, bus_id, address, in_buf_free, out_buf_free,
 				buf_used);
 			res = -1;
@@ -559,7 +740,7 @@ int nthw_rac_rab_write32(nthw_rac_t *p, bool trc, nthw_rab_bus_id_t bus_id, uint
 
 	} else {
 		NT_LOG(ERR, NTHW,
-			"%s: RAB: Fail rab bus buffer check - bus: %d addr: 0x%08X wordcount: %d - inBufFree: 0x%08X, outBufFree: 0x%08X, bufUsed: 0x%08X\n",
+			"%s: RAB: Fail rab bus buffer check - bus: %d addr: 0x%08X wordcount: %d - inBufFree: 0x%08X, outBufFree: 0x%08X, bufUsed: 0x%08X",
 			p_adapter_id_str, bus_id, address, word_cnt, in_buf_free, out_buf_free,
 			buf_used);
 		res = -1;
@@ -585,28 +766,28 @@ int nthw_rac_rab_read32(nthw_rac_t *p, bool trc, nthw_rab_bus_id_t bus_id, uint3
 	pthread_mutex_lock(&p->m_mutex);
 
 	if (address > (1 << RAB_ADDR_BW)) {
-		NT_LOG(ERR, NTHW, "%s: RAB: Illegal address: value too large %d - max %d\n",
+		NT_LOG(ERR, NTHW, "%s: RAB: Illegal address: value too large %d - max %d",
 			p_adapter_id_str, address, (1 << RAB_ADDR_BW));
 		res = -1;
 		goto exit_unlock_res;
 	}
 
 	if (bus_id > (1 << RAB_BUSID_BW)) {
-		NT_LOG(ERR, NTHW, "%s: RAB: Illegal bus id: value too large %d - max %d\n",
+		NT_LOG(ERR, NTHW, "%s: RAB: Illegal bus id: value too large %d - max %d",
 			p_adapter_id_str, bus_id, (1 << RAB_BUSID_BW));
 		res = -1;
 		goto exit_unlock_res;
 	}
 
 	if (word_cnt == 0) {
-		NT_LOG(ERR, NTHW, "%s: RAB: Illegal word count: value is zero (%d)\n",
+		NT_LOG(ERR, NTHW, "%s: RAB: Illegal word count: value is zero (%d)",
 			p_adapter_id_str, word_cnt);
 		res = -1;
 		goto exit_unlock_res;
 	}
 
 	if (word_cnt > (1 << RAB_CNT_BW)) {
-		NT_LOG(ERR, NTHW, "%s: RAB: Illegal word count: value too large %d - max %d\n",
+		NT_LOG(ERR, NTHW, "%s: RAB: Illegal word count: value too large %d - max %d",
 			p_adapter_id_str, word_cnt, (1 << RAB_CNT_BW));
 		res = -1;
 		goto exit_unlock_res;
@@ -666,7 +847,7 @@ int nthw_rac_rab_read32(nthw_rac_t *p, bool trc, nthw_rab_bus_id_t bus_id, uint3
 
 			if (rab_oper_rd != rab_echo_oper_rd) {
 				NT_LOG(ERR, NTHW,
-					"%s: RAB: expected rab read echo oper (0x%08X) - read (0x%08X)\n",
+					"%s: RAB: expected rab read echo oper (0x%08X) - read (0x%08X)",
 					p_adapter_id_str, rab_oper_rd, rab_echo_oper_rd);
 			}
 		}
@@ -708,7 +889,7 @@ int nthw_rac_rab_read32(nthw_rac_t *p, bool trc, nthw_rab_bus_id_t bus_id, uint3
 
 		if (rab_read_oper_cmpl != rab_oper_cmpl) {
 			NT_LOG(ERR, NTHW,
-				"%s: RAB: Unexpected value of completion (0x%08X)- inBufFree: 0x%08X, outBufFree: 0x%08X, bufUsed: 0x%08X\n",
+				"%s: RAB: Unexpected value of completion (0x%08X)- inBufFree: 0x%08X, outBufFree: 0x%08X, bufUsed: 0x%08X",
 				p_adapter_id_str, rab_read_oper_cmpl, in_buf_free, out_buf_free,
 				buf_used);
 			res = -1;
@@ -722,7 +903,7 @@ int nthw_rac_rab_read32(nthw_rac_t *p, bool trc, nthw_rab_bus_id_t bus_id, uint3
 			/* Clear Timeout and overflow bits */
 			nthw_rac_reg_write32(p_fpga_info, p->RAC_RAB_BUF_FREE_ADDR, 0x0);
 			NT_LOG(ERR, NTHW,
-				"%s: RAB: timeout - Access outside register - bus: %d addr: 0x%08X - inBufFree: 0x%08X, outBufFree: 0x%08X, bufUsed: 0x%08X\n",
+				"%s: RAB: timeout - Access outside register - bus: %d addr: 0x%08X - inBufFree: 0x%08X, outBufFree: 0x%08X, bufUsed: 0x%08X",
 				p_adapter_id_str, bus_id, address, in_buf_free, out_buf_free,
 				buf_used);
 			res = -1;
@@ -734,7 +915,7 @@ int nthw_rac_rab_read32(nthw_rac_t *p, bool trc, nthw_rab_bus_id_t bus_id, uint3
 
 	} else {
 		NT_LOG(ERR, NTHW,
-			"%s: RAB: Fail rab bus buffer check - bus: %d addr: 0x%08X wordcount: %d - inBufFree: 0x%08X, outBufFree: 0x%08X, bufUsed: 0x%08X\n",
+			"%s: RAB: Fail rab bus buffer check - bus: %d addr: 0x%08X wordcount: %d - inBufFree: 0x%08X, outBufFree: 0x%08X, bufUsed: 0x%08X",
 			p_adapter_id_str, bus_id, address, word_cnt, in_buf_free, out_buf_free,
 			buf_used);
 		res = -1;
@@ -772,7 +953,7 @@ int nthw_rac_rab_flush(nthw_rac_t *p)
 	}
 
 	if (data != p->RAC_RAB_BUF_USED_FLUSH_MASK) {
-		NT_LOG(ERR, NTHW, "%s: RAB: Rab bus flush error.\n", p_adapter_id_str);
+		NT_LOG(ERR, NTHW, "%s: RAB: Rab bus flush error.", p_adapter_id_str);
 		res = -1;
 	}
 

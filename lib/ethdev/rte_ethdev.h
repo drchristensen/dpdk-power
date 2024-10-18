@@ -145,10 +145,6 @@
  * a 0 value by the receive function of the driver for a given number of tries.
  */
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 #include <stdint.h>
 
 /* Use this macro to check if LRO API is supported */
@@ -356,6 +352,15 @@ struct rte_eth_link {
 #define RTE_ETH_LINK_AUTONEG     1 /**< Autonegotiated (see link_autoneg). */
 #define RTE_ETH_LINK_MAX_STR_LEN 40 /**< Max length of default link string. */
 /**@}*/
+
+/** Translate from link speed lanes to speed lanes capabilities. */
+#define RTE_ETH_SPEED_LANES_TO_CAPA(x) RTE_BIT32(x)
+
+/** A structure used to get and set lanes capabilities per link speed. */
+struct rte_eth_speed_lanes_capa {
+	uint32_t speed;
+	uint32_t capa;
+};
 
 /**
  * A structure used to configure the ring threshold registers of an Rx/Tx
@@ -3115,6 +3120,80 @@ int rte_eth_link_to_str(char *str, size_t len,
 			const struct rte_eth_link *eth_link);
 
 /**
+ * @warning
+ * @b EXPERIMENTAL: this API may change, or be removed, without prior notice
+ *
+ * Get Active lanes.
+ *
+ * @param port_id
+ *   The port identifier of the Ethernet device.
+ * @param lanes
+ *   Driver updates lanes with the number of active lanes.
+ *   On a supported NIC on link up, lanes will be a non-zero value irrespective whether the
+ *   link is Autonegotiated or Fixed speed. No information is displayed for error.
+ *
+ * @return
+ *   - (0) if successful.
+ *   - (-ENOTSUP) if underlying hardware OR driver doesn't support.
+ *     that operation.
+ *   - (-EIO) if device is removed.
+ *   - (-ENODEV)  if *port_id* invalid.
+ */
+__rte_experimental
+int rte_eth_speed_lanes_get(uint16_t port_id, uint32_t *lanes);
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change, or be removed, without prior notice
+ *
+ * Set speed lanes supported by the NIC.
+ *
+ * @param port_id
+ *   The port identifier of the Ethernet device.
+ * @param speed_lanes
+ *   A non-zero number of speed lanes, that will be applied to the ethernet PHY
+ *   along with the fixed speed configuration. Driver returns error if the user
+ *   lanes is not in speeds capability list.
+ *
+ * @return
+ *   - (0) if successful.
+ *   - (-ENOTSUP) if underlying hardware OR driver doesn't support.
+ *     that operation.
+ *   - (-EIO) if device is removed.
+ *   - (-ENODEV)  if *port_id* invalid.
+ *   - (-EINVAL)  if *lanes* count not in speeds capability list.
+ */
+__rte_experimental
+int rte_eth_speed_lanes_set(uint16_t port_id, uint32_t speed_lanes);
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change, or be removed, without prior notice
+ *
+ * Get speed lanes supported by the NIC.
+ *
+ * @param port_id
+ *   The port identifier of the Ethernet device.
+ * @param speed_lanes_capa
+ *   An array of supported speed and its supported lanes.
+ * @param num
+ *   Size of the speed_lanes_capa array. The size is equal to the supported speeds list size.
+ *   Value of num is derived by calling this api with speed_lanes_capa=NULL and num=0
+ *
+ * @return
+ *   - (0) if successful.
+ *   - (-ENOTSUP) if underlying hardware OR driver doesn't support.
+ *     that operation.
+ *   - (-EIO) if device is removed.
+ *   - (-ENODEV)  if *port_id* invalid.
+ *   - (-EINVAL)  if *speed_lanes* invalid
+ */
+__rte_experimental
+int rte_eth_speed_lanes_get_capability(uint16_t port_id,
+				       struct rte_eth_speed_lanes_capa *speed_lanes_capa,
+				       unsigned int num);
+
+/**
  * Retrieve the general I/O statistics of an Ethernet device.
  *
  * @param port_id
@@ -5072,6 +5151,35 @@ int rte_eth_get_monitor_addr(uint16_t port_id, uint16_t queue_id,
 		struct rte_power_monitor_cond *pmc);
 
 /**
+ * Retrieve the filtered device registers (values and names) and
+ * register attributes (number of registers and register size)
+ *
+ * @param port_id
+ *   The port identifier of the Ethernet device.
+ * @param info
+ *   Pointer to rte_dev_reg_info structure to fill in.
+ *   - If info->filter is NULL, return info for all registers (seen as filter
+ *     none).
+ *   - If info->filter is not NULL, return error if the driver does not support
+ *     filter. Fill the length field with filtered register number.
+ *   - If info->data is NULL, the function fills in the width and length fields.
+ *   - If info->data is not NULL, ethdev considers there are enough spaces to
+ *     store the registers, and the values of registers with the filter string
+ *     as the module name are put into the buffer pointed at by info->data.
+ *   - If info->names is not NULL, drivers should fill it or the ethdev fills it
+ *     with default names.
+ * @return
+ *   - (0) if successful.
+ *   - (-ENOTSUP) if hardware doesn't support.
+ *   - (-EINVAL) if bad parameter.
+ *   - (-ENODEV) if *port_id* invalid.
+ *   - (-EIO) if device is removed.
+ *   - others depends on the specific operations implementation.
+ */
+__rte_experimental
+int rte_eth_dev_get_reg_info_ext(uint16_t port_id, struct rte_dev_reg_info *info);
+
+/**
  * Retrieve device registers and register attributes (number of registers and
  * register size)
  *
@@ -5296,6 +5404,49 @@ int rte_eth_timesync_read_tx_timestamp(uint16_t port_id,
  *   - -ENOTSUP: The function is not supported by the Ethernet driver.
  */
 int rte_eth_timesync_adjust_time(uint16_t port_id, int64_t delta);
+
+/**
+ * Adjust the clock frequency on an Ethernet device.
+ *
+ * Adjusts the base frequency by a specified percentage of ppm (parts per
+ * million). This is usually used in conjunction with other Ethdev timesync
+ * functions to synchronize the device time using the IEEE1588/802.1AS
+ * protocol.
+ *
+ * The clock is subject to frequency deviation and rate of change drift due to
+ * the environment. The upper layer APP calculates the frequency compensation
+ * value of the slave clock relative to the master clock via a servo algorithm
+ * and adjusts the device clock frequency via "rte_eth_timesync_adjust_freq()".
+ * Commonly used servo algorithms are pi/linreg/ntpshm, for implementation
+ * see: https://github.com/nxp-archive/openil_linuxptp.git.
+ *
+ * The adjustment value obtained by the servo algorithm is usually in
+ * ppb (parts per billion). For consistency with the kernel driver .adjfine,
+ * the tuning values are in ppm. Note that 1 ppb is approximately 65.536 scaled
+ * ppm, see Linux kernel upstream commit 1060707e3809 (‘ptp: introduce helpers
+ * to adjust by scaled parts per million’).
+ *
+ * In addition, the device reference frequency is usually also the stepping
+ * threshold for the servo algorithm, and the frequency up and down adjustment
+ * range is limited by the device. The device clock frequency should be
+ * adjusted with "rte_eth_timesync_adjust_freq()" every time the clock is
+ * synchronised. Also use ‘rte_eth_timesync_adjust_time()’ to update the device
+ * clock only if the absolute value of the master/slave clock offset is greater than
+ * or equal to the step threshold.
+ *
+ * @param port_id
+ *  The port identifier of the Ethernet device.
+ * @param ppm
+ *  Parts per million with 16-bit fractional field
+ *
+ * @return
+ *   - 0: Success.
+ *   - -ENODEV: The port ID is invalid.
+ *   - -EIO: if device is removed.
+ *   - -ENOTSUP: The function is not supported by the Ethernet driver.
+ */
+__rte_experimental
+int rte_eth_timesync_adjust_freq(uint16_t port_id, int64_t ppm);
 
 /**
  * Read the time from the timesync clock on an Ethernet device.
@@ -5966,6 +6117,10 @@ int rte_eth_cman_config_get(uint16_t port_id, struct rte_eth_cman_config *config
 
 #include <rte_ethdev_core.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /**
  * @internal
  * Helper routine for rte_eth_rx_burst().
@@ -6132,7 +6287,10 @@ rte_eth_rx_burst(uint16_t port_id, uint16_t queue_id,
 	}
 #endif
 
-	rte_ethdev_trace_rx_burst(port_id, queue_id, (void **)rx_pkts, nb_rx);
+	if (unlikely(nb_rx))
+		rte_ethdev_trace_rx_burst_nonempty(port_id, queue_id, (void **)rx_pkts, nb_rx);
+	else
+		rte_ethdev_trace_rx_burst_empty(port_id, queue_id, (void **)rx_pkts);
 	return nb_rx;
 }
 

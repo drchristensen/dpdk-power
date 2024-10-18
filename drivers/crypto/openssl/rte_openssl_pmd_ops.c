@@ -593,19 +593,48 @@ static const struct rte_cryptodev_capabilities openssl_pmd_capabilities[] = {
 		},
 		}
 	},
+	{	/* ECFPM */
+		.op = RTE_CRYPTO_OP_TYPE_ASYMMETRIC,
+		{.asym = {
+			.xform_capa = {
+				.xform_type = RTE_CRYPTO_ASYM_XFORM_ECFPM,
+				.op_types = 0
+				}
+			}
+		}
+	},
 	{	/* SM2 */
 		.op = RTE_CRYPTO_OP_TYPE_ASYMMETRIC,
 		{.asym = {
 			.xform_capa = {
 				.xform_type = RTE_CRYPTO_ASYM_XFORM_SM2,
-				.hash_algos = (1 << RTE_CRYPTO_AUTH_SM3),
 				.op_types =
-				((1<<RTE_CRYPTO_ASYM_OP_SIGN) |
+				((1 << RTE_CRYPTO_ASYM_OP_SIGN) |
 				 (1 << RTE_CRYPTO_ASYM_OP_VERIFY) |
 				 (1 << RTE_CRYPTO_ASYM_OP_ENCRYPT) |
 				 (1 << RTE_CRYPTO_ASYM_OP_DECRYPT)),
-				{.internal_rng = 1
-				}
+				.op_capa = {
+					[RTE_CRYPTO_ASYM_OP_ENCRYPT] = (1 << RTE_CRYPTO_SM2_RNG),
+					[RTE_CRYPTO_ASYM_OP_DECRYPT] = (1 << RTE_CRYPTO_SM2_RNG),
+					[RTE_CRYPTO_ASYM_OP_SIGN] = (1 << RTE_CRYPTO_SM2_RNG) |
+								    (1 << RTE_CRYPTO_SM2_PH),
+					[RTE_CRYPTO_ASYM_OP_VERIFY] = (1 << RTE_CRYPTO_SM2_RNG) |
+								      (1 << RTE_CRYPTO_SM2_PH)
+				},
+			},
+		}
+		}
+	},
+	{	/* EdDSA */
+		.op = RTE_CRYPTO_OP_TYPE_ASYMMETRIC,
+		{.asym = {
+			.xform_capa = {
+				.xform_type = RTE_CRYPTO_ASYM_XFORM_EDDSA,
+				.hash_algos = (1 << RTE_CRYPTO_AUTH_SHA512 |
+					       1 << RTE_CRYPTO_AUTH_SHAKE_256),
+				.op_types =
+				((1<<RTE_CRYPTO_ASYM_OP_SIGN) |
+				 (1 << RTE_CRYPTO_ASYM_OP_VERIFY)),
 			}
 		}
 		}
@@ -889,10 +918,11 @@ static int openssl_set_asym_session_parameters(
 		if (!n || !e)
 			goto err_rsa;
 
+		asym_session->u.r.pad = xform->rsa.padding.type;
 #if (OPENSSL_VERSION_NUMBER >= 0x30000000L)
 		OSSL_PARAM_BLD * param_bld = OSSL_PARAM_BLD_new();
 		if (!param_bld) {
-			OPENSSL_LOG(ERR, "failed to allocate resources\n");
+			OPENSSL_LOG(ERR, "failed to allocate resources");
 			goto err_rsa;
 		}
 
@@ -900,7 +930,7 @@ static int openssl_set_asym_session_parameters(
 			|| !OSSL_PARAM_BLD_push_BN(param_bld,
 					OSSL_PKEY_PARAM_RSA_E, e)) {
 			OSSL_PARAM_BLD_free(param_bld);
-			OPENSSL_LOG(ERR, "failed to allocate resources\n");
+			OPENSSL_LOG(ERR, "failed to allocate resources");
 			goto err_rsa;
 		}
 
@@ -1033,14 +1063,14 @@ static int openssl_set_asym_session_parameters(
 			ret = set_rsa_params(rsa, p, q);
 			if (ret) {
 				OPENSSL_LOG(ERR,
-					"failed to set rsa params\n");
+					"failed to set rsa params");
 				RSA_free(rsa);
 				goto err_rsa;
 			}
 			ret = set_rsa_crt_params(rsa, dmp1, dmq1, iqmp);
 			if (ret) {
 				OPENSSL_LOG(ERR,
-					"failed to set crt params\n");
+					"failed to set crt params");
 				RSA_free(rsa);
 				/*
 				 * set already populated params to NULL
@@ -1053,7 +1083,7 @@ static int openssl_set_asym_session_parameters(
 
 		ret = set_rsa_keys(rsa, n, e, d);
 		if (ret) {
-			OPENSSL_LOG(ERR, "Failed to load rsa keys\n");
+			OPENSSL_LOG(ERR, "Failed to load rsa keys");
 			RSA_free(rsa);
 			return ret;
 		}
@@ -1080,7 +1110,7 @@ err_rsa:
 		BN_CTX *ctx = BN_CTX_new();
 		if (ctx == NULL) {
 			OPENSSL_LOG(ERR,
-				" failed to allocate resources\n");
+				" failed to allocate resources");
 			return ret;
 		}
 		BN_CTX_start(ctx);
@@ -1111,7 +1141,7 @@ err_rsa:
 		BN_CTX *ctx = BN_CTX_new();
 		if (ctx == NULL) {
 			OPENSSL_LOG(ERR,
-				" failed to allocate resources\n");
+				" failed to allocate resources");
 			return ret;
 		}
 		BN_CTX_start(ctx);
@@ -1152,7 +1182,7 @@ err_rsa:
 		OSSL_PARAM_BLD *param_bld = NULL;
 		param_bld = OSSL_PARAM_BLD_new();
 		if (!param_bld) {
-			OPENSSL_LOG(ERR, "failed to allocate resources\n");
+			OPENSSL_LOG(ERR, "failed to allocate resources");
 			goto err_dh;
 		}
 		if ((!OSSL_PARAM_BLD_push_utf8_string(param_bld,
@@ -1168,7 +1198,7 @@ err_rsa:
 		OSSL_PARAM_BLD *param_bld_peer = NULL;
 		param_bld_peer = OSSL_PARAM_BLD_new();
 		if (!param_bld_peer) {
-			OPENSSL_LOG(ERR, "failed to allocate resources\n");
+			OPENSSL_LOG(ERR, "failed to allocate resources");
 			OSSL_PARAM_BLD_free(param_bld);
 			goto err_dh;
 		}
@@ -1203,7 +1233,7 @@ err_rsa:
 		dh = DH_new();
 		if (dh == NULL) {
 			OPENSSL_LOG(ERR,
-				"failed to allocate resources\n");
+				"failed to allocate resources");
 			goto err_dh;
 		}
 		ret = set_dh_params(dh, p, g);
@@ -1217,7 +1247,7 @@ err_rsa:
 		break;
 
 err_dh:
-		OPENSSL_LOG(ERR, " failed to set dh params\n");
+		OPENSSL_LOG(ERR, " failed to set dh params");
 #if (OPENSSL_VERSION_NUMBER >= 0x30000000L)
 		BN_free(*p);
 		BN_free(*g);
@@ -1263,7 +1293,7 @@ err_dh:
 
 		param_bld = OSSL_PARAM_BLD_new();
 		if (!param_bld) {
-			OPENSSL_LOG(ERR, "failed to allocate resources\n");
+			OPENSSL_LOG(ERR, "failed to allocate resources");
 			goto err_dsa;
 		}
 
@@ -1273,7 +1303,7 @@ err_dh:
 			|| !OSSL_PARAM_BLD_push_BN(param_bld, OSSL_PKEY_PARAM_PRIV_KEY,
 			*priv_key)) {
 			OSSL_PARAM_BLD_free(param_bld);
-			OPENSSL_LOG(ERR, "failed to allocate resources\n");
+			OPENSSL_LOG(ERR, "failed to allocate resources");
 			goto err_dsa;
 		}
 		asym_session->xfrm_type = RTE_CRYPTO_ASYM_XFORM_DSA;
@@ -1313,14 +1343,14 @@ err_dh:
 		DSA *dsa = DSA_new();
 		if (dsa == NULL) {
 			OPENSSL_LOG(ERR,
-				" failed to allocate resources\n");
+				" failed to allocate resources");
 			goto err_dsa;
 		}
 
 		ret = set_dsa_params(dsa, p, q, g);
 		if (ret) {
 			DSA_free(dsa);
-			OPENSSL_LOG(ERR, "Failed to dsa params\n");
+			OPENSSL_LOG(ERR, "Failed to dsa params");
 			goto err_dsa;
 		}
 
@@ -1334,7 +1364,7 @@ err_dh:
 		ret = set_dsa_keys(dsa, pub_key, priv_key);
 		if (ret) {
 			DSA_free(dsa);
-			OPENSSL_LOG(ERR, "Failed to set keys\n");
+			OPENSSL_LOG(ERR, "Failed to set keys");
 			goto err_dsa;
 		}
 		asym_session->u.s.dsa = dsa;
@@ -1356,6 +1386,47 @@ err_dsa:
 		BN_free(pub_key);
 		return -1;
 	}
+	case RTE_CRYPTO_ASYM_XFORM_ECFPM:
+	{
+#if (OPENSSL_VERSION_NUMBER >= 0x30000000L)
+		EC_GROUP *ecgrp = NULL;
+
+		asym_session->xfrm_type = xform->xform_type;
+
+		switch (xform->ec.curve_id) {
+		case RTE_CRYPTO_EC_GROUP_SECP192R1:
+			ecgrp = EC_GROUP_new_by_curve_name(NID_secp192k1);
+			break;
+		case RTE_CRYPTO_EC_GROUP_SECP224R1:
+			ecgrp = EC_GROUP_new_by_curve_name(NID_secp224r1);
+			break;
+		case RTE_CRYPTO_EC_GROUP_SECP256R1:
+			ecgrp = EC_GROUP_new_by_curve_name(NID_secp256k1);
+			break;
+		case RTE_CRYPTO_EC_GROUP_SECP384R1:
+			ecgrp = EC_GROUP_new_by_curve_name(NID_secp384r1);
+			break;
+		case RTE_CRYPTO_EC_GROUP_SECP521R1:
+			ecgrp = EC_GROUP_new_by_curve_name(NID_secp521r1);
+			break;
+		case RTE_CRYPTO_EC_GROUP_ED25519:
+			ecgrp = EC_GROUP_new_by_curve_name(NID_ED25519);
+			break;
+		case RTE_CRYPTO_EC_GROUP_ED448:
+			ecgrp = EC_GROUP_new_by_curve_name(NID_ED448);
+			break;
+		default:
+			break;
+		}
+
+		asym_session->u.ec.curve_id = xform->ec.curve_id;
+		asym_session->u.ec.group = ecgrp;
+		break;
+#else
+		OPENSSL_LOG(WARNING, "ECFPM unsupported for OpenSSL Version < 3.0");
+		return -ENOTSUP;
+#endif
+	}
 	case RTE_CRYPTO_ASYM_XFORM_SM2:
 	{
 #if (OPENSSL_VERSION_NUMBER >= 0x30000000L)
@@ -1369,21 +1440,21 @@ err_dsa:
 
 		param_bld = OSSL_PARAM_BLD_new();
 		if (!param_bld) {
-			OPENSSL_LOG(ERR, "failed to allocate params\n");
+			OPENSSL_LOG(ERR, "failed to allocate params");
 			goto err_sm2;
 		}
 
 		ret = OSSL_PARAM_BLD_push_utf8_string(param_bld,
 				OSSL_ASYM_CIPHER_PARAM_DIGEST, "SM3", 0);
 		if (!ret) {
-			OPENSSL_LOG(ERR, "failed to push params\n");
+			OPENSSL_LOG(ERR, "failed to push params");
 			goto err_sm2;
 		}
 
 		ret = OSSL_PARAM_BLD_push_utf8_string(param_bld,
 				OSSL_PKEY_PARAM_GROUP_NAME, "SM2", 0);
 		if (!ret) {
-			OPENSSL_LOG(ERR, "failed to push params\n");
+			OPENSSL_LOG(ERR, "failed to push params");
 			goto err_sm2;
 		}
 
@@ -1393,7 +1464,7 @@ err_dsa:
 		ret = OSSL_PARAM_BLD_push_BN(param_bld, OSSL_PKEY_PARAM_PRIV_KEY,
 									 pkey_bn);
 		if (!ret) {
-			OPENSSL_LOG(ERR, "failed to push params\n");
+			OPENSSL_LOG(ERR, "failed to push params");
 			goto err_sm2;
 		}
 
@@ -1408,13 +1479,13 @@ err_dsa:
 		ret = OSSL_PARAM_BLD_push_octet_string(param_bld,
 				OSSL_PKEY_PARAM_PUB_KEY, pubkey, len);
 		if (!ret) {
-			OPENSSL_LOG(ERR, "failed to push params\n");
+			OPENSSL_LOG(ERR, "failed to push params");
 			goto err_sm2;
 		}
 
 		params = OSSL_PARAM_BLD_to_param(param_bld);
 		if (!params) {
-			OPENSSL_LOG(ERR, "failed to push params\n");
+			OPENSSL_LOG(ERR, "failed to push params");
 			goto err_sm2;
 		}
 
@@ -1439,6 +1510,66 @@ err_sm2:
 #endif
 #else
 		OPENSSL_LOG(WARNING, "SM2 unsupported for OpenSSL Version < 3.0");
+		return -ENOTSUP;
+#endif
+	}
+	case RTE_CRYPTO_ASYM_XFORM_EDDSA:
+	{
+#if (OPENSSL_VERSION_NUMBER >= 0x30300000L)
+		OSSL_PARAM_BLD *param_bld = NULL;
+		OSSL_PARAM *params = NULL;
+		int ret = -1;
+
+		asym_session->u.eddsa.curve_id = xform->ec.curve_id;
+
+		param_bld = OSSL_PARAM_BLD_new();
+		if (!param_bld) {
+			OPENSSL_LOG(ERR, "failed to allocate params");
+			goto err_eddsa;
+		}
+
+		ret = OSSL_PARAM_BLD_push_utf8_string(param_bld,
+			  OSSL_PKEY_PARAM_GROUP_NAME, "ED25519", sizeof("ED25519"));
+		if (!ret) {
+			OPENSSL_LOG(ERR, "failed to push params");
+			goto err_eddsa;
+		}
+
+		ret = OSSL_PARAM_BLD_push_octet_string(param_bld, OSSL_PKEY_PARAM_PRIV_KEY,
+				xform->ec.pkey.data, xform->ec.pkey.length);
+		if (!ret) {
+			OPENSSL_LOG(ERR, "failed to push params");
+			goto err_eddsa;
+		}
+
+		ret = OSSL_PARAM_BLD_push_octet_string(param_bld, OSSL_PKEY_PARAM_PUB_KEY,
+				xform->ec.q.x.data, xform->ec.q.x.length);
+		if (!ret) {
+			OPENSSL_LOG(ERR, "failed to push params");
+			goto err_eddsa;
+		}
+
+		params = OSSL_PARAM_BLD_to_param(param_bld);
+		if (!params) {
+			OPENSSL_LOG(ERR, "failed to push params");
+			goto err_eddsa;
+		}
+
+		asym_session->u.eddsa.params = params;
+		OSSL_PARAM_BLD_free(param_bld);
+
+		asym_session->xfrm_type = RTE_CRYPTO_ASYM_XFORM_EDDSA;
+		break;
+err_eddsa:
+		if (param_bld)
+			OSSL_PARAM_BLD_free(param_bld);
+
+		if (asym_session->u.eddsa.params)
+			OSSL_PARAM_free(asym_session->u.eddsa.params);
+
+		return -1;
+#else
+		OPENSSL_LOG(WARNING, "EdDSA unsupported for OpenSSL Version < 3.3");
 		return -ENOTSUP;
 #endif
 	}
@@ -1538,6 +1669,12 @@ static void openssl_reset_asym_session(struct openssl_asym_session *sess)
 #if (OPENSSL_VERSION_NUMBER >= 0x30000000L)
 		OSSL_PARAM_free(sess->u.sm2.params);
 #endif
+		break;
+	case RTE_CRYPTO_ASYM_XFORM_EDDSA:
+#if (OPENSSL_VERSION_NUMBER >= 0x30300000L)
+		OSSL_PARAM_free(sess->u.eddsa.params);
+#endif
+		break;
 	default:
 		break;
 	}

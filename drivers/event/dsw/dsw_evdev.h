@@ -7,6 +7,7 @@
 
 #include <eventdev_pmd.h>
 
+#include <rte_bitset.h>
 #include <rte_event_ring.h>
 #include <rte_eventdev.h>
 
@@ -237,7 +238,7 @@ struct __rte_cache_aligned dsw_port {
 
 struct dsw_queue {
 	uint8_t schedule_type;
-	uint64_t serving_ports;
+	RTE_BITSET_DECLARE(serving_ports, DSW_MAX_PORTS);
 	uint16_t num_serving_ports;
 
 	alignas(RTE_CACHE_LINE_SIZE) uint8_t flow_to_port_map[DSW_MAX_FLOWS];
@@ -302,12 +303,13 @@ dsw_pmd_priv(const struct rte_eventdev *eventdev)
 	return eventdev->data->dev_private;
 }
 
-#define DSW_LOG_DP(level, fmt, args...)					\
-	RTE_LOG_DP(level, EVENTDEV, "[%s] %s() line %u: " fmt,		\
-		   DSW_PMD_NAME,					\
+extern int event_dsw_logtype;
+#define RTE_LOGTYPE_EVENT_DSW event_dsw_logtype
+#define DSW_LOG_DP_LINE(level, fmt, args...)				\
+	RTE_LOG_DP_LINE(level, EVENT_DSW, "%s() line %u: " fmt,		\
 		   __func__, __LINE__, ## args)
 
-#define DSW_LOG_DP_PORT(level, port_id, fmt, args...)		\
-	DSW_LOG_DP(level, "<Port %d> " fmt, port_id, ## args)
+#define DSW_LOG_DP_PORT_LINE(level, port_id, fmt, args...)		\
+	DSW_LOG_DP_LINE(level, "<Port %d> " fmt, port_id, ## args)
 
 #endif

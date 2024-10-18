@@ -578,8 +578,8 @@ bnxt_handle_tx_cp_vec(struct bnxt_tx_queue *txq)
 		if (likely(CMP_TYPE(txcmp) == TX_CMPL_TYPE_TX_L2))
 			nb_tx_pkts += txcmp->opaque;
 		else
-			RTE_LOG_DP(ERR, BNXT,
-				   "Unhandled CMP type %02x\n",
+			RTE_LOG_DP_LINE(ERR, BNXT,
+				   "Unhandled CMP type %02x",
 				   CMP_TYPE(txcmp));
 		raw_cons = NEXT_RAW_CMP(raw_cons);
 	} while (nb_tx_pkts < ring_mask);
@@ -679,7 +679,7 @@ bnxt_xmit_pkts_vec(void *tx_queue, struct rte_mbuf **tx_pkts,
 
 	/* Tx queue was stopped; wait for it to be restarted */
 	if (unlikely(!txq->tx_started)) {
-		PMD_DRV_LOG(DEBUG, "Tx q stopped;return\n");
+		PMD_DRV_LOG_LINE(DEBUG, "Tx q stopped;return");
 		return 0;
 	}
 

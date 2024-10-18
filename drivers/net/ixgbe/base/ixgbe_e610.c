@@ -671,6 +671,9 @@ ixgbe_parse_common_caps(struct ixgbe_hw *hw, struct ixgbe_hw_common_caps *caps,
 	case IXGBE_ACI_CAPS_VALID_FUNCTIONS:
 		caps->valid_functions = number;
 		break;
+	case IXGBE_ACI_CAPS_SRIOV:
+		caps->sr_iov_1_1 = (number == 1);
+		break;
 	case IXGBE_ACI_CAPS_VMDQ:
 		caps->vmdq = (number == 1);
 		break;
@@ -834,6 +837,25 @@ ixgbe_parse_valid_functions_cap(struct ixgbe_hw *hw,
 }
 
 /**
+ * ixgbe_parse_vf_dev_caps - Parse IXGBE_ACI_CAPS_VF device caps
+ * @hw: pointer to the HW struct
+ * @dev_p: pointer to device capabilities structure
+ * @cap: capability element to parse
+ *
+ * Parse IXGBE_ACI_CAPS_VF for device capabilities.
+ */
+static void ixgbe_parse_vf_dev_caps(struct ixgbe_hw *hw,
+				    struct ixgbe_hw_dev_caps *dev_p,
+				    struct ixgbe_aci_cmd_list_caps_elem *cap)
+{
+	u32 number = IXGBE_LE32_TO_CPU(cap->number);
+
+	UNREFERENCED_1PARAMETER(hw);
+
+	dev_p->num_vfs_exposed = number;
+}
+
+/**
  * ixgbe_parse_vsi_dev_caps - Parse IXGBE_ACI_CAPS_VSI device caps
  * @hw: pointer to the HW struct
  * @dev_p: pointer to device capabilities structure
@@ -944,6 +966,9 @@ static void ixgbe_parse_dev_caps(struct ixgbe_hw *hw,
 			ixgbe_parse_valid_functions_cap(hw, dev_p,
 							&cap_resp[i]);
 			break;
+		case IXGBE_ACI_CAPS_VF:
+			ixgbe_parse_vf_dev_caps(hw, dev_p, &cap_resp[i]);
+			break;
 		case IXGBE_ACI_CAPS_VSI:
 			ixgbe_parse_vsi_dev_caps(hw, dev_p, &cap_resp[i]);
 			break;
@@ -960,6 +985,27 @@ static void ixgbe_parse_dev_caps(struct ixgbe_hw *hw,
 		}
 	}
 
+}
+
+/**
+ * ixgbe_parse_vf_func_caps - Parse IXGBE_ACI_CAPS_VF function caps
+ * @hw: pointer to the HW struct
+ * @func_p: pointer to function capabilities structure
+ * @cap: pointer to the capability element to parse
+ *
+ * Extract function capabilities for IXGBE_ACI_CAPS_VF.
+ */
+static void ixgbe_parse_vf_func_caps(struct ixgbe_hw *hw,
+				     struct ixgbe_hw_func_caps *func_p,
+				     struct ixgbe_aci_cmd_list_caps_elem *cap)
+{
+	u32 logical_id = IXGBE_LE32_TO_CPU(cap->logical_id);
+	u32 number = IXGBE_LE32_TO_CPU(cap->number);
+
+	UNREFERENCED_1PARAMETER(hw);
+
+	func_p->num_allocd_vfs = number;
+	func_p->vf_base_id = logical_id;
 }
 
 /**
@@ -1073,6 +1119,9 @@ static void ixgbe_parse_func_caps(struct ixgbe_hw *hw,
 					&cap_resp[i], "func caps");
 
 		switch (cap) {
+		case IXGBE_ACI_CAPS_VF:
+			ixgbe_parse_vf_func_caps(hw, func_p, &cap_resp[i]);
+			break;
 		case IXGBE_ACI_CAPS_VSI:
 			ixgbe_parse_vsi_func_caps(hw, func_p, &cap_resp[i]);
 			break;
@@ -1634,7 +1683,6 @@ s32 ixgbe_aci_get_link_info(struct ixgbe_hw *hw, bool ena_lse,
 	struct ixgbe_aci_cmd_get_link_status *resp;
 	struct ixgbe_link_status *li_old, *li;
 	struct ixgbe_fc_info *hw_fc_info;
-	enum ixgbe_media_type *hw_media_type;
 	struct ixgbe_aci_desc desc;
 	bool tx_pause, rx_pause;
 	u8 cmd_flags;
@@ -1644,7 +1692,6 @@ s32 ixgbe_aci_get_link_info(struct ixgbe_hw *hw, bool ena_lse,
 		return IXGBE_ERR_PARAM;
 
 	li_old = &hw->link.link_info_old;
-	hw_media_type = &hw->phy.media_type;
 	li = &hw->link.link_info;
 	hw_fc_info = &hw->fc;
 
@@ -1665,7 +1712,6 @@ s32 ixgbe_aci_get_link_info(struct ixgbe_hw *hw, bool ena_lse,
 	li->link_speed = IXGBE_LE16_TO_CPU(link_data.link_speed);
 	li->phy_type_low = IXGBE_LE64_TO_CPU(link_data.phy_type_low);
 	li->phy_type_high = IXGBE_LE64_TO_CPU(link_data.phy_type_high);
-	*hw_media_type = ixgbe_get_media_type_from_phy_type(hw);
 	li->link_info = link_data.link_info;
 	li->link_cfg_err = link_data.link_cfg_err;
 	li->an_info = link_data.an_info;
@@ -2268,7 +2314,7 @@ s32 ixgbe_nvm_recalculate_checksum(struct ixgbe_hw *hw)
 	struct ixgbe_aci_desc desc;
 	s32 status;
 
-	status = ixgbe_acquire_nvm(hw, IXGBE_RES_READ);
+	status = ixgbe_acquire_nvm(hw, IXGBE_RES_WRITE);
 	if (status)
 		return status;
 
@@ -2486,60 +2532,6 @@ static s32 ixgbe_read_nvm_sr_copy(struct ixgbe_hw *hw,
 	hdr_len = ROUND_UP(hdr_len, 32);
 
 	return ixgbe_read_nvm_module(hw, bank, hdr_len + offset, data);
-}
-
-/**
- * ixgbe_get_nvm_minsrevs - Get the minsrevs values from flash
- * @hw: pointer to the HW struct
- * @minsrevs: structure to store NVM and OROM minsrev values
- *
- * Read the Minimum Security Revision TLV and extract
- * the revision values from the flash image
- * into a readable structure for processing.
- *
- * Return: the exit code of the operation.
- */
-s32 ixgbe_get_nvm_minsrevs(struct ixgbe_hw *hw,
-			   struct ixgbe_minsrev_info *minsrevs)
-{
-	struct ixgbe_aci_cmd_nvm_minsrev data;
-	s32 status;
-	u16 valid;
-
-	status = ixgbe_acquire_nvm(hw, IXGBE_RES_READ);
-	if (status)
-		return status;
-
-	status = ixgbe_aci_read_nvm(hw, IXGBE_ACI_NVM_MINSREV_MOD_ID,
-				    0, sizeof(data), &data,
-				    true, false);
-
-	ixgbe_release_nvm(hw);
-
-	if (status)
-		return status;
-
-	valid = IXGBE_LE16_TO_CPU(data.validity);
-
-	/* Extract NVM minimum security revision */
-	if (valid & IXGBE_ACI_NVM_MINSREV_NVM_VALID) {
-		u16 minsrev_l = IXGBE_LE16_TO_CPU(data.nvm_minsrev_l);
-		u16 minsrev_h = IXGBE_LE16_TO_CPU(data.nvm_minsrev_h);
-
-		minsrevs->nvm = minsrev_h << 16 | minsrev_l;
-		minsrevs->nvm_valid = true;
-	}
-
-	/* Extract the OROM minimum security revision */
-	if (valid & IXGBE_ACI_NVM_MINSREV_OROM_VALID) {
-		u16 minsrev_l = IXGBE_LE16_TO_CPU(data.orom_minsrev_l);
-		u16 minsrev_h = IXGBE_LE16_TO_CPU(data.orom_minsrev_h);
-
-		minsrevs->orom = minsrev_h << 16 | minsrev_l;
-		minsrevs->orom_valid = true;
-	}
-
-	return IXGBE_SUCCESS;
 }
 
 /**
@@ -3439,6 +3431,8 @@ s32 ixgbe_init_ops_E610(struct ixgbe_hw *hw)
 	mac->ops.get_fw_tsam_mode = ixgbe_get_fw_tsam_mode_E610;
 	mac->ops.get_fw_version = ixgbe_aci_get_fw_ver;
 	mac->ops.get_nvm_version = ixgbe_get_active_nvm_ver;
+	mac->ops.get_thermal_sensor_data = NULL;
+	mac->ops.init_thermal_sensor_thresh = NULL;
 
 	/* PHY */
 	phy->ops.init = ixgbe_init_phy_ops_E610;
@@ -3549,32 +3543,7 @@ mac_reset_top:
 reset_hw_out:
 	return status;
 }
-/**
- * ixgbe_fw_ver_check - Check the reported FW API version
- * @hw: pointer to the hardware structure
- *
- * Checks if the driver should load on a given FW API version.
- *
- * Return: 'true' if the driver should attempt to load. 'false' otherwise.
- */
-static bool ixgbe_fw_ver_check(struct ixgbe_hw *hw)
-{
-	if (hw->api_maj_ver > IXGBE_FW_API_VER_MAJOR) {
-		ERROR_REPORT1(IXGBE_ERROR_UNSUPPORTED, "The driver for the device stopped because the NVM image is newer than expected. You must install the most recent version of the network driver.\n");
-		return false;
-	} else if (hw->api_maj_ver == IXGBE_FW_API_VER_MAJOR) {
-		if (hw->api_min_ver >
-		    (IXGBE_FW_API_VER_MINOR + IXGBE_FW_API_VER_DIFF_ALLOWED)) {
-			ERROR_REPORT1(IXGBE_ERROR_CAUTION, "The driver for the device detected a newer version of the NVM image than expected. Please install the most recent version of the network driver.\n");
-		} else if ((hw->api_min_ver + IXGBE_FW_API_VER_DIFF_ALLOWED) <
-			   IXGBE_FW_API_VER_MINOR) {
-			ERROR_REPORT1(IXGBE_ERROR_CAUTION, "The driver for the device detected an older version of the NVM image than expected. Please update the NVM image.\n");
-		}
-	} else {
-		ERROR_REPORT1(IXGBE_ERROR_CAUTION, "The driver for the device detected an older version of the NVM image than expected. Please update the NVM image.\n");
-	}
-	return true;
-}
+
 /**
  * ixgbe_start_hw_E610 - Prepare hardware for Tx/Rx
  * @hw: pointer to hardware structure
@@ -3592,10 +3561,6 @@ s32 ixgbe_start_hw_E610(struct ixgbe_hw *hw)
 	if (ret_val)
 		goto out;
 
-	if (!ixgbe_fw_ver_check(hw)) {
-		ret_val = IXGBE_ERR_FW_API_VER;
-		goto out;
-	}
 	ret_val = ixgbe_start_hw_generic(hw);
 	if (ret_val != IXGBE_SUCCESS)
 		goto out;
@@ -3669,9 +3634,10 @@ enum ixgbe_media_type ixgbe_get_media_type_E610(struct ixgbe_hw *hw)
 			}
 		}
 
-		/* Based on search above try to discover media type */
-		hw->phy.media_type = ixgbe_get_media_type_from_phy_type(hw);
 	}
+
+	/* Based on link status or search above try to discover media type */
+	hw->phy.media_type = ixgbe_get_media_type_from_phy_type(hw);
 
 	return hw->phy.media_type;
 }
@@ -4349,7 +4315,8 @@ s32 ixgbe_setup_phy_link_E610(struct ixgbe_hw *hw)
 {
 	struct ixgbe_aci_cmd_get_phy_caps_data pcaps;
 	struct ixgbe_aci_cmd_set_phy_cfg_data pcfg;
-	u8 rmode = IXGBE_ACI_REPORT_ACTIVE_CFG;
+	u8 rmode = IXGBE_ACI_REPORT_TOPO_CAP_MEDIA;
+	u64 sup_phy_type_low, sup_phy_type_high;
 	s32 rc;
 
 	rc = ixgbe_aci_get_link_info(hw, false, NULL);
@@ -4366,6 +4333,15 @@ s32 ixgbe_setup_phy_link_E610(struct ixgbe_hw *hw)
 		goto err;
 	}
 
+	sup_phy_type_low = pcaps.phy_type_low;
+	sup_phy_type_high = pcaps.phy_type_high;
+
+	/* Get Active configuration to avoid unintended changes */
+	rc = ixgbe_aci_get_phy_caps(hw, false, IXGBE_ACI_REPORT_ACTIVE_CFG,
+				    &pcaps);
+	if (rc) {
+		goto err;
+	}
 	ixgbe_copy_phy_caps_to_cfg(&pcaps, &pcfg);
 
 	/* Set default PHY types for a given speed */
@@ -4413,8 +4389,8 @@ s32 ixgbe_setup_phy_link_E610(struct ixgbe_hw *hw)
 	}
 
 	/* Mask the set values to avoid requesting unsupported link types */
-	pcfg.phy_type_low &= pcaps.phy_type_low;
-	pcfg.phy_type_high &= pcaps.phy_type_high;
+	pcfg.phy_type_low &= sup_phy_type_low;
+	pcfg.phy_type_high &= sup_phy_type_high;
 
 	if (pcfg.phy_type_high != pcaps.phy_type_high ||
 	    pcfg.phy_type_low != pcaps.phy_type_low ||

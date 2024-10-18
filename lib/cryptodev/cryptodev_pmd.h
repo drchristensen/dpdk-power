@@ -5,10 +5,6 @@
 #ifndef _CRYPTODEV_PMD_H_
 #define _CRYPTODEV_PMD_H_
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 /** @file
  * RTE Crypto PMD APIs
  *
@@ -27,6 +23,10 @@ extern "C" {
 
 #include "rte_crypto.h"
 #include "rte_cryptodev.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 
 #define RTE_CRYPTODEV_PMD_DEFAULT_MAX_NB_QUEUE_PAIRS	8
@@ -291,6 +291,22 @@ typedef int (*cryptodev_queue_pair_release_t)(struct rte_cryptodev *dev,
 		uint16_t qp_id);
 
 /**
+ * Reset or reconfigure a queue pair for a device.
+ *
+ * @param	dev		Crypto device pointer
+ * @param	qp_id		Queue pair index
+ * @param	qp_conf		Queue configuration structure
+ * @param	socket_id	Socket index
+ *
+ * @return
+ *  - 0: on success.
+ *  - ENOTSUP: if crypto device does not support the operation.
+ */
+typedef int (*cryptodev_queue_pair_reset_t)(struct rte_cryptodev *dev,
+		uint16_t qp_id,	const struct rte_cryptodev_qp_conf *qp_conf,
+		int socket_id);
+
+/**
  * Create a session mempool to allocate sessions from
  *
  * @param	dev		Crypto device pointer
@@ -476,6 +492,8 @@ struct rte_cryptodev_ops {
 	/**< Set up a device queue pair. */
 	cryptodev_queue_pair_release_t queue_pair_release;
 	/**< Release a queue pair. */
+	cryptodev_queue_pair_reset_t queue_pair_reset;
+	/**< Reset a queue pair. */
 
 	cryptodev_sym_get_session_private_size_t sym_session_get_size;
 	/**< Return private session. */

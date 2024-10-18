@@ -97,7 +97,8 @@ crypto_cipher_algorithm_strings[] = {
 	[RTE_CRYPTO_CIPHER_SM4_CBC]	= "sm4-cbc",
 	[RTE_CRYPTO_CIPHER_SM4_CTR]	= "sm4-ctr",
 	[RTE_CRYPTO_CIPHER_SM4_CFB]	= "sm4-cfb",
-	[RTE_CRYPTO_CIPHER_SM4_OFB]	= "sm4-ofb"
+	[RTE_CRYPTO_CIPHER_SM4_OFB]	= "sm4-ofb",
+	[RTE_CRYPTO_CIPHER_SM4_XTS]	= "sm4-xts"
 };
 
 /**
@@ -624,6 +625,22 @@ rte_cryptodev_asym_xform_capability_check_hash(
 
 	rte_cryptodev_trace_asym_xform_capability_check_hash(
 		capability->hash_algos, hash, ret);
+
+	return ret;
+}
+
+int
+rte_cryptodev_asym_xform_capability_check_opcap(
+	const struct rte_cryptodev_asymmetric_xform_capability *capability,
+	enum rte_crypto_asym_op_type op_type, uint8_t cap)
+{
+	int ret = 0;
+
+	if (!(capability->op_types & (1 << op_type)))
+		return ret;
+
+	if (capability->op_capa[op_type] & (1 << cap))
+		ret = 1;
 
 	return ret;
 }
@@ -1220,6 +1237,30 @@ rte_cryptodev_queue_pairs_config(struct rte_cryptodev *dev, uint16_t nb_qpairs,
 	}
 	dev->data->nb_queue_pairs = nb_qpairs;
 	return 0;
+}
+
+int
+rte_cryptodev_queue_pair_reset(uint8_t dev_id, uint16_t queue_pair_id,
+		const struct rte_cryptodev_qp_conf *qp_conf, int socket_id)
+{
+	struct rte_cryptodev *dev;
+
+	if (!rte_cryptodev_is_valid_dev(dev_id)) {
+		CDEV_LOG_ERR("Invalid dev_id=%" PRIu8, dev_id);
+		return -EINVAL;
+	}
+
+	dev = &rte_crypto_devices[dev_id];
+	if (queue_pair_id >= dev->data->nb_queue_pairs) {
+		CDEV_LOG_ERR("Invalid queue_pair_id=%d", queue_pair_id);
+		return -EINVAL;
+	}
+
+	if (*dev->dev_ops->queue_pair_reset == NULL)
+		return -ENOTSUP;
+
+	rte_cryptodev_trace_queue_pair_reset(dev_id, queue_pair_id, qp_conf, socket_id);
+	return (*dev->dev_ops->queue_pair_reset)(dev, queue_pair_id, qp_conf, socket_id);
 }
 
 int

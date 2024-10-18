@@ -69,7 +69,7 @@
 #define MLX5_ROOT_TBL_MODIFY_NUM		16
 
 /* Maximal number of flex items created on the port.*/
-#define MLX5_PORT_FLEX_ITEM_NUM			4
+#define MLX5_PORT_FLEX_ITEM_NUM			8
 
 /* Maximal number of field/field parts to map into sample registers .*/
 #define MLX5_FLEX_ITEM_MAPPING_NUM		32
@@ -2228,6 +2228,8 @@ eth_rx_burst_t mlx5_select_rx_function(struct rte_eth_dev *dev);
 struct mlx5_priv *mlx5_port_to_eswitch_info(uint16_t port, bool valid);
 struct mlx5_priv *mlx5_dev_to_eswitch_info(struct rte_eth_dev *dev);
 int mlx5_dev_configure_rss_reta(struct rte_eth_dev *dev);
+uint64_t mlx5_get_restore_flags(struct rte_eth_dev *dev,
+				enum rte_eth_dev_operation op);
 
 /* mlx5_ethdev_os.c */
 
@@ -2600,11 +2602,12 @@ void mlx5_flex_flow_translate_item(struct rte_eth_dev *dev, void *matcher,
 				   void *key, const struct rte_flow_item *item,
 				   bool is_inner);
 int mlx5_flex_get_sample_id(const struct mlx5_flex_item *tp,
-			    uint32_t idx, uint32_t *pos,
-			    bool is_inner, uint32_t *def);
+			    uint32_t idx, uint32_t *pos, bool is_inner);
 int mlx5_flex_get_parser_value_per_byte_off(const struct rte_flow_item_flex *item,
 					    void *flex, uint32_t byte_off,
-					    bool is_mask, bool tunnel, uint32_t *value);
+					    bool tunnel, uint32_t *value);
+int mlx5_flex_get_tunnel_mode(const struct rte_flow_item *item,
+			      enum rte_flow_item_flex_tunnel_mode *tunnel_mode);
 int mlx5_flex_acquire_index(struct rte_eth_dev *dev,
 			    struct rte_flow_item_flex_handle *handle,
 			    bool acquire);

@@ -106,7 +106,6 @@ enum index {
 	HASH,
 
 	/* Flex arguments */
-	FLEX_ITEM_INIT,
 	FLEX_ITEM_CREATE,
 	FLEX_ITEM_DESTROY,
 
@@ -785,6 +784,9 @@ enum index {
 	ACTION_IPV6_EXT_PUSH_INDEX_VALUE,
 	ACTION_NAT64,
 	ACTION_NAT64_MODE,
+	ACTION_JUMP_TO_TABLE_INDEX,
+	ACTION_JUMP_TO_TABLE_INDEX_TABLE,
+	ACTION_JUMP_TO_TABLE_INDEX_INDEX,
 };
 
 /** Maximum size for pattern in struct rte_flow_item_raw. */
@@ -895,20 +897,20 @@ struct vxlan_encap_conf vxlan_encap_conf = {
 	.select_ipv4 = 1,
 	.select_vlan = 0,
 	.select_tos_ttl = 0,
-	.vni = "\x00\x00\x00",
+	.vni = { 0x00, 0x00, 0x00 },
 	.udp_src = 0,
 	.udp_dst = RTE_BE16(RTE_VXLAN_DEFAULT_PORT),
 	.ipv4_src = RTE_IPV4(127, 0, 0, 1),
 	.ipv4_dst = RTE_IPV4(255, 255, 255, 255),
-	.ipv6_src = "\x00\x00\x00\x00\x00\x00\x00\x00"
-		"\x00\x00\x00\x00\x00\x00\x00\x01",
-	.ipv6_dst = "\x00\x00\x00\x00\x00\x00\x00\x00"
-		"\x00\x00\x00\x00\x00\x00\x11\x11",
+	.ipv6_src = { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01 },
+	.ipv6_dst = { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x11, 0x11 },
 	.vlan_tci = 0,
 	.ip_tos = 0,
 	.ip_ttl = 255,
-	.eth_src = "\x00\x00\x00\x00\x00\x00",
-	.eth_dst = "\xff\xff\xff\xff\xff\xff",
+	.eth_src = { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 },
+	.eth_dst = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff },
 };
 
 /** Maximum number of items in struct rte_flow_action_vxlan_encap. */
@@ -931,16 +933,16 @@ struct action_vxlan_encap_data {
 struct nvgre_encap_conf nvgre_encap_conf = {
 	.select_ipv4 = 1,
 	.select_vlan = 0,
-	.tni = "\x00\x00\x00",
+	.tni = { 0x00, 0x00, 0x00 },
 	.ipv4_src = RTE_IPV4(127, 0, 0, 1),
 	.ipv4_dst = RTE_IPV4(255, 255, 255, 255),
-	.ipv6_src = "\x00\x00\x00\x00\x00\x00\x00\x00"
-		"\x00\x00\x00\x00\x00\x00\x00\x01",
-	.ipv6_dst = "\x00\x00\x00\x00\x00\x00\x00\x00"
-		"\x00\x00\x00\x00\x00\x00\x11\x11",
+	.ipv6_src = { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01 },
+	.ipv6_dst = { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x11, 0x11 },
 	.vlan_tci = 0,
-	.eth_src = "\x00\x00\x00\x00\x00\x00",
-	.eth_dst = "\xff\xff\xff\xff\xff\xff",
+	.eth_src = { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 },
+	.eth_dst = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff },
 };
 
 /** Maximum number of items in struct rte_flow_action_nvgre_encap. */
@@ -1030,7 +1032,7 @@ static const char *const meter_colors[] = {
 };
 
 static const char *const table_insertion_types[] = {
-	"pattern", "index", NULL
+	"pattern", "index", "index_with_pattern", NULL
 };
 
 static const char *const table_hash_funcs[] = {
@@ -1317,7 +1319,6 @@ struct parse_action_priv {
 	})
 
 static const enum index next_flex_item[] = {
-	FLEX_ITEM_INIT,
 	FLEX_ITEM_CREATE,
 	FLEX_ITEM_DESTROY,
 	ZERO,
@@ -1582,6 +1583,12 @@ static const enum index next_ia_destroy_attr[] = {
 static const enum index next_async_insert_subcmd[] = {
 	QUEUE_PATTERN_TEMPLATE,
 	QUEUE_RULE_ID,
+	ZERO,
+};
+
+static const enum index next_async_pattern_subcmd[] = {
+	QUEUE_PATTERN_TEMPLATE,
+	QUEUE_ACTIONS_TEMPLATE,
 	ZERO,
 };
 
@@ -2322,6 +2329,7 @@ static const enum index next_action[] = {
 	ACTION_IPV6_EXT_REMOVE,
 	ACTION_IPV6_EXT_PUSH,
 	ACTION_NAT64,
+	ACTION_JUMP_TO_TABLE_INDEX,
 	ZERO,
 };
 
@@ -2679,6 +2687,13 @@ static const enum index next_hash_subcmd[] = {
 static const enum index next_hash_encap_dest_subcmd[] = {
 	ENCAP_HASH_FIELD_SRC_PORT,
 	ENCAP_HASH_FIELD_GRE_FLOW_ID,
+	ZERO,
+};
+
+static const enum index action_jump_to_table_index[] = {
+	ACTION_JUMP_TO_TABLE_INDEX_TABLE,
+	ACTION_JUMP_TO_TABLE_INDEX_INDEX,
+	ACTION_NEXT,
 	ZERO,
 };
 
@@ -3788,7 +3803,7 @@ static const struct token token_list[] = {
 	[QUEUE_RULE_ID] = {
 		.name = "rule_index",
 		.help = "specify flow rule index",
-		.next = NEXT(NEXT_ENTRY(QUEUE_ACTIONS_TEMPLATE),
+		.next = NEXT(next_async_pattern_subcmd,
 			     NEXT_ENTRY(COMMON_UNSIGNED)),
 		.args = ARGS(ARGS_ENTRY(struct buffer,
 					args.vc.rule_id)),
@@ -4170,15 +4185,6 @@ static const struct token token_list[] = {
 		.help = "flex item API",
 		.next = NEXT(next_flex_item),
 		.call = parse_flex,
-	},
-	[FLEX_ITEM_INIT] = {
-		.name = "init",
-		.help = "flex item init",
-		.args = ARGS(ARGS_ENTRY(struct buffer, args.flex.token),
-			     ARGS_ENTRY(struct buffer, port)),
-		.next = NEXT(NEXT_ENTRY(COMMON_FLEX_TOKEN),
-			     NEXT_ENTRY(COMMON_PORT_ID)),
-		.call = parse_flex
 	},
 	[FLEX_ITEM_CREATE] = {
 		.name = "create",
@@ -7602,6 +7608,29 @@ static const struct token token_list[] = {
 		.args = ARGS(ARGS_ENTRY(struct rte_flow_action_nat64, type)),
 		.call = parse_vc_conf,
 	},
+	[ACTION_JUMP_TO_TABLE_INDEX] = {
+		.name = "jump_to_table_index",
+		.help = "Jump to table index",
+		.priv = PRIV_ACTION(JUMP_TO_TABLE_INDEX,
+				    sizeof(struct rte_flow_action_jump_to_table_index)),
+		.next = NEXT(action_jump_to_table_index),
+		.call = parse_vc,
+	},
+	[ACTION_JUMP_TO_TABLE_INDEX_TABLE] = {
+		.name = "table",
+		.help = "table to redirect traffic to",
+		.next = NEXT(action_jump_to_table_index, NEXT_ENTRY(COMMON_UNSIGNED)),
+		.args = ARGS(ARGS_ENTRY(struct rte_flow_action_jump_to_table_index, table)),
+		.call = parse_vc_conf,
+	},
+	[ACTION_JUMP_TO_TABLE_INDEX_INDEX] = {
+		.name = "index",
+		.help = "rule index to redirect traffic to",
+		.next = NEXT(action_jump_to_table_index, NEXT_ENTRY(COMMON_UNSIGNED)),
+		.args = ARGS(ARGS_ENTRY(struct rte_flow_action_jump_to_table_index, index)),
+		.call = parse_vc_conf,
+	},
+
 	/* Top level command. */
 	[SET] = {
 		.name = "set",
@@ -8264,7 +8293,8 @@ parse_prefix(struct context *ctx, const struct token *token,
 	     void *buf, unsigned int size)
 {
 	const struct arg *arg = pop_args(ctx);
-	static const uint8_t conv[] = "\x00\x80\xc0\xe0\xf0\xf8\xfc\xfe\xff";
+	static const uint8_t conv[] = { 0x00, 0x80, 0xc0, 0xe0, 0xf0,
+					0xf8, 0xfc, 0xfe, 0xff };
 	char *end;
 	uintmax_t u;
 	unsigned int bytes;
@@ -11431,7 +11461,6 @@ parse_flex(struct context *ctx, const struct token *token,
 		switch (ctx->curr) {
 		default:
 			break;
-		case FLEX_ITEM_INIT:
 		case FLEX_ITEM_CREATE:
 		case FLEX_ITEM_DESTROY:
 			out->command = ctx->curr;
