@@ -510,8 +510,7 @@ iavf_ipsec_crypto_security_association_add(struct iavf_adapter *adapter,
 		*((uint32_t *)sa_cfg->dst_addr)	=
 			htonl(conf->ipsec.tunnel.ipv4.dst_ip.s_addr);
 	} else {
-		uint32_t *v6_dst_addr =
-			(uint32_t *)conf->ipsec.tunnel.ipv6.dst_addr.s6_addr;
+		uint32_t *v6_dst_addr = (uint32_t *)&conf->ipsec.tunnel.ipv6.dst_addr;
 
 		sa_cfg->virtchnl_ip_type = VIRTCHNL_IPV6;
 
@@ -1738,8 +1737,8 @@ static void
 parse_ipv6_item(const struct rte_flow_item_ipv6 *item,
 		struct rte_ipv6_hdr *ipv6)
 {
-	memcpy(ipv6->src_addr, item->hdr.src_addr, 16);
-	memcpy(ipv6->dst_addr, item->hdr.dst_addr, 16);
+	ipv6->src_addr = item->hdr.src_addr;
+	ipv6->dst_addr = item->hdr.dst_addr;
 }
 
 static void
@@ -1904,7 +1903,7 @@ iavf_ipsec_flow_create(struct iavf_adapter *ad,
 			ipsec_flow->spi,
 			0,
 			0,
-			ipsec_flow->ipv6_hdr.dst_addr,
+			ipsec_flow->ipv6_hdr.dst_addr.a,
 			0,
 			ipsec_flow->is_udp,
 			ipsec_flow->udp_hdr.dst_port);

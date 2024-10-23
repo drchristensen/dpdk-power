@@ -379,7 +379,6 @@ F: kernel/freebsd/nic_uio/
 Windows support
 M: Dmitry Kozlyuk <dmitry.kozliuk@gmail.com>
 M: Tyler Retzlaff <roretzla@linux.microsoft.com>
-M: Pallavi Kadam <pallavi.kadam@intel.com>
 F: lib/eal/windows/
 F: buildtools/map_to_win.py
 F: doc/guides/windows_gsg/
@@ -751,7 +750,6 @@ F: doc/guides/nics/features/gve.ini
 
 Hisilicon hns3
 M: Jie Hai <haijie1@huawei.com>
-M: Yisen Zhuang <yisen.zhuang@huawei.com>
 F: drivers/net/hns3/
 F: doc/guides/nics/hns3.rst
 F: doc/guides/nics/features/hns3.ini
@@ -1526,6 +1524,7 @@ F: lib/net/
 F: app/test/test_cksum.c
 F: app/test/test_cksum_perf.c
 F: app/test/test_net_ether.c
+F: app/test/test_net_ip6.c
 
 Packet CRC
 M: Jasvinder Singh <jasvinder.singh@intel.com>

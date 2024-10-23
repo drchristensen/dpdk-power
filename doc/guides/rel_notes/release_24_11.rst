@@ -108,6 +108,11 @@ New Features
 
   New ICMP message types and codes from RFC 792 were added in ``rte_icmp.h``.
 
+* **Added IPv6 address structure and related utilities.**
+
+  A new IPv6 address structure is now available in ``rte_ip6.h``.
+  It comes with a set of helper functions and macros.
+
 * **Added link speed lanes API.**
 
   Added functions to query or force the link lanes configuration.
@@ -285,6 +290,60 @@ API Changes
 * net: The ICMP message types ``RTE_IP_ICMP_ECHO_REPLY`` and ``RTE_IP_ICMP_ECHO_REQUEST``
   are marked as deprecated, and are replaced
   by ``RTE_ICMP_TYPE_ECHO_REPLY`` and ``RTE_ICMP_TYPE_ECHO_REQUEST``.
+
+* net: A new IPv6 address structure was introduced to replace ad-hoc ``uint8_t[16]`` arrays.
+  The following libraries and symbols were modified:
+
+  cmdline
+    - ``cmdline_ipaddr_t``
+  ethdev
+    - ``struct rte_flow_action_set_ipv6``
+    - ``struct rte_flow_item_icmp6_nd_na``
+    - ``struct rte_flow_item_icmp6_nd_ns``
+    - ``struct rte_flow_tunnel``
+  fib
+    - ``rte_fib6_add()``
+    - ``rte_fib6_delete()``
+    - ``rte_fib6_lookup_bulk()``
+    - ``RTE_FIB6_IPV6_ADDR_SIZE`` (deprecated, replaced with ``RTE_IPV6_ADDR_SIZE``)
+    - ``RTE_FIB6_MAXDEPTH`` (deprecated, replaced with ``RTE_IPV6_MAX_DEPTH``)
+  hash
+    - ``struct rte_ipv6_tuple``
+  ipsec
+    - ``struct rte_ipsec_sadv6_key``
+  lpm
+    - ``rte_lpm6_add()``
+    - ``rte_lpm6_delete()``
+    - ``rte_lpm6_delete_bulk_func()``
+    - ``rte_lpm6_is_rule_present()``
+    - ``rte_lpm6_lookup()``
+    - ``rte_lpm6_lookup_bulk_func()``
+    - ``RTE_LPM6_IPV6_ADDR_SIZE`` (deprecated, replaced with ``RTE_IPV6_ADDR_SIZE``)
+    - ``RTE_LPM6_MAX_DEPTH`` (deprecated, replaced with ``RTE_IPV6_MAX_DEPTH``)
+  net
+    - ``struct rte_ipv6_hdr``
+  node
+    - ``rte_node_ip6_route_add()``
+  pipeline
+    - ``struct rte_swx_ipsec_sa_encap_params``
+    - ``struct rte_table_action_ipv6_header``
+    - ``struct rte_table_action_nat_params``
+  security
+    - ``struct rte_security_ipsec_tunnel_param``
+  table
+    - ``struct rte_table_lpm_ipv6_key``
+    - ``RTE_LPM_IPV6_ADDR_SIZE`` (deprecated, replaced with ``RTE_IPV6_ADDR_SIZE``)
+  rib
+    - ``rte_rib6_get_ip()``
+    - ``rte_rib6_get_nxt()``
+    - ``rte_rib6_insert()``
+    - ``rte_rib6_lookup()``
+    - ``rte_rib6_lookup_exact()``
+    - ``rte_rib6_remove()``
+    - ``RTE_RIB6_IPV6_ADDR_SIZE`` (deprecated, replaced with ``RTE_IPV6_ADDR_SIZE``)
+    - ``get_msk_part()`` (deprecated)
+    - ``rte_rib6_copy_addr()`` (deprecated, replaced with direct structure assignments)
+    - ``rte_rib6_is_equal()`` (deprecated, replaced with ``rte_ipv6_addr_eq()``)
 
 * drivers/net/ena: Removed ``enable_llq``, ``normal_llq_hdr`` and ``large_llq_hdr`` devargs
   and replaced it with a new shared devarg ``llq_policy`` that keeps the same logic.
