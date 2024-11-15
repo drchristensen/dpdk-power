@@ -80,6 +80,20 @@ New Features
   This addition provides an efficient and straightforward alternative
   for handling bitsets of intermediate sizes.
 
+* **Added per-lcore static memory allocation facility.**
+
+  Added EAL API ``<rte_lcore_var.h>`` for statically allocating small,
+  frequently-accessed data structures, for which one instance should exist
+  for each EAL thread and registered non-EAL thread.
+
+  With lcore variables, data is organized spatially on a per-lcore id basis,
+  rather than per library or PMD, avoiding the need for cache aligning
+  (or RTE_CACHE_GUARDing) data structures, which in turn
+  reduces CPU cache internal fragmentation, improving performance.
+
+  Lcore variables are similar to thread-local storage (TLS, e.g. C11 ``_Thread_local``),
+  but decoupling the values' life time from that of the threads.
+
 * **Extended service cores statistics.**
 
   Two new per-service counters are added to the service cores framework.
@@ -99,6 +113,22 @@ New Features
   Examples: calling ``free`` on pointer that was allocated with ``rte_malloc``
   (and vice versa); freeing the same pointer twice in the same routine;
   freeing an object that was not created by allocation; etc.
+
+* **Updated logging library**
+
+  * The log subsystem is initialized earlier in startup so all messages go through the library.
+
+  * If the application is a systemd service and the log output is being sent to standard error
+    then DPDK will switch to journal native protocol.
+    This allows the more data such as severity to be sent.
+
+  * The syslog option has changed.
+    By default, messages are no longer sent to syslog unless the ``--syslog`` option is specified.
+    Syslog is also supported on FreeBSD (but not on Windows).
+
+  * Log messages can be timestamped with ``--log-timestamp`` option.
+
+  * Log messages can be colorized with the ``--log-color`` option.
 
 * **Updated Marvell cnxk mempool driver.**
 
@@ -142,6 +172,7 @@ New Features
   * Modified the PMD API that controls the LLQ header policy.
   * Replaced ``enable_llq``, ``normal_llq_hdr`` and ``large_llq_hdr`` devargs
     with a new shared devarg ``llq_policy`` that keeps the same logic.
+  * Added validation check for Rx packet descriptor consistency.
 
 * **Updated Cisco enic driver.**
 
@@ -160,6 +191,25 @@ New Features
   * Added NT flow backend initialization.
   * Added initialization of FPGA modules related to flow HW offload.
   * Added basic handling of the virtual queues.
+  * Added flow handling support.
+  * Added statistics support.
+  * Added age flow action support.
+  * Added meter flow metering and flow policy support.
+  * Added flow actions update support.
+  * Added asynchronous flow support.
+  * Added MTU update support.
+
+* **Updated NVIDIA mlx5 net driver.**
+
+  * Added ``rte_flow_async_create_by_index_with_pattern()`` support.
+  * Added jump to flow table index support.
+
+* **Added ZTE zxdh net driver [EXPERIMENTAL].**
+
+  Added ethdev driver support for zxdh NX Series Ethernet Controller.
+
+  * Ability to initialize the NIC.
+  * No datapath support.
 
 * **Added cryptodev queue pair reset support.**
 
@@ -180,6 +230,8 @@ New Features
   * Added support for SM3 algorithm.
   * Added support for SM3 HMAC algorithm.
   * Added support for SM4 CBC, SM4 ECB and SM4 CTR algorithms.
+  * Bumped the minimum version requirement of Intel IPsec Multi-buffer library to v1.4.
+    Affected PMDs: KASUMI, SNOW3G, ZUC, AESNI GCM, AESNI MB and CHACHAPOLY.
 
 * **Updated openssl crypto driver.**
 
@@ -199,6 +251,17 @@ New Features
   Added new capability flag ``RTE_DMA_CAPA_PRI_POLICY_SP``
   to check if the DMA device supports assigning fixed priority,
   allowing for better control over resource allocation and scheduling.
+
+* **Updated Marvell cnxk DMA driver.**
+
+  * Added support for DMA queue priority configuration.
+
+* **Added Marvell cnxk RVU LF rawdev driver.**
+
+  Added a new raw device driver for Marvell cnxk based devices
+  to allow out-of-tree driver to manage RVU LF device.
+  It enables operations such as sending/receiving mailbox,
+  register and notify the interrupts, etc.
 
 * **Added event device pre-scheduling support.**
 
@@ -231,11 +294,25 @@ New Features
 
   * Added independent enqueue feature.
 
+* **Updated Marvell cnxk event device driver.**
+
+  * Added eventdev driver support for CN20K SoC.
+
 * **Added IPv4 network order lookup in the FIB library.**
 
   A new flag field is introduced in ``rte_fib_conf`` structure.
   This field is used to pass an extra configuration settings such as ability
   to lookup IPv4 addresses in network byte order.
+
+* **Added RSS hash key generating API.**
+
+  A new function ``rte_thash_gen_key`` is provided to modify the RSS hash key
+  to achieve better traffic distribution with RSS.
+
+* **Added per-CPU power management QoS interface.**
+
+  Added per-CPU PM QoS interface to lower the resume latency
+  when wake up from idle state.
 
 * **Added new API to register telemetry endpoint callbacks with private arguments.**
 
@@ -287,9 +364,14 @@ API Changes
     releases: it handles key=value and only-key cases.
   * Both ``rte_kvargs_process`` and ``rte_kvargs_process_opt`` reject a NULL ``kvlist`` parameter.
 
+* net: The IPv4 header structure ``rte_ipv4_hdr`` has been marked as two bytes aligned.
+
 * net: The ICMP message types ``RTE_IP_ICMP_ECHO_REPLY`` and ``RTE_IP_ICMP_ECHO_REQUEST``
   are marked as deprecated, and are replaced
   by ``RTE_ICMP_TYPE_ECHO_REPLY`` and ``RTE_ICMP_TYPE_ECHO_REQUEST``.
+
+* net: The IPv6 header structure ``rte_ipv6_hdr`` and extension structures ``rte_ipv6_routing_ext``
+  and ``rte_ipv6_fragment_ext`` have been marked as two bytes aligned.
 
 * net: A new IPv6 address structure was introduced to replace ad-hoc ``uint8_t[16]`` arrays.
   The following libraries and symbols were modified:
@@ -400,6 +482,9 @@ ABI Changes
   and configure required priority from the application.
 
 * eventdev: Added ``preschedule_type`` field to ``rte_event_dev_config`` structure.
+
+* eventdev: Removed the single-event enqueue and dequeue function pointers
+  from ``rte_event_fp_fps``.
 
 * graph: To accommodate node specific xstats counters, added ``xstat_cntrs``,
   ``xstat_desc`` and ``xstat_count`` to ``rte_graph_cluster_node_stats``,

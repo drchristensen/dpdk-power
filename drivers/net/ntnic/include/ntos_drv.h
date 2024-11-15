@@ -12,6 +12,7 @@
 #include <inttypes.h>
 
 #include <rte_ether.h>
+#include "rte_mtr.h"
 
 #include "stream_binary_flow_api.h"
 #include "nthw_drv.h"
@@ -57,6 +58,9 @@ struct __rte_cache_aligned ntnic_rx_queue {
 	struct flow_queue_id_s queue;    /* queue info - user id and hw queue index */
 	struct rte_mempool *mb_pool; /* mbuf memory pool */
 	uint16_t buf_size; /* Size of data area in mbuf */
+	unsigned long rx_pkts;	/* Rx packet statistics */
+	unsigned long rx_bytes;	/* Rx bytes statistics */
+	unsigned long err_pkts;	/* Rx error packet statistics */
 	int  enabled;  /* Enabling/disabling of this queue */
 
 	struct hwq_s           hwq;
@@ -80,12 +84,29 @@ struct __rte_cache_aligned ntnic_tx_queue {
 	int rss_target_id;
 
 	uint32_t port;     /* Tx port for this queue */
+	unsigned long tx_pkts;	/* Tx packet statistics */
+	unsigned long tx_bytes;	/* Tx bytes statistics */
+	unsigned long err_pkts;	/* Tx error packet stat */
 	int  enabled;  /* Enabling/disabling of this queue */
 	enum fpga_info_profile profile;  /* Inline / Capture */
 };
 
+struct nt_mtr_profile {
+	LIST_ENTRY(nt_mtr_profile) next;
+	uint32_t profile_id;
+	struct rte_mtr_meter_profile profile;
+};
+
+struct nt_mtr {
+	LIST_ENTRY(nt_mtr) next;
+	uint32_t mtr_id;
+	int shared;
+	struct nt_mtr_profile *profile;
+};
+
 struct pmd_internals {
 	const struct rte_pci_device *pci_dev;
+	struct flow_eth_dev *flw_dev;
 	char name[20];
 	int n_intf_no;
 	int lpbk_mode;
@@ -94,6 +115,7 @@ struct pmd_internals {
 	/* Offset of the VF from the PF */
 	uint8_t vf_offset;
 	uint32_t port;
+	uint32_t port_id;
 	nt_meta_port_type_t type;
 	struct flow_queue_id_s vpq[MAX_QUEUES];
 	unsigned int           vpq_nb_vq;
@@ -106,6 +128,8 @@ struct pmd_internals {
 	struct rte_ether_addr eth_addrs[NUM_MAC_ADDRS_PER_PORT];
 	/* Multicast ethernet (MAC) addresses. */
 	struct rte_ether_addr mc_addrs[NUM_MULTICAST_ADDRS_PER_PORT];
+	uint64_t last_stat_rtc;
+	uint64_t rx_missed;
 	struct pmd_internals *next;
 };
 

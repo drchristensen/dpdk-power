@@ -52,6 +52,7 @@ enum mlx5dr_action_type {
 	MLX5DR_ACTION_TYP_POP_IPV6_ROUTE_EXT,
 	MLX5DR_ACTION_TYP_PUSH_IPV6_ROUTE_EXT,
 	MLX5DR_ACTION_TYP_NAT64,
+	MLX5DR_ACTION_TYP_JUMP_TO_MATCHER,
 	MLX5DR_ACTION_TYP_MAX,
 };
 
@@ -130,6 +131,14 @@ enum mlx5dr_matcher_distribute_mode {
 	MLX5DR_MATCHER_DISTRIBUTE_BY_LINEAR = 0x1,
 };
 
+/* Match mode describes the behavior of the matcher STE's when a packet arrives */
+enum mlx5dr_matcher_match_mode {
+	/* Packet arriving at this matcher STE's will match according it's tag and match definer */
+	MLX5DR_MATCHER_MATCH_MODE_DEFAULT = 0x0,
+	/* Packet arriving at this matcher STE's will always hit and perform the actions */
+	MLX5DR_MATCHER_MATCH_MODE_ALWAYS_HIT = 0x1,
+};
+
 enum mlx5dr_rule_hash_calc_mode {
 	MLX5DR_RULE_HASH_CALC_MODE_RAW,
 	MLX5DR_RULE_HASH_CALC_MODE_IDX,
@@ -144,11 +153,14 @@ struct mlx5dr_matcher_attr {
 	enum mlx5dr_matcher_resource_mode mode;
 	/* Optimize insertion in case packet origin is the same for all rules */
 	enum mlx5dr_matcher_flow_src optimize_flow_src;
-	/* Define the insertion and distribution modes for this matcher */
+	/* Define the insertion, distribution and match modes for this matcher */
 	enum mlx5dr_matcher_insert_mode insert_mode;
 	enum mlx5dr_matcher_distribute_mode distribute_mode;
+	enum mlx5dr_matcher_match_mode match_mode;
 	/* Define whether the created matcher supports resizing into a bigger matcher */
 	bool resizable;
+	/* This will imply that this matcher is not part of the matchers chain of parent table */
+	bool isolated;
 	union {
 		struct {
 			uint8_t sz_row_log;
@@ -276,6 +288,10 @@ struct mlx5dr_rule_action {
 			uint32_t offset;
 			enum mlx5dr_action_aso_ct_flags direction;
 		} aso_ct;
+
+		struct {
+			uint32_t offset;
+		} jump_to_matcher;
 	};
 };
 
@@ -291,6 +307,15 @@ struct mlx5dr_action_dest_attr {
 		size_t reformat_data_sz;
 		void *reformat_data;
 	} reformat;
+};
+
+enum mlx5dr_action_jump_to_matcher_type {
+	MLX5DR_ACTION_JUMP_TO_MATCHER_BY_INDEX,
+};
+
+struct mlx5dr_action_jump_to_matcher_attr {
+	enum mlx5dr_action_jump_to_matcher_type type;
+	struct mlx5dr_matcher *matcher;
 };
 
 union mlx5dr_crc_encap_entropy_hash_ip_field {
@@ -926,6 +951,21 @@ struct mlx5dr_action *
 mlx5dr_action_create_nat64(struct mlx5dr_context *ctx,
 			   struct mlx5dr_action_nat64_attr *attr,
 			   uint32_t flags);
+
+/* Create direct rule jump to matcher action.
+ *
+ * @param[in] ctx
+ *	The context in which the new action will be created.
+ * @param[in] attr
+ *	The relevant attribute of the action.
+ * @param[in] flags
+ *	Action creation flags. (enum mlx5dr_action_flags)
+ * @return pointer to mlx5dr_action on success NULL otherwise.
+ */
+struct mlx5dr_action *
+mlx5dr_action_create_jump_to_matcher(struct mlx5dr_context *ctx,
+				     struct mlx5dr_action_jump_to_matcher_attr *attr,
+				     uint32_t flags);
 
 /* Destroy direct rule action.
  *

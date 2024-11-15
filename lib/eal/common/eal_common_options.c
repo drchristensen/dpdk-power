@@ -6,9 +6,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
-#ifndef RTE_EXEC_ENV_WINDOWS
-#include <syslog.h>
-#endif
 #include <ctype.h>
 #include <limits.h>
 #include <errno.h>
@@ -76,7 +73,9 @@ eal_long_options[] = {
 	{OPT_HUGE_UNLINK,       2, NULL, OPT_HUGE_UNLINK_NUM      },
 	{OPT_IOVA_MODE,	        1, NULL, OPT_IOVA_MODE_NUM        },
 	{OPT_LCORES,            1, NULL, OPT_LCORES_NUM           },
+	{OPT_LOG_COLOR,		2, NULL, OPT_LOG_COLOR_NUM	  },
 	{OPT_LOG_LEVEL,         1, NULL, OPT_LOG_LEVEL_NUM        },
+	{OPT_LOG_TIMESTAMP,     2, NULL, OPT_LOG_TIMESTAMP_NUM    },
 	{OPT_TRACE,             1, NULL, OPT_TRACE_NUM            },
 	{OPT_TRACE_DIR,         1, NULL, OPT_TRACE_DIR_NUM        },
 	{OPT_TRACE_BUF_SIZE,    1, NULL, OPT_TRACE_BUF_SIZE_NUM   },
@@ -93,7 +92,9 @@ eal_long_options[] = {
 	{OPT_PROC_TYPE,         1, NULL, OPT_PROC_TYPE_NUM        },
 	{OPT_SOCKET_MEM,        1, NULL, OPT_SOCKET_MEM_NUM       },
 	{OPT_SOCKET_LIMIT,      1, NULL, OPT_SOCKET_LIMIT_NUM     },
-	{OPT_SYSLOG,            1, NULL, OPT_SYSLOG_NUM           },
+#ifndef RTE_EXEC_ENV_WINDOWS
+	{OPT_SYSLOG,            2, NULL, OPT_SYSLOG_NUM           },
+#endif
 	{OPT_VDEV,              1, NULL, OPT_VDEV_NUM             },
 	{OPT_VFIO_INTR,         1, NULL, OPT_VFIO_INTR_NUM        },
 	{OPT_VFIO_VF_TOKEN,     1, NULL, OPT_VFIO_VF_TOKEN_NUM    },
@@ -348,10 +349,6 @@ eal_reset_internal_config(struct internal_config *internal_cfg)
 		internal_cfg->hugepage_info[i].lock_descriptor = -1;
 	}
 	internal_cfg->base_virtaddr = 0;
-
-#ifdef LOG_DAEMON
-	internal_cfg->syslog_facility = LOG_DAEMON;
-#endif
 
 	/* if set to NONE, interrupt mode is determined automatically */
 	internal_cfg->vfio_intr_mode = RTE_INTR_MODE_NONE;
@@ -1297,47 +1294,6 @@ err:
 	return ret;
 }
 
-#ifndef RTE_EXEC_ENV_WINDOWS
-static int
-eal_parse_syslog(const char *facility, struct internal_config *conf)
-{
-	int i;
-	static const struct {
-		const char *name;
-		int value;
-	} map[] = {
-		{ "auth", LOG_AUTH },
-		{ "cron", LOG_CRON },
-		{ "daemon", LOG_DAEMON },
-		{ "ftp", LOG_FTP },
-		{ "kern", LOG_KERN },
-		{ "lpr", LOG_LPR },
-		{ "mail", LOG_MAIL },
-		{ "news", LOG_NEWS },
-		{ "syslog", LOG_SYSLOG },
-		{ "user", LOG_USER },
-		{ "uucp", LOG_UUCP },
-		{ "local0", LOG_LOCAL0 },
-		{ "local1", LOG_LOCAL1 },
-		{ "local2", LOG_LOCAL2 },
-		{ "local3", LOG_LOCAL3 },
-		{ "local4", LOG_LOCAL4 },
-		{ "local5", LOG_LOCAL5 },
-		{ "local6", LOG_LOCAL6 },
-		{ "local7", LOG_LOCAL7 },
-		{ NULL, 0 }
-	};
-
-	for (i = 0; map[i].name; i++) {
-		if (!strcmp(facility, map[i].name)) {
-			conf->syslog_facility = map[i].value;
-			return 0;
-		}
-	}
-	return -1;
-}
-#endif
-
 static void
 eal_log_usage(void)
 {
@@ -1640,6 +1596,59 @@ eal_parse_huge_unlink(const char *arg, struct hugepage_file_discipline *out)
 	return -1;
 }
 
+bool
+eal_option_is_log(int opt)
+{
+	switch (opt) {
+	case OPT_LOG_COLOR_NUM:
+	case OPT_LOG_LEVEL_NUM:
+	case OPT_LOG_TIMESTAMP_NUM:
+	case OPT_SYSLOG_NUM:
+		return true;
+	default:
+		return false;
+	}
+}
+
+/* Parse all arguments looking for log related ones */
+int
+eal_parse_log_options(int argc, char * const argv[])
+{
+	struct internal_config *internal_conf = eal_get_internal_configuration();
+	int option_index, opt;
+	const int old_optind = optind;
+	const int old_optopt = optopt;
+	const int old_opterr = opterr;
+	char *old_optarg = optarg;
+#ifdef RTE_EXEC_ENV_FREEBSD
+	const int old_optreset = optreset;
+	optreset = 1;
+#endif
+
+	optind = 1;
+	opterr = 0;
+
+	while ((opt = getopt_long(argc, argv, eal_short_options,
+				  eal_long_options, &option_index)) != EOF) {
+
+		if (!eal_option_is_log(opt))
+			continue;
+
+		if (eal_parse_common_option(opt, optarg, internal_conf) < 0)
+			return -1;
+	}
+
+	/* restore getopt lib */
+	optind = old_optind;
+	optopt = old_optopt;
+	optarg = old_optarg;
+	opterr = old_opterr;
+#ifdef RTE_EXEC_ENV_FREEBSD
+	optreset = old_optreset;
+#endif
+	return 0;
+}
+
 int
 eal_parse_common_option(int opt, const char *optarg,
 			struct internal_config *conf)
@@ -1837,7 +1846,7 @@ eal_parse_common_option(int opt, const char *optarg,
 
 #ifndef RTE_EXEC_ENV_WINDOWS
 	case OPT_SYSLOG_NUM:
-		if (eal_parse_syslog(optarg, conf) < 0) {
+		if (eal_log_syslog(optarg) < 0) {
 			EAL_LOG(ERR, "invalid parameters for --"
 					OPT_SYSLOG);
 			return -1;
@@ -1845,7 +1854,7 @@ eal_parse_common_option(int opt, const char *optarg,
 		break;
 #endif
 
-	case OPT_LOG_LEVEL_NUM: {
+	case OPT_LOG_LEVEL_NUM:
 		if (eal_parse_log_level(optarg) < 0) {
 			EAL_LOG(ERR,
 				"invalid parameters for --"
@@ -1853,7 +1862,22 @@ eal_parse_common_option(int opt, const char *optarg,
 			return -1;
 		}
 		break;
-	}
+
+	case OPT_LOG_TIMESTAMP_NUM:
+		if (eal_log_timestamp(optarg) < 0) {
+			EAL_LOG(ERR, "invalid parameters for --"
+				OPT_LOG_TIMESTAMP);
+			return -1;
+		}
+		break;
+
+	case OPT_LOG_COLOR_NUM:
+		if (eal_log_color(optarg) < 0) {
+			EAL_LOG(ERR, "invalid parameters for --"
+				OPT_LOG_COLOR);
+			return -1;
+		}
+		break;
 
 #ifndef RTE_EXEC_ENV_WINDOWS
 	case OPT_TRACE_NUM: {
@@ -2214,12 +2238,14 @@ eal_common_usage(void)
 	       "  --"OPT_VMWARE_TSC_MAP"    Use VMware TSC map instead of native RDTSC\n"
 	       "  --"OPT_PROC_TYPE"         Type of this process (primary|secondary|auto)\n"
 #ifndef RTE_EXEC_ENV_WINDOWS
-	       "  --"OPT_SYSLOG"            Set syslog facility\n"
+	       "  --"OPT_SYSLOG"[=<facility>] Enable use of syslog (and optionally set facility)\n"
 #endif
 	       "  --"OPT_LOG_LEVEL"=<level> Set global log level\n"
 	       "  --"OPT_LOG_LEVEL"=<type-match>:<level>\n"
 	       "                      Set specific log level\n"
 	       "  --"OPT_LOG_LEVEL"=help    Show log types and levels\n"
+	       "  --"OPT_LOG_TIMESTAMP"[=<format>]  Timestamp log output\n"
+	       "  --"OPT_LOG_COLOR"[=<when>] Colorize log messages\n"
 #ifndef RTE_EXEC_ENV_WINDOWS
 	       "  --"OPT_TRACE"=<regex-match>\n"
 	       "                      Enable trace based on regular expression trace name.\n"

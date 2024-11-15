@@ -4,6 +4,9 @@
  */
 
 #include <stdint.h>
+#include <stdarg.h>
+
+#include <signal.h>
 
 #include <rte_eal.h>
 #include <rte_dev.h>
@@ -15,6 +18,7 @@
 
 #include <sys/queue.h>
 
+#include "rte_spinlock.h"
 #include "ntlog.h"
 #include "ntdrv_4ga.h"
 #include "ntos_drv.h"
@@ -23,9 +27,19 @@
 #include "ntnic_vfio.h"
 #include "ntnic_mod_reg.h"
 #include "nt_util.h"
+#include "profile_inline/flm_age_queue.h"
+#include "profile_inline/flm_evt_queue.h"
+#include "rte_pmd_ntnic.h"
 
+const rte_thread_attr_t thread_attr = { .priority = RTE_THREAD_PRIORITY_NORMAL };
+#define THREAD_CREATE(a, b, c) rte_thread_create(a, &thread_attr, b, c)
+#define THREAD_CTRL_CREATE(a, b, c, d) rte_thread_create_internal_control(a, b, c, d)
+#define THREAD_JOIN(a) rte_thread_join(a, NULL)
+#define THREAD_FUNC static uint32_t
+#define THREAD_RETURN (0)
 #define HW_MAX_PKT_LEN (10000)
 #define MAX_MTU (HW_MAX_PKT_LEN - RTE_ETHER_HDR_LEN - RTE_ETHER_CRC_LEN)
+#define MIN_MTU_INLINE 512
 
 #define EXCEPTION_PATH_HID 0
 
@@ -35,9 +49,6 @@
 #define SG_NB_HW_TX_DESCRIPTORS 1024
 #define SG_HW_RX_PKT_BUFFER_SIZE (1024 << 1)
 #define SG_HW_TX_PKT_BUFFER_SIZE (1024 << 1)
-
-/* Max RSS queues */
-#define MAX_QUEUES 125
 
 #define NUM_VQ_SEGS(_data_size_)                                                                  \
 	({                                                                                        \
@@ -59,6 +70,13 @@
 
 #define MAX_RX_PACKETS   128
 #define MAX_TX_PACKETS   128
+
+#define MTUINITVAL 1500
+
+uint64_t rte_tsc_freq;
+
+static void (*previous_handler)(int sig);
+static rte_thread_t shutdown_tid;
 
 int kill_pmd;
 
@@ -83,7 +101,7 @@ static const struct rte_pci_id nthw_pci_id_map[] = {
 
 static const struct sg_ops_s *sg_ops;
 
-static rte_spinlock_t hwlock = RTE_SPINLOCK_INITIALIZER;
+rte_spinlock_t hwlock = RTE_SPINLOCK_INITIALIZER;
 
 /*
  * Store and get adapter info
@@ -120,6 +138,16 @@ store_pdrv(struct drv_s *p_drv)
 	rte_spinlock_unlock(&hwlock);
 }
 
+static void clear_pdrv(struct drv_s *p_drv)
+{
+	if (p_drv->adapter_no > NUM_ADAPTER_MAX)
+		return;
+
+	rte_spinlock_lock(&hwlock);
+	_g_p_drv[p_drv->adapter_no] = NULL;
+	rte_spinlock_unlock(&hwlock);
+}
+
 static struct drv_s *
 get_pdrv_from_pci(struct rte_pci_addr addr)
 {
@@ -141,6 +169,102 @@ get_pdrv_from_pci(struct rte_pci_addr addr)
 	return p_drv;
 }
 
+static int dpdk_stats_collect(struct pmd_internals *internals, struct rte_eth_stats *stats)
+{
+	const struct ntnic_filter_ops *ntnic_filter_ops = get_ntnic_filter_ops();
+
+	if (ntnic_filter_ops == NULL) {
+		NT_LOG_DBGX(ERR, NTNIC, "ntnic_filter_ops uninitialized");
+		return -1;
+	}
+
+	unsigned int i;
+	struct drv_s *p_drv = internals->p_drv;
+	struct ntdrv_4ga_s *p_nt_drv = &p_drv->ntdrv;
+	nt4ga_stat_t *p_nt4ga_stat = &p_nt_drv->adapter_info.nt4ga_stat;
+	nthw_stat_t *p_nthw_stat = p_nt4ga_stat->mp_nthw_stat;
+	const int if_index = internals->n_intf_no;
+	uint64_t rx_total = 0;
+	uint64_t rx_total_b = 0;
+	uint64_t tx_total = 0;
+	uint64_t tx_total_b = 0;
+	uint64_t tx_err_total = 0;
+
+	if (!p_nthw_stat || !p_nt4ga_stat || !stats || if_index < 0 ||
+		if_index > NUM_ADAPTER_PORTS_MAX) {
+		NT_LOG_DBGX(WRN, NTNIC, "error exit");
+		return -1;
+	}
+
+	/*
+	 * Pull the latest port statistic numbers (Rx/Tx pkts and bytes)
+	 * Return values are in the "internals->rxq_scg[]" and "internals->txq_scg[]" arrays
+	 */
+	ntnic_filter_ops->poll_statistics(internals);
+
+	memset(stats, 0, sizeof(*stats));
+
+	for (i = 0; i < RTE_ETHDEV_QUEUE_STAT_CNTRS && i < internals->nb_rx_queues; i++) {
+		stats->q_ipackets[i] = internals->rxq_scg[i].rx_pkts;
+		stats->q_ibytes[i] = internals->rxq_scg[i].rx_bytes;
+		rx_total += stats->q_ipackets[i];
+		rx_total_b += stats->q_ibytes[i];
+	}
+
+	for (i = 0; i < RTE_ETHDEV_QUEUE_STAT_CNTRS && i < internals->nb_tx_queues; i++) {
+		stats->q_opackets[i] = internals->txq_scg[i].tx_pkts;
+		stats->q_obytes[i] = internals->txq_scg[i].tx_bytes;
+		stats->q_errors[i] = internals->txq_scg[i].err_pkts;
+		tx_total += stats->q_opackets[i];
+		tx_total_b += stats->q_obytes[i];
+		tx_err_total += stats->q_errors[i];
+	}
+
+	stats->imissed = internals->rx_missed;
+	stats->ipackets = rx_total;
+	stats->ibytes = rx_total_b;
+	stats->opackets = tx_total;
+	stats->obytes = tx_total_b;
+	stats->oerrors = tx_err_total;
+
+	return 0;
+}
+
+static int dpdk_stats_reset(struct pmd_internals *internals, struct ntdrv_4ga_s *p_nt_drv,
+	int n_intf_no)
+{
+	nt4ga_stat_t *p_nt4ga_stat = &p_nt_drv->adapter_info.nt4ga_stat;
+	nthw_stat_t *p_nthw_stat = p_nt4ga_stat->mp_nthw_stat;
+	unsigned int i;
+
+	if (!p_nthw_stat || !p_nt4ga_stat || n_intf_no < 0 || n_intf_no > NUM_ADAPTER_PORTS_MAX)
+		return -1;
+
+	rte_spinlock_lock(&p_nt_drv->stat_lck);
+
+	/* Rx */
+	for (i = 0; i < internals->nb_rx_queues; i++) {
+		internals->rxq_scg[i].rx_pkts = 0;
+		internals->rxq_scg[i].rx_bytes = 0;
+		internals->rxq_scg[i].err_pkts = 0;
+	}
+
+	internals->rx_missed = 0;
+
+	/* Tx */
+	for (i = 0; i < internals->nb_tx_queues; i++) {
+		internals->txq_scg[i].tx_pkts = 0;
+		internals->txq_scg[i].tx_bytes = 0;
+		internals->txq_scg[i].err_pkts = 0;
+	}
+
+	p_nt4ga_stat->n_totals_reset_timestamp = time(NULL);
+
+	rte_spinlock_unlock(&p_nt_drv->stat_lck);
+
+	return 0;
+}
+
 static int
 eth_link_update(struct rte_eth_dev *eth_dev, int wait_to_complete __rte_unused)
 {
@@ -151,7 +275,7 @@ eth_link_update(struct rte_eth_dev *eth_dev, int wait_to_complete __rte_unused)
 		return -1;
 	}
 
-	struct pmd_internals *internals = (struct pmd_internals *)eth_dev->data->dev_private;
+	struct pmd_internals *internals = eth_dev->data->dev_private;
 
 	const int n_intf_no = internals->n_intf_no;
 	struct adapter_info_s *p_adapter_info = &internals->p_drv->ntdrv.adapter_info;
@@ -179,6 +303,23 @@ eth_link_update(struct rte_eth_dev *eth_dev, int wait_to_complete __rte_unused)
 	return 0;
 }
 
+static int eth_stats_get(struct rte_eth_dev *eth_dev, struct rte_eth_stats *stats)
+{
+	struct pmd_internals *internals = eth_dev->data->dev_private;
+	dpdk_stats_collect(internals, stats);
+	return 0;
+}
+
+static int eth_stats_reset(struct rte_eth_dev *eth_dev)
+{
+	struct pmd_internals *internals = eth_dev->data->dev_private;
+	struct drv_s *p_drv = internals->p_drv;
+	struct ntdrv_4ga_s *p_nt_drv = &p_drv->ntdrv;
+	const int if_index = internals->n_intf_no;
+	dpdk_stats_reset(internals, p_nt_drv, if_index);
+	return 0;
+}
+
 static int
 eth_dev_infos_get(struct rte_eth_dev *eth_dev, struct rte_eth_dev_info *dev_info)
 {
@@ -189,7 +330,7 @@ eth_dev_infos_get(struct rte_eth_dev *eth_dev, struct rte_eth_dev_info *dev_info
 		return -1;
 	}
 
-	struct pmd_internals *internals = (struct pmd_internals *)eth_dev->data->dev_private;
+	struct pmd_internals *internals = eth_dev->data->dev_private;
 
 	const int n_intf_no = internals->n_intf_no;
 	struct adapter_info_s *p_adapter_info = &internals->p_drv->ntdrv.adapter_info;
@@ -198,6 +339,15 @@ eth_dev_infos_get(struct rte_eth_dev *eth_dev, struct rte_eth_dev_info *dev_info
 	dev_info->max_mac_addrs = NUM_MAC_ADDRS_PER_PORT;
 	dev_info->max_rx_pktlen = HW_MAX_PKT_LEN;
 	dev_info->max_mtu = MAX_MTU;
+
+	if (p_adapter_info->fpga_info.profile == FPGA_INFO_PROFILE_INLINE) {
+		dev_info->min_mtu = MIN_MTU_INLINE;
+		dev_info->flow_type_rss_offloads = NT_ETH_RSS_OFFLOAD_MASK;
+		dev_info->hash_key_size = MAX_RSS_KEY_LEN;
+
+		dev_info->rss_algo_capa = RTE_ETH_HASH_ALGO_CAPA_MASK(DEFAULT) |
+			RTE_ETH_HASH_ALGO_CAPA_MASK(TOEPLITZ);
+	}
 
 	if (internals->p_drv) {
 		dev_info->max_rx_queues = internals->nb_rx_queues;
@@ -811,14 +961,14 @@ static int deallocate_hw_virtio_queues(struct hwq_s *hwq)
 
 static void eth_tx_queue_release(struct rte_eth_dev *eth_dev, uint16_t queue_id)
 {
-	struct pmd_internals *internals = (struct pmd_internals *)eth_dev->data->dev_private;
+	struct pmd_internals *internals = eth_dev->data->dev_private;
 	struct ntnic_tx_queue *tx_q = &internals->txq_scg[queue_id];
 	deallocate_hw_virtio_queues(&tx_q->hwq);
 }
 
 static void eth_rx_queue_release(struct rte_eth_dev *eth_dev, uint16_t queue_id)
 {
-	struct pmd_internals *internals = (struct pmd_internals *)eth_dev->data->dev_private;
+	struct pmd_internals *internals = eth_dev->data->dev_private;
 	struct ntnic_rx_queue *rx_q = &internals->rxq_scg[queue_id];
 	deallocate_hw_virtio_queues(&rx_q->hwq);
 }
@@ -848,7 +998,7 @@ static int eth_rx_scg_queue_setup(struct rte_eth_dev *eth_dev,
 {
 	NT_LOG_DBGX(DBG, NTNIC, "Rx queue setup");
 	struct rte_pktmbuf_pool_private *mbp_priv;
-	struct pmd_internals *internals = (struct pmd_internals *)eth_dev->data->dev_private;
+	struct pmd_internals *internals = eth_dev->data->dev_private;
 	struct ntnic_rx_queue *rx_q = &internals->rxq_scg[rx_queue_id];
 	struct drv_s *p_drv = internals->p_drv;
 	struct ntdrv_4ga_s *p_nt_drv = &p_drv->ntdrv;
@@ -916,7 +1066,7 @@ static int eth_tx_scg_queue_setup(struct rte_eth_dev *eth_dev,
 	}
 
 	NT_LOG_DBGX(DBG, NTNIC, "Tx queue setup");
-	struct pmd_internals *internals = (struct pmd_internals *)eth_dev->data->dev_private;
+	struct pmd_internals *internals = eth_dev->data->dev_private;
 	struct drv_s *p_drv = internals->p_drv;
 	struct ntdrv_4ga_s *p_nt_drv = &p_drv->ntdrv;
 	struct ntnic_tx_queue *tx_q = &internals->txq_scg[tx_queue_id];
@@ -1003,6 +1153,26 @@ static int eth_tx_scg_queue_setup(struct rte_eth_dev *eth_dev,
 	return 0;
 }
 
+static int dev_set_mtu_inline(struct rte_eth_dev *eth_dev, uint16_t mtu)
+{
+	const struct profile_inline_ops *profile_inline_ops = get_profile_inline_ops();
+
+	if (profile_inline_ops == NULL) {
+		NT_LOG_DBGX(ERR, NTNIC, "profile_inline module uninitialized");
+		return -1;
+	}
+
+	struct pmd_internals *internals = (struct pmd_internals *)eth_dev->data->dev_private;
+
+	struct flow_eth_dev *flw_dev = internals->flw_dev;
+	int ret = -1;
+
+	if (internals->type == PORT_TYPE_PHYSICAL && mtu >= MIN_MTU_INLINE && mtu <= MAX_MTU)
+		ret = profile_inline_ops->flow_set_mtu_inline(flw_dev, internals->port, mtu);
+
+	return ret ? -EINVAL : 0;
+}
+
 static int eth_rx_queue_start(struct rte_eth_dev *eth_dev, uint16_t rx_queue_id)
 {
 	eth_dev->data->rx_queue_state[rx_queue_id] = RTE_ETH_QUEUE_STATE_STARTED;
@@ -1039,7 +1209,7 @@ eth_mac_addr_add(struct rte_eth_dev *eth_dev,
 
 	if (index >= NUM_MAC_ADDRS_PER_PORT) {
 		const struct pmd_internals *const internals =
-			(struct pmd_internals *)eth_dev->data->dev_private;
+			eth_dev->data->dev_private;
 		NT_LOG_DBGX(DBG, NTNIC, "Port %i: illegal index %u (>= %u)",
 			internals->n_intf_no, index, NUM_MAC_ADDRS_PER_PORT);
 		return -1;
@@ -1065,7 +1235,7 @@ eth_set_mc_addr_list(struct rte_eth_dev *eth_dev,
 	struct rte_ether_addr *mc_addr_set,
 	uint32_t nb_mc_addr)
 {
-	struct pmd_internals *const internals = (struct pmd_internals *)eth_dev->data->dev_private;
+	struct pmd_internals *const internals = eth_dev->data->dev_private;
 	struct rte_ether_addr *const mc_addrs = internals->mc_addrs;
 	size_t i;
 
@@ -1106,7 +1276,8 @@ eth_dev_start(struct rte_eth_dev *eth_dev)
 		return -1;
 	}
 
-	struct pmd_internals *internals = (struct pmd_internals *)eth_dev->data->dev_private;
+	eth_dev->flow_fp_ops = get_dev_fp_flow_ops();
+	struct pmd_internals *internals = eth_dev->data->dev_private;
 
 	const int n_intf_no = internals->n_intf_no;
 	struct adapter_info_s *p_adapter_info = &internals->p_drv->ntdrv.adapter_info;
@@ -1167,7 +1338,7 @@ eth_dev_start(struct rte_eth_dev *eth_dev)
 static int
 eth_dev_stop(struct rte_eth_dev *eth_dev)
 {
-	struct pmd_internals *internals = (struct pmd_internals *)eth_dev->data->dev_private;
+	struct pmd_internals *internals = eth_dev->data->dev_private;
 
 	NT_LOG_DBGX(DBG, NTNIC, "Port %u", internals->n_intf_no);
 
@@ -1195,7 +1366,7 @@ eth_dev_set_link_up(struct rte_eth_dev *eth_dev)
 		return -1;
 	}
 
-	struct pmd_internals *const internals = (struct pmd_internals *)eth_dev->data->dev_private;
+	struct pmd_internals *const internals = eth_dev->data->dev_private;
 
 	struct adapter_info_s *p_adapter_info = &internals->p_drv->ntdrv.adapter_info;
 	const int port = internals->n_intf_no;
@@ -1221,7 +1392,7 @@ eth_dev_set_link_down(struct rte_eth_dev *eth_dev)
 		return -1;
 	}
 
-	struct pmd_internals *const internals = (struct pmd_internals *)eth_dev->data->dev_private;
+	struct pmd_internals *const internals = eth_dev->data->dev_private;
 
 	struct adapter_info_s *p_adapter_info = &internals->p_drv->ntdrv.adapter_info;
 	const int port = internals->n_intf_no;
@@ -1240,6 +1411,13 @@ eth_dev_set_link_down(struct rte_eth_dev *eth_dev)
 static void
 drv_deinit(struct drv_s *p_drv)
 {
+	const struct profile_inline_ops *profile_inline_ops = get_profile_inline_ops();
+
+	if (profile_inline_ops == NULL) {
+		NT_LOG_DBGX(ERR, NTNIC, "profile_inline module uninitialized");
+		return;
+	}
+
 	const struct adapter_ops *adapter_ops = get_adapter_ops();
 
 	if (adapter_ops == NULL) {
@@ -1251,6 +1429,30 @@ drv_deinit(struct drv_s *p_drv)
 		return;
 
 	ntdrv_4ga_t *p_nt_drv = &p_drv->ntdrv;
+	fpga_info_t *fpga_info = &p_nt_drv->adapter_info.fpga_info;
+
+	/*
+	 * Mark the global pdrv for cleared. Used by some threads to terminate.
+	 * 1 second to give the threads a chance to see the termonation.
+	 */
+	clear_pdrv(p_drv);
+	nt_os_wait_usec(1000000);
+
+	/* stop statistics threads */
+	p_drv->ntdrv.b_shutdown = true;
+	THREAD_JOIN(p_nt_drv->stat_thread);
+
+	if (fpga_info->profile == FPGA_INFO_PROFILE_INLINE) {
+		THREAD_JOIN(p_nt_drv->flm_thread);
+		profile_inline_ops->flm_free_queues();
+		THREAD_JOIN(p_nt_drv->port_event_thread);
+		/* Free all local flm event queues */
+		flm_inf_sta_queue_free_all(FLM_INFO_LOCAL);
+		/* Free all remote flm event queues */
+		flm_inf_sta_queue_free_all(FLM_INFO_REMOTE);
+		/* Free all aged flow event queues */
+		flm_age_queue_free_all();
+	}
 
 	/* stop adapter */
 	adapter_ops->deinit(&p_nt_drv->adapter_info);
@@ -1263,7 +1465,7 @@ drv_deinit(struct drv_s *p_drv)
 static int
 eth_dev_close(struct rte_eth_dev *eth_dev)
 {
-	struct pmd_internals *internals = (struct pmd_internals *)eth_dev->data->dev_private;
+	struct pmd_internals *internals = eth_dev->data->dev_private;
 	struct drv_s *p_drv = internals->p_drv;
 
 	if (internals->type != PORT_TYPE_VIRTUAL) {
@@ -1301,7 +1503,7 @@ eth_dev_close(struct rte_eth_dev *eth_dev)
 static int
 eth_fw_version_get(struct rte_eth_dev *eth_dev, char *fw_version, size_t fw_size)
 {
-	struct pmd_internals *internals = (struct pmd_internals *)eth_dev->data->dev_private;
+	struct pmd_internals *internals = eth_dev->data->dev_private;
 
 	if (internals->type == PORT_TYPE_VIRTUAL || internals->type == PORT_TYPE_OVERRIDE)
 		return 0;
@@ -1321,6 +1523,119 @@ eth_fw_version_get(struct rte_eth_dev *eth_dev, char *fw_version, size_t fw_size
 	}
 }
 
+static int dev_flow_ops_get(struct rte_eth_dev *dev __rte_unused, const struct rte_flow_ops **ops)
+{
+	*ops = get_dev_flow_ops();
+	return 0;
+}
+
+static int eth_xstats_get(struct rte_eth_dev *eth_dev, struct rte_eth_xstat *stats, unsigned int n)
+{
+	struct pmd_internals *internals = eth_dev->data->dev_private;
+	struct drv_s *p_drv = internals->p_drv;
+	ntdrv_4ga_t *p_nt_drv = &p_drv->ntdrv;
+	nt4ga_stat_t *p_nt4ga_stat = &p_nt_drv->adapter_info.nt4ga_stat;
+	int if_index = internals->n_intf_no;
+	int nb_xstats;
+
+	const struct ntnic_xstats_ops *ntnic_xstats_ops = get_ntnic_xstats_ops();
+
+	if (ntnic_xstats_ops == NULL) {
+		NT_LOG(INF, NTNIC, "ntnic_xstats module not included");
+		return -1;
+	}
+
+	rte_spinlock_lock(&p_nt_drv->stat_lck);
+	nb_xstats = ntnic_xstats_ops->nthw_xstats_get(p_nt4ga_stat, stats, n, if_index);
+	rte_spinlock_unlock(&p_nt_drv->stat_lck);
+	return nb_xstats;
+}
+
+static int eth_xstats_get_by_id(struct rte_eth_dev *eth_dev,
+	const uint64_t *ids,
+	uint64_t *values,
+	unsigned int n)
+{
+	struct pmd_internals *internals = eth_dev->data->dev_private;
+	struct drv_s *p_drv = internals->p_drv;
+	ntdrv_4ga_t *p_nt_drv = &p_drv->ntdrv;
+	nt4ga_stat_t *p_nt4ga_stat = &p_nt_drv->adapter_info.nt4ga_stat;
+	int if_index = internals->n_intf_no;
+	int nb_xstats;
+
+	const struct ntnic_xstats_ops *ntnic_xstats_ops = get_ntnic_xstats_ops();
+
+	if (ntnic_xstats_ops == NULL) {
+		NT_LOG(INF, NTNIC, "ntnic_xstats module not included");
+		return -1;
+	}
+
+	rte_spinlock_lock(&p_nt_drv->stat_lck);
+	nb_xstats =
+		ntnic_xstats_ops->nthw_xstats_get_by_id(p_nt4ga_stat, ids, values, n, if_index);
+	rte_spinlock_unlock(&p_nt_drv->stat_lck);
+	return nb_xstats;
+}
+
+static int eth_xstats_reset(struct rte_eth_dev *eth_dev)
+{
+	struct pmd_internals *internals = eth_dev->data->dev_private;
+	struct drv_s *p_drv = internals->p_drv;
+	ntdrv_4ga_t *p_nt_drv = &p_drv->ntdrv;
+	nt4ga_stat_t *p_nt4ga_stat = &p_nt_drv->adapter_info.nt4ga_stat;
+	int if_index = internals->n_intf_no;
+
+	struct ntnic_xstats_ops *ntnic_xstats_ops = get_ntnic_xstats_ops();
+
+	if (ntnic_xstats_ops == NULL) {
+		NT_LOG(INF, NTNIC, "ntnic_xstats module not included");
+		return -1;
+	}
+
+	rte_spinlock_lock(&p_nt_drv->stat_lck);
+	ntnic_xstats_ops->nthw_xstats_reset(p_nt4ga_stat, if_index);
+	rte_spinlock_unlock(&p_nt_drv->stat_lck);
+	return dpdk_stats_reset(internals, p_nt_drv, if_index);
+}
+
+static int eth_xstats_get_names(struct rte_eth_dev *eth_dev,
+	struct rte_eth_xstat_name *xstats_names, unsigned int size)
+{
+	struct pmd_internals *internals = eth_dev->data->dev_private;
+	struct drv_s *p_drv = internals->p_drv;
+	ntdrv_4ga_t *p_nt_drv = &p_drv->ntdrv;
+	nt4ga_stat_t *p_nt4ga_stat = &p_nt_drv->adapter_info.nt4ga_stat;
+
+	const struct ntnic_xstats_ops *ntnic_xstats_ops = get_ntnic_xstats_ops();
+
+	if (ntnic_xstats_ops == NULL) {
+		NT_LOG(INF, NTNIC, "ntnic_xstats module not included");
+		return -1;
+	}
+
+	return ntnic_xstats_ops->nthw_xstats_get_names(p_nt4ga_stat, xstats_names, size);
+}
+
+static int eth_xstats_get_names_by_id(struct rte_eth_dev *eth_dev,
+	const uint64_t *ids,
+	struct rte_eth_xstat_name *xstats_names,
+	unsigned int size)
+{
+	struct pmd_internals *internals = eth_dev->data->dev_private;
+	struct drv_s *p_drv = internals->p_drv;
+	ntdrv_4ga_t *p_nt_drv = &p_drv->ntdrv;
+	nt4ga_stat_t *p_nt4ga_stat = &p_nt_drv->adapter_info.nt4ga_stat;
+	const struct ntnic_xstats_ops *ntnic_xstats_ops = get_ntnic_xstats_ops();
+
+	if (ntnic_xstats_ops == NULL) {
+		NT_LOG(INF, NTNIC, "ntnic_xstats module not included");
+		return -1;
+	}
+
+	return ntnic_xstats_ops->nthw_xstats_get_names_by_id(p_nt4ga_stat, xstats_names, ids,
+			size);
+}
+
 static int
 promiscuous_enable(struct rte_eth_dev __rte_unused(*dev))
 {
@@ -1328,7 +1643,72 @@ promiscuous_enable(struct rte_eth_dev __rte_unused(*dev))
 	return 0;
 }
 
-static const struct eth_dev_ops nthw_eth_dev_ops = {
+static int eth_dev_rss_hash_update(struct rte_eth_dev *eth_dev, struct rte_eth_rss_conf *rss_conf)
+{
+	const struct flow_filter_ops *flow_filter_ops = get_flow_filter_ops();
+
+	if (flow_filter_ops == NULL) {
+		NT_LOG_DBGX(ERR, NTNIC, "flow_filter module uninitialized");
+		return -1;
+	}
+
+	struct pmd_internals *internals = eth_dev->data->dev_private;
+
+	struct flow_nic_dev *ndev = internals->flw_dev->ndev;
+	struct nt_eth_rss_conf tmp_rss_conf = { 0 };
+	const int hsh_idx = 0;	/* hsh index 0 means the default receipt in HSH module */
+
+	if (rss_conf->rss_key != NULL) {
+		if (rss_conf->rss_key_len > MAX_RSS_KEY_LEN) {
+			NT_LOG(ERR, NTNIC,
+				"ERROR: - RSS hash key length %u exceeds maximum value %u",
+				rss_conf->rss_key_len, MAX_RSS_KEY_LEN);
+			return -1;
+		}
+
+		rte_memcpy(&tmp_rss_conf.rss_key, rss_conf->rss_key, rss_conf->rss_key_len);
+	}
+
+	tmp_rss_conf.algorithm = rss_conf->algorithm;
+
+	tmp_rss_conf.rss_hf = rss_conf->rss_hf;
+	int res = flow_filter_ops->flow_nic_set_hasher_fields(ndev, hsh_idx, tmp_rss_conf);
+
+	if (res == 0) {
+		flow_filter_ops->hw_mod_hsh_rcp_flush(&ndev->be, hsh_idx, 1);
+		rte_memcpy(&ndev->rss_conf, &tmp_rss_conf, sizeof(struct nt_eth_rss_conf));
+
+	} else {
+		NT_LOG(ERR, NTNIC, "ERROR: - RSS hash update failed with error %i", res);
+	}
+
+	return res;
+}
+
+static int rss_hash_conf_get(struct rte_eth_dev *eth_dev, struct rte_eth_rss_conf *rss_conf)
+{
+	struct pmd_internals *internals = eth_dev->data->dev_private;
+	struct flow_nic_dev *ndev = internals->flw_dev->ndev;
+
+	rss_conf->algorithm = (enum rte_eth_hash_function)ndev->rss_conf.algorithm;
+
+	rss_conf->rss_hf = ndev->rss_conf.rss_hf;
+
+	/*
+	 * copy full stored key into rss_key and pad it with
+	 * zeros up to rss_key_len / MAX_RSS_KEY_LEN
+	 */
+	if (rss_conf->rss_key != NULL) {
+		int key_len = RTE_MIN(rss_conf->rss_key_len, MAX_RSS_KEY_LEN);
+		memset(rss_conf->rss_key, 0, rss_conf->rss_key_len);
+		rte_memcpy(rss_conf->rss_key, &ndev->rss_conf.rss_key, key_len);
+		rss_conf->rss_key_len = key_len;
+	}
+
+	return 0;
+}
+
+static struct eth_dev_ops nthw_eth_dev_ops = {
 	.dev_configure = eth_dev_configure,
 	.dev_start = eth_dev_start,
 	.dev_stop = eth_dev_stop,
@@ -1336,6 +1716,8 @@ static const struct eth_dev_ops nthw_eth_dev_ops = {
 	.dev_set_link_down = eth_dev_set_link_down,
 	.dev_close = eth_dev_close,
 	.link_update = eth_link_update,
+	.stats_get = eth_stats_get,
+	.stats_reset = eth_stats_reset,
 	.dev_infos_get = eth_dev_infos_get,
 	.fw_version_get = eth_fw_version_get,
 	.rx_queue_setup = eth_rx_scg_queue_setup,
@@ -1349,12 +1731,286 @@ static const struct eth_dev_ops nthw_eth_dev_ops = {
 	.mac_addr_add = eth_mac_addr_add,
 	.mac_addr_set = eth_mac_addr_set,
 	.set_mc_addr_list = eth_set_mc_addr_list,
+	.mtr_ops_get = NULL,
+	.flow_ops_get = dev_flow_ops_get,
+	.xstats_get = eth_xstats_get,
+	.xstats_get_names = eth_xstats_get_names,
+	.xstats_reset = eth_xstats_reset,
+	.xstats_get_by_id = eth_xstats_get_by_id,
+	.xstats_get_names_by_id = eth_xstats_get_names_by_id,
+	.mtu_set = NULL,
 	.promiscuous_enable = promiscuous_enable,
+	.rss_hash_update = eth_dev_rss_hash_update,
+	.rss_hash_conf_get = rss_hash_conf_get,
 };
+
+/*
+ * Port event thread
+ */
+THREAD_FUNC port_event_thread_fn(void *context)
+{
+	struct pmd_internals *internals = context;
+	struct drv_s *p_drv = internals->p_drv;
+	ntdrv_4ga_t *p_nt_drv = &p_drv->ntdrv;
+	struct adapter_info_s *p_adapter_info = &p_nt_drv->adapter_info;
+	struct flow_nic_dev *ndev = p_adapter_info->nt4ga_filter.mp_flow_device;
+
+	nt4ga_stat_t *p_nt4ga_stat = &p_nt_drv->adapter_info.nt4ga_stat;
+	struct rte_eth_dev *eth_dev = &rte_eth_devices[internals->port_id];
+	uint8_t port_no = internals->port;
+
+	ntnic_flm_load_t flmdata;
+	ntnic_port_load_t portdata;
+
+	memset(&flmdata, 0, sizeof(flmdata));
+	memset(&portdata, 0, sizeof(portdata));
+
+	while (ndev != NULL && ndev->eth_base == NULL)
+		nt_os_wait_usec(1 * 1000 * 1000);
+
+	while (!p_drv->ntdrv.b_shutdown) {
+		/*
+		 * FLM load measurement
+		 * Do only send event, if there has been a change
+		 */
+		if (p_nt4ga_stat->flm_stat_ver > 22 && p_nt4ga_stat->mp_stat_structs_flm) {
+			if (flmdata.lookup != p_nt4ga_stat->mp_stat_structs_flm->load_lps ||
+				flmdata.access != p_nt4ga_stat->mp_stat_structs_flm->load_aps) {
+				rte_spinlock_lock(&p_nt_drv->stat_lck);
+				flmdata.lookup = p_nt4ga_stat->mp_stat_structs_flm->load_lps;
+				flmdata.access = p_nt4ga_stat->mp_stat_structs_flm->load_aps;
+				flmdata.lookup_maximum =
+					p_nt4ga_stat->mp_stat_structs_flm->max_lps;
+				flmdata.access_maximum =
+					p_nt4ga_stat->mp_stat_structs_flm->max_aps;
+				rte_spinlock_unlock(&p_nt_drv->stat_lck);
+
+				if (eth_dev && eth_dev->data && eth_dev->data->dev_private) {
+					rte_eth_dev_callback_process(eth_dev,
+						(enum rte_eth_event_type)RTE_NTNIC_FLM_LOAD_EVENT,
+						&flmdata);
+				}
+			}
+		}
+
+		/*
+		 * Port load measurement
+		 * Do only send event, if there has been a change.
+		 */
+		if (p_nt4ga_stat->mp_port_load) {
+			if (portdata.rx_bps != p_nt4ga_stat->mp_port_load[port_no].rx_bps ||
+				portdata.tx_bps != p_nt4ga_stat->mp_port_load[port_no].tx_bps) {
+				rte_spinlock_lock(&p_nt_drv->stat_lck);
+				portdata.rx_bps = p_nt4ga_stat->mp_port_load[port_no].rx_bps;
+				portdata.tx_bps = p_nt4ga_stat->mp_port_load[port_no].tx_bps;
+				portdata.rx_pps = p_nt4ga_stat->mp_port_load[port_no].rx_pps;
+				portdata.tx_pps = p_nt4ga_stat->mp_port_load[port_no].tx_pps;
+				portdata.rx_pps_maximum =
+					p_nt4ga_stat->mp_port_load[port_no].rx_pps_max;
+				portdata.tx_pps_maximum =
+					p_nt4ga_stat->mp_port_load[port_no].tx_pps_max;
+				portdata.rx_bps_maximum =
+					p_nt4ga_stat->mp_port_load[port_no].rx_bps_max;
+				portdata.tx_bps_maximum =
+					p_nt4ga_stat->mp_port_load[port_no].tx_bps_max;
+				rte_spinlock_unlock(&p_nt_drv->stat_lck);
+
+				if (eth_dev && eth_dev->data && eth_dev->data->dev_private) {
+					rte_eth_dev_callback_process(eth_dev,
+						(enum rte_eth_event_type)RTE_NTNIC_PORT_LOAD_EVENT,
+						&portdata);
+				}
+			}
+		}
+
+		/* Process events */
+		{
+			int count = 0;
+			bool do_wait = true;
+
+			while (count < 5000) {
+				/* Local FLM statistic events */
+				struct flm_info_event_s data;
+
+				if (flm_inf_queue_get(port_no, FLM_INFO_LOCAL, &data) == 0) {
+					if (eth_dev && eth_dev->data &&
+						eth_dev->data->dev_private) {
+						struct ntnic_flm_statistic_s event_data;
+						event_data.bytes = data.bytes;
+						event_data.packets = data.packets;
+						event_data.cause = data.cause;
+						event_data.id = data.id;
+						event_data.timestamp = data.timestamp;
+						rte_eth_dev_callback_process(eth_dev,
+							(enum rte_eth_event_type)
+							RTE_NTNIC_FLM_STATS_EVENT,
+							&event_data);
+						do_wait = false;
+					}
+				}
+
+				/* AGED event */
+				/* Note: RTE_FLOW_PORT_FLAG_STRICT_QUEUE flag is not supported so
+				 * event is always generated
+				 */
+				int aged_event_count = flm_age_event_get(port_no);
+
+				if (aged_event_count > 0 && eth_dev && eth_dev->data &&
+					eth_dev->data->dev_private) {
+					rte_eth_dev_callback_process(eth_dev,
+						RTE_ETH_EVENT_FLOW_AGED,
+						NULL);
+					flm_age_event_clear(port_no);
+					do_wait = false;
+				}
+
+				if (do_wait)
+					nt_os_wait_usec(10);
+
+				count++;
+				do_wait = true;
+			}
+		}
+	}
+
+	return THREAD_RETURN;
+}
+
+/*
+ * Adapter flm stat thread
+ */
+THREAD_FUNC adapter_flm_update_thread_fn(void *context)
+{
+	const struct profile_inline_ops *profile_inline_ops = get_profile_inline_ops();
+
+	if (profile_inline_ops == NULL) {
+		NT_LOG(ERR, NTNIC, "%s: profile_inline module uninitialized", __func__);
+		return THREAD_RETURN;
+	}
+
+	struct drv_s *p_drv = context;
+
+	struct ntdrv_4ga_s *p_nt_drv = &p_drv->ntdrv;
+	struct adapter_info_s *p_adapter_info = &p_nt_drv->adapter_info;
+	struct nt4ga_filter_s *p_nt4ga_filter = &p_adapter_info->nt4ga_filter;
+	struct flow_nic_dev *p_flow_nic_dev = p_nt4ga_filter->mp_flow_device;
+
+	NT_LOG(DBG, NTNIC, "%s: %s: waiting for port configuration",
+		p_adapter_info->mp_adapter_id_str, __func__);
+
+	while (p_flow_nic_dev->eth_base == NULL)
+		nt_os_wait_usec(1 * 1000 * 1000);
+
+	struct flow_eth_dev *dev = p_flow_nic_dev->eth_base;
+
+	NT_LOG(DBG, NTNIC, "%s: %s: begin", p_adapter_info->mp_adapter_id_str, __func__);
+
+	while (!p_drv->ntdrv.b_shutdown)
+		if (profile_inline_ops->flm_update(dev) == 0)
+			nt_os_wait_usec(10);
+
+	NT_LOG(DBG, NTNIC, "%s: %s: end", p_adapter_info->mp_adapter_id_str, __func__);
+	return THREAD_RETURN;
+}
+
+/*
+ * Adapter stat thread
+ */
+THREAD_FUNC adapter_stat_thread_fn(void *context)
+{
+	const struct nt4ga_stat_ops *nt4ga_stat_ops = get_nt4ga_stat_ops();
+
+	if (nt4ga_stat_ops == NULL) {
+		NT_LOG_DBGX(ERR, NTNIC, "Statistics module uninitialized");
+		return THREAD_RETURN;
+	}
+
+	struct drv_s *p_drv = context;
+
+	ntdrv_4ga_t *p_nt_drv = &p_drv->ntdrv;
+	nt4ga_stat_t *p_nt4ga_stat = &p_nt_drv->adapter_info.nt4ga_stat;
+	nthw_stat_t *p_nthw_stat = p_nt4ga_stat->mp_nthw_stat;
+	const char *const p_adapter_id_str = p_nt_drv->adapter_info.mp_adapter_id_str;
+	(void)p_adapter_id_str;
+
+	if (!p_nthw_stat)
+		return THREAD_RETURN;
+
+	NT_LOG_DBGX(DBG, NTNIC, "%s: begin", p_adapter_id_str);
+
+	assert(p_nthw_stat);
+
+	while (!p_drv->ntdrv.b_shutdown) {
+		nt_os_wait_usec(10 * 1000);
+
+		nthw_stat_trigger(p_nthw_stat);
+
+		uint32_t loop = 0;
+
+		while ((!p_drv->ntdrv.b_shutdown) &&
+			(*p_nthw_stat->mp_timestamp == (uint64_t)-1)) {
+			nt_os_wait_usec(1 * 100);
+
+			if (rte_log_get_level(nt_log_ntnic) == RTE_LOG_DEBUG &&
+				(++loop & 0x3fff) == 0) {
+				if (p_nt4ga_stat->mp_nthw_rpf) {
+					NT_LOG(ERR, NTNIC, "Statistics DMA frozen");
+
+				} else if (p_nt4ga_stat->mp_nthw_rmc) {
+					uint32_t sf_ram_of =
+						nthw_rmc_get_status_sf_ram_of(p_nt4ga_stat
+							->mp_nthw_rmc);
+					uint32_t descr_fifo_of =
+						nthw_rmc_get_status_descr_fifo_of(p_nt4ga_stat
+							->mp_nthw_rmc);
+
+					uint32_t dbg_merge =
+						nthw_rmc_get_dbg_merge(p_nt4ga_stat->mp_nthw_rmc);
+					uint32_t mac_if_err =
+						nthw_rmc_get_mac_if_err(p_nt4ga_stat->mp_nthw_rmc);
+
+					NT_LOG(ERR, NTNIC, "Statistics DMA frozen");
+					NT_LOG(ERR, NTNIC, "SF RAM Overflow     : %08x",
+						sf_ram_of);
+					NT_LOG(ERR, NTNIC, "Descr Fifo Overflow : %08x",
+						descr_fifo_of);
+					NT_LOG(ERR, NTNIC, "DBG Merge           : %08x",
+						dbg_merge);
+					NT_LOG(ERR, NTNIC, "MAC If Errors       : %08x",
+						mac_if_err);
+				}
+			}
+		}
+
+		/* Check then collect */
+		{
+			rte_spinlock_lock(&p_nt_drv->stat_lck);
+			nt4ga_stat_ops->nt4ga_stat_collect(&p_nt_drv->adapter_info, p_nt4ga_stat);
+			rte_spinlock_unlock(&p_nt_drv->stat_lck);
+		}
+	}
+
+	NT_LOG_DBGX(DBG, NTNIC, "%s: end", p_adapter_id_str);
+	return THREAD_RETURN;
+}
 
 static int
 nthw_pci_dev_init(struct rte_pci_device *pci_dev)
 {
+	const struct flow_filter_ops *flow_filter_ops = get_flow_filter_ops();
+
+	if (flow_filter_ops == NULL) {
+		NT_LOG_DBGX(ERR, NTNIC, "flow_filter module uninitialized");
+		/* Return statement is not necessary here to allow traffic processing by SW  */
+	}
+
+	const struct profile_inline_ops *profile_inline_ops = get_profile_inline_ops();
+
+	if (profile_inline_ops == NULL) {
+		NT_LOG_DBGX(ERR, NTNIC, "profile_inline module uninitialized");
+		/* Return statement is not necessary here to allow traffic processing by SW  */
+	}
+
 	nt_vfio_init();
 	const struct port_ops *port_ops = get_port_ops();
 
@@ -1378,10 +2034,13 @@ nthw_pci_dev_init(struct rte_pci_device *pci_dev)
 	uint32_t n_port_mask = -1;	/* All ports enabled by default */
 	uint32_t nb_rx_queues = 1;
 	uint32_t nb_tx_queues = 1;
+	uint32_t exception_path = 0;
 	struct flow_queue_id_s queue_ids[MAX_QUEUES];
 	int n_phy_ports;
 	struct port_link_speed pls_mbps[NUM_ADAPTER_PORTS_MAX] = { 0 };
 	int num_port_speeds = 0;
+	enum flow_eth_dev_profile profile = FLOW_ETH_DEV_PROFILE_INLINE;
+
 	NT_LOG_DBGX(DBG, NTNIC, "Dev %s PF #%i Init : %02x:%02x:%i", pci_dev->name,
 		pci_dev->addr.function, pci_dev->addr.bus, pci_dev->addr.devid,
 		pci_dev->addr.function);
@@ -1537,6 +2196,14 @@ nthw_pci_dev_init(struct rte_pci_device *pci_dev)
 		return -1;
 	}
 
+	const struct meter_ops_s *meter_ops = get_meter_ops();
+
+	if (meter_ops != NULL)
+		nthw_eth_dev_ops.mtr_ops_get = meter_ops->eth_mtr_ops_get;
+
+	else
+		NT_LOG(DBG, NTNIC, "Meter module is not initialized");
+
 	/* Initialize the queue system */
 	if (err == 0) {
 		sg_ops = get_sg_ops();
@@ -1580,6 +2247,28 @@ nthw_pci_dev_init(struct rte_pci_device *pci_dev)
 		return -1;
 	}
 
+	if (profile_inline_ops != NULL && fpga_info->profile == FPGA_INFO_PROFILE_INLINE) {
+		profile_inline_ops->flm_setup_queues();
+		res = THREAD_CTRL_CREATE(&p_nt_drv->flm_thread, "ntnic-nt_flm_update_thr",
+			adapter_flm_update_thread_fn, (void *)p_drv);
+
+		if (res) {
+			NT_LOG_DBGX(ERR, NTNIC, "%s: error=%d",
+				(pci_dev->name[0] ? pci_dev->name : "NA"), res);
+			return -1;
+		}
+	}
+
+	rte_spinlock_init(&p_nt_drv->stat_lck);
+	res = THREAD_CTRL_CREATE(&p_nt_drv->stat_thread, "nt4ga_stat_thr", adapter_stat_thread_fn,
+			(void *)p_drv);
+
+	if (res) {
+		NT_LOG(ERR, NTNIC, "%s: error=%d",
+			(pci_dev->name[0] ? pci_dev->name : "NA"), res);
+		return -1;
+	}
+
 	n_phy_ports = fpga_info->n_phy_ports;
 
 	for (int n_intf_no = 0; n_intf_no < n_phy_ports; n_intf_no++) {
@@ -1613,6 +2302,7 @@ nthw_pci_dev_init(struct rte_pci_device *pci_dev)
 		internals->pci_dev = pci_dev;
 		internals->n_intf_no = n_intf_no;
 		internals->type = PORT_TYPE_PHYSICAL;
+		internals->port = n_intf_no;
 		internals->nb_rx_queues = nb_rx_queues;
 		internals->nb_tx_queues = nb_tx_queues;
 
@@ -1681,6 +2371,18 @@ nthw_pci_dev_init(struct rte_pci_device *pci_dev)
 			return -1;
 		}
 
+		if (flow_filter_ops != NULL) {
+			internals->flw_dev = flow_filter_ops->flow_get_eth_dev(0, n_intf_no,
+				eth_dev->data->port_id, nb_rx_queues, queue_ids,
+				&internals->txq_scg[0].rss_target_id, profile, exception_path);
+
+			if (!internals->flw_dev) {
+				NT_LOG(ERR, NTNIC,
+					"Error creating port. Resource exhaustion in HW");
+				return -1;
+			}
+		}
+
 		/* connect structs */
 		internals->p_drv = p_drv;
 		eth_dev->data->dev_private = internals;
@@ -1709,6 +2411,33 @@ nthw_pci_dev_init(struct rte_pci_device *pci_dev)
 
 		/* increase initialized ethernet devices - PF */
 		p_drv->n_eth_dev_init_count++;
+
+		if (get_flow_filter_ops() != NULL) {
+			if (fpga_info->profile == FPGA_INFO_PROFILE_INLINE &&
+				internals->flw_dev->ndev->be.tpe.ver >= 2) {
+				assert(nthw_eth_dev_ops.mtu_set == dev_set_mtu_inline ||
+					nthw_eth_dev_ops.mtu_set == NULL);
+				nthw_eth_dev_ops.mtu_set = dev_set_mtu_inline;
+				dev_set_mtu_inline(eth_dev, MTUINITVAL);
+				NT_LOG_DBGX(DBG, NTNIC, "INLINE MTU supported, tpe version %d",
+					internals->flw_dev->ndev->be.tpe.ver);
+
+			} else {
+				NT_LOG(DBG, NTNIC, "INLINE MTU not supported");
+			}
+		}
+
+		/* Port event thread */
+		if (fpga_info->profile == FPGA_INFO_PROFILE_INLINE) {
+			res = THREAD_CTRL_CREATE(&p_nt_drv->port_event_thread, "nt_port_event_thr",
+					port_event_thread_fn, (void *)internals);
+
+			if (res) {
+				NT_LOG(ERR, NTNIC, "%s: error=%d",
+					(pci_dev->name[0] ? pci_dev->name : "NA"), res);
+				return -1;
+			}
+		}
 	}
 
 	return 0;
@@ -1758,6 +2487,48 @@ nthw_pci_dev_deinit(struct rte_eth_dev *eth_dev __rte_unused)
 	return 0;
 }
 
+static void signal_handler_func_int(int sig)
+{
+	if (sig != SIGINT) {
+		signal(sig, previous_handler);
+		raise(sig);
+		return;
+	}
+
+	kill_pmd = 1;
+}
+
+THREAD_FUNC shutdown_thread(void *arg __rte_unused)
+{
+	while (!kill_pmd)
+		nt_os_wait_usec(100 * 1000);
+
+	NT_LOG_DBGX(DBG, NTNIC, "Shutting down because of ctrl+C");
+
+	signal(SIGINT, previous_handler);
+	raise(SIGINT);
+
+	return THREAD_RETURN;
+}
+
+static int init_shutdown(void)
+{
+	NT_LOG(DBG, NTNIC, "Starting shutdown handler");
+	kill_pmd = 0;
+	previous_handler = signal(SIGINT, signal_handler_func_int);
+	THREAD_CREATE(&shutdown_tid, shutdown_thread, NULL);
+
+	/*
+	 * 1 time calculation of 1 sec stat update rtc cycles to prevent stat poll
+	 * flooding by OVS from multiple virtual port threads - no need to be precise
+	 */
+	uint64_t now_rtc = rte_get_tsc_cycles();
+	nt_os_wait_usec(10 * 1000);
+	rte_tsc_freq = 100 * (rte_get_tsc_cycles() - now_rtc);
+
+	return 0;
+}
+
 static int
 nthw_pci_probe(struct rte_pci_driver *pci_drv __rte_unused,
 	struct rte_pci_device *pci_dev)
@@ -1799,6 +2570,8 @@ nthw_pci_probe(struct rte_pci_driver *pci_drv __rte_unused,
 
 
 	ret = nthw_pci_dev_init(pci_dev);
+
+	init_shutdown();
 
 	NT_LOG_DBGX(DBG, NTNIC, "leave: ret=%d", ret);
 	return ret;

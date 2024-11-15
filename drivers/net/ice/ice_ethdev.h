@@ -458,6 +458,8 @@ struct ice_acl_info {
 TAILQ_HEAD(ice_shaper_profile_list, ice_tm_shaper_profile);
 TAILQ_HEAD(ice_tm_node_list, ice_tm_node);
 
+#define ICE_TM_MAX_LAYERS ICE_SCHED_9_LAYERS
+
 struct ice_tm_shaper_profile {
 	TAILQ_ENTRY(ice_tm_shaper_profile) node;
 	uint32_t shaper_profile_id;
@@ -480,18 +482,11 @@ struct ice_tm_node {
 	struct ice_sched_node *sched_node;
 };
 
-/* node type of Traffic Manager */
-enum ice_tm_node_type {
-	ICE_TM_NODE_TYPE_PORT,
-	ICE_TM_NODE_TYPE_QGROUP,
-	ICE_TM_NODE_TYPE_QUEUE,
-	ICE_TM_NODE_TYPE_MAX,
-};
-
 /* Struct to store all the Traffic Manager configuration. */
 struct ice_tm_conf {
 	struct ice_shaper_profile_list shaper_profile_list;
 	struct ice_tm_node *root; /* root node - port */
+	uint8_t hidden_layers;    /* the number of hierarchy layers hidden from app */
 	bool committed;
 	bool clear_on_fail;
 };
@@ -564,11 +559,14 @@ struct ice_devargs {
 	uint8_t proto_xtr[ICE_MAX_QUEUE_NUM];
 	uint8_t pin_idx;
 	uint8_t pps_out_ena;
+	uint8_t ddp_load_sched;
+	uint8_t tm_exposed_levels;
 	int xtr_field_offs;
 	uint8_t xtr_flag_offs[PROTO_XTR_MAX];
 	/* Name of the field. */
 	char xtr_field_name[RTE_MBUF_DYN_NAMESIZE];
 	uint64_t mbuf_check;
+	const char *ddp_filename;
 };
 
 /**
@@ -666,7 +664,7 @@ struct ice_vsi_vlan_pvid_info {
 
 /* ICE_PF_TO */
 #define ICE_PF_TO_HW(pf) \
-	(&(((struct ice_pf *)pf)->adapter->hw))
+	(&((pf)->adapter->hw))
 #define ICE_PF_TO_ADAPTER(pf) \
 	((struct ice_adapter *)(pf)->adapter)
 #define ICE_PF_TO_ETH_DEV(pf) \
@@ -688,9 +686,6 @@ int ice_rem_rss_cfg_wrap(struct ice_pf *pf, uint16_t vsi_id,
 			 struct ice_rss_hash_cfg *cfg);
 void ice_tm_conf_init(struct rte_eth_dev *dev);
 void ice_tm_conf_uninit(struct rte_eth_dev *dev);
-int ice_do_hierarchy_commit(struct rte_eth_dev *dev,
-			    int clear_on_fail,
-			    struct rte_tm_error *error);
 extern const struct rte_tm_ops ice_tm_ops;
 
 static inline int
@@ -740,6 +735,18 @@ ice_align_floor(int n)
 	((phy_type) & ICE_PHY_TYPE_HIGH_100G_AUI2_AOC_ACC) || \
 	((phy_type) & ICE_PHY_TYPE_HIGH_100G_AUI2))
 
+#define ICE_PHY_TYPE_SUPPORT_200G_HIGH(phy_type) \
+	(((phy_type) & ICE_PHY_TYPE_HIGH_200G_CR4_PAM4) || \
+	((phy_type) & ICE_PHY_TYPE_HIGH_200G_SR4) || \
+	((phy_type) & ICE_PHY_TYPE_HIGH_200G_FR4) || \
+	((phy_type) & ICE_PHY_TYPE_HIGH_200G_LR4) || \
+	((phy_type) & ICE_PHY_TYPE_HIGH_200G_DR4) || \
+	((phy_type) & ICE_PHY_TYPE_HIGH_200G_KR4_PAM4) || \
+	((phy_type) & ICE_PHY_TYPE_HIGH_200G_AUI4_AOC_ACC) || \
+	((phy_type) & ICE_PHY_TYPE_HIGH_200G_AUI4) || \
+	((phy_type) & ICE_PHY_TYPE_HIGH_200G_AUI8_AOC_ACC) || \
+	((phy_type) & ICE_PHY_TYPE_HIGH_200G_AUI8))
+
 __rte_experimental
 int rte_pmd_ice_dump_package(uint16_t port, uint8_t **buff, uint32_t *size);
 
@@ -748,4 +755,8 @@ int rte_pmd_ice_dump_switch(uint16_t port, uint8_t **buff, uint32_t *size);
 
 __rte_experimental
 int rte_pmd_ice_dump_txsched(uint16_t port, bool detail, FILE *stream);
+
+int
+ice_tm_setup_txq_node(struct ice_pf *pf, struct ice_hw *hw, uint16_t qid, uint32_t node_teid);
+
 #endif /* _ICE_ETHDEV_H_ */

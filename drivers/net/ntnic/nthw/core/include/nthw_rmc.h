@@ -44,6 +44,12 @@ typedef struct nthw_rmc nthw_rmc;
 nthw_rmc_t *nthw_rmc_new(void);
 int nthw_rmc_init(nthw_rmc_t *p, nthw_fpga_t *p_fpga, int n_instance);
 
+void nthw_rmc_block(nthw_rmc_t *p);
 void nthw_rmc_unblock(nthw_rmc_t *p, bool b_is_secondary);
+
+uint32_t nthw_rmc_get_status_sf_ram_of(nthw_rmc_t *p);
+uint32_t nthw_rmc_get_status_descr_fifo_of(nthw_rmc_t *p);
+uint32_t nthw_rmc_get_dbg_merge(nthw_rmc_t *p);
+uint32_t nthw_rmc_get_mac_if_err(nthw_rmc_t *p);
 
 #endif	/* NTHW_RMC_H_ */

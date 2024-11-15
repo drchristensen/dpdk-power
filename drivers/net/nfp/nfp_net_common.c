@@ -9,6 +9,7 @@
 
 #include <rte_alarm.h>
 
+#include "flower/nfp_flower_cmsg.h"
 #include "flower/nfp_flower_representor.h"
 #include "nfd3/nfp_nfd3.h"
 #include "nfdk/nfp_nfdk.h"
@@ -288,7 +289,7 @@ nfp_net_mbox_reconfig(struct nfp_net_hw *net_hw,
 	rte_spinlock_unlock(&net_hw->super.reconfig_lock);
 
 	if (ret != 0) {
-		PMD_DRV_LOG(ERR, "Error nft net mailbox reconfig: mbox=%#08x update=%#08x",
+		PMD_DRV_LOG(ERR, "Error nft net mailbox reconfig: mbox=%#08x update=%#08x.",
 				mbox_cmd, NFP_NET_CFG_UPDATE_MBOX);
 		return -EIO;
 	}
@@ -359,20 +360,20 @@ nfp_net_configure(struct rte_eth_dev *dev)
 
 	/* Checking TX mode */
 	if (txmode->mq_mode != RTE_ETH_MQ_TX_NONE) {
-		PMD_DRV_LOG(ERR, "TX mq_mode DCB and VMDq not supported");
+		PMD_DRV_LOG(ERR, "TX mq_mode DCB and VMDq not supported.");
 		return -EINVAL;
 	}
 
 	/* Checking RX mode */
 	if ((rxmode->mq_mode & RTE_ETH_MQ_RX_RSS_FLAG) != 0 &&
 			(hw->super.cap & NFP_NET_CFG_CTRL_RSS_ANY) == 0) {
-		PMD_DRV_LOG(ERR, "RSS not supported");
+		PMD_DRV_LOG(ERR, "RSS not supported.");
 		return -EINVAL;
 	}
 
 	/* Checking MTU set */
 	if (rxmode->mtu > hw->max_mtu + NFP_ETH_OVERHEAD) {
-		PMD_DRV_LOG(ERR, "MTU (%u) larger than the maximum possible frame size (%u)",
+		PMD_DRV_LOG(ERR, "MTU (%u) larger than the maximum possible frame size (%u).",
 				rxmode->mtu, hw->max_mtu + NFP_ETH_OVERHEAD);
 		return -ERANGE;
 	}
@@ -387,10 +388,10 @@ nfp_net_log_device_information(const struct nfp_net_hw *hw,
 	uint32_t cap = hw->super.cap;
 	uint32_t cap_ext = hw->super.cap_ext;
 
-	PMD_INIT_LOG(INFO, "VER: %u.%u, Maximum supported MTU: %d",
+	PMD_INIT_LOG(INFO, "VER: %u.%u, Maximum supported MTU: %d.",
 			pf_dev->ver.major, pf_dev->ver.minor, hw->max_mtu);
 
-	PMD_INIT_LOG(INFO, "CAP: %#x", cap);
+	PMD_INIT_LOG(INFO, "CAP: %#x.", cap);
 	PMD_INIT_LOG(INFO, "%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s",
 			cap & NFP_NET_CFG_CTRL_ENABLE        ? "ENABLE "      : "",
 			cap & NFP_NET_CFG_CTRL_PROMISC       ? "PROMISC "     : "",
@@ -422,7 +423,7 @@ nfp_net_log_device_information(const struct nfp_net_hw *hw,
 			cap & NFP_NET_CFG_CTRL_LIVE_ADDR     ? "LIVE_ADDR "   : "",
 			cap & NFP_NET_CFG_CTRL_USO           ? "USO"          : "");
 
-	PMD_INIT_LOG(INFO, "CAP_WORD1: %#x", cap_ext);
+	PMD_INIT_LOG(INFO, "CAP_WORD1: %#x.", cap_ext);
 	PMD_INIT_LOG(INFO, "%s%s%s%s%s%s%s",
 			cap_ext & NFP_NET_CFG_CTRL_PKT_TYPE        ? "PKT_TYPE "        : "",
 			cap_ext & NFP_NET_CFG_CTRL_IPSEC           ? "IPSEC "           : "",
@@ -432,7 +433,7 @@ nfp_net_log_device_information(const struct nfp_net_hw *hw,
 			cap_ext & NFP_NET_CFG_CTRL_FLOW_STEER      ? "FLOW_STEER "      : "",
 			cap_ext & NFP_NET_CFG_CTRL_IN_ORDER        ? "VIRTIO_IN_ORDER " : "");
 
-	PMD_INIT_LOG(INFO, "max_rx_queues: %u, max_tx_queues: %u",
+	PMD_INIT_LOG(INFO, "The max_rx_queues: %u, max_tx_queues: %u.",
 			hw->max_rx_queues, hw->max_tx_queues);
 }
 
@@ -493,12 +494,12 @@ nfp_net_set_mac_addr(struct rte_eth_dev *dev,
 	hw = &net_hw->super;
 	if ((hw->ctrl & NFP_NET_CFG_CTRL_ENABLE) != 0 &&
 			(hw->cap & NFP_NET_CFG_CTRL_LIVE_ADDR) == 0) {
-		PMD_DRV_LOG(ERR, "MAC address unable to change when port enabled");
+		PMD_DRV_LOG(ERR, "MAC address unable to change when port enabled.");
 		return -EBUSY;
 	}
 
 	if (rte_is_valid_assigned_ether_addr(mac_addr) == 0) {
-		PMD_DRV_LOG(ERR, "Invalid MAC address");
+		PMD_DRV_LOG(ERR, "Invalid MAC address.");
 		return -EINVAL;
 	}
 
@@ -513,7 +514,7 @@ nfp_net_set_mac_addr(struct rte_eth_dev *dev,
 
 	/* Signal the NIC about the change */
 	if (nfp_reconfig(hw, new_ctrl, update) != 0) {
-		PMD_DRV_LOG(ERR, "MAC address update failed");
+		PMD_DRV_LOG(ERR, "MAC address update failed.");
 		return -EIO;
 	}
 
@@ -531,7 +532,7 @@ nfp_configure_rx_interrupt(struct rte_eth_dev *dev,
 
 	if (rte_intr_vec_list_alloc(intr_handle, "intr_vec",
 				dev->data->nb_rx_queues) != 0) {
-		PMD_DRV_LOG(ERR, "Failed to allocate %d rx_queues intr_vec",
+		PMD_DRV_LOG(ERR, "Failed to allocate %d rx_queues intr_vec.",
 				dev->data->nb_rx_queues);
 		return -ENOMEM;
 	}
@@ -539,13 +540,13 @@ nfp_configure_rx_interrupt(struct rte_eth_dev *dev,
 	hw = nfp_net_get_hw(dev);
 
 	if (rte_intr_type_get(intr_handle) == RTE_INTR_HANDLE_UIO) {
-		PMD_DRV_LOG(INFO, "VF: enabling RX interrupt with UIO");
+		PMD_DRV_LOG(INFO, "VF: enabling RX interrupt with UIO.");
 		/* UIO just supports one queue and no LSC */
 		nn_cfg_writeb(&hw->super, NFP_NET_CFG_RXR_VEC(0), 0);
 		if (rte_intr_vec_list_index_set(intr_handle, 0, 0) != 0)
 			return -1;
 	} else {
-		PMD_DRV_LOG(INFO, "VF: enabling RX interrupt with VFIO");
+		PMD_DRV_LOG(INFO, "VF: enabling RX interrupt with VFIO.");
 		for (i = 0; i < dev->data->nb_rx_queues; i++) {
 			/*
 			 * The first msix vector is reserved for non
@@ -645,12 +646,12 @@ nfp_net_promisc_enable(struct rte_eth_dev *dev)
 
 	hw = &net_hw->super;
 	if ((hw->cap & NFP_NET_CFG_CTRL_PROMISC) == 0) {
-		PMD_DRV_LOG(ERR, "Promiscuous mode not supported");
+		PMD_DRV_LOG(ERR, "Promiscuous mode not supported.");
 		return -ENOTSUP;
 	}
 
 	if ((hw->ctrl & NFP_NET_CFG_CTRL_PROMISC) != 0) {
-		PMD_DRV_LOG(INFO, "Promiscuous mode already enabled");
+		PMD_DRV_LOG(INFO, "Promiscuous mode already enabled.");
 		return 0;
 	}
 
@@ -679,12 +680,12 @@ nfp_net_promisc_disable(struct rte_eth_dev *dev)
 	hw = &net_hw->super;
 
 	if ((hw->cap & NFP_NET_CFG_CTRL_PROMISC) == 0) {
-		PMD_DRV_LOG(ERR, "Promiscuous mode not supported");
+		PMD_DRV_LOG(ERR, "Promiscuous mode not supported.");
 		return -ENOTSUP;
 	}
 
 	if ((hw->ctrl & NFP_NET_CFG_CTRL_PROMISC) == 0) {
-		PMD_DRV_LOG(INFO, "Promiscuous mode already disabled");
+		PMD_DRV_LOG(INFO, "Promiscuous mode already disabled.");
 		return 0;
 	}
 
@@ -717,7 +718,7 @@ nfp_net_set_allmulticast_mode(struct rte_eth_dev *dev,
 
 	cap_extend = hw->cap_ext;
 	if ((cap_extend & NFP_NET_CFG_CTRL_MCAST_FILTER) == 0) {
-		PMD_DRV_LOG(ERR, "Allmulticast mode not supported");
+		PMD_DRV_LOG(DEBUG, "Allmulticast mode not supported.");
 		return -ENOTSUP;
 	}
 
@@ -779,7 +780,7 @@ nfp_net_pf_speed_update(struct rte_eth_dev *dev,
 	if (pf_dev->speed_updated || aneg == NFP_ANEG_AUTO) {
 		nfp_eth_table = nfp_eth_read_ports(pf_dev->cpp);
 		if (nfp_eth_table == NULL) {
-			PMD_DRV_LOG(WARNING, "Failed to update port speed.");
+			PMD_DRV_LOG(DEBUG, "Failed to get nfp_eth_table.");
 		} else {
 			pf_dev->nfp_eth_table->ports[idx] = nfp_eth_table->ports[idx];
 			free(nfp_eth_table);
@@ -834,9 +835,9 @@ nfp_net_link_update_common(struct rte_eth_dev *dev,
 	ret = rte_eth_linkstatus_set(dev, link);
 	if (ret == 0) {
 		if (link->link_status == RTE_ETH_LINK_UP)
-			PMD_DRV_LOG(INFO, "NIC Link is Up");
+			PMD_DRV_LOG(INFO, "NIC Link is Up.");
 		else
-			PMD_DRV_LOG(INFO, "NIC Link is Down");
+			PMD_DRV_LOG(INFO, "NIC Link is Down.");
 	}
 
 	return ret;
@@ -1039,7 +1040,7 @@ nfp_net_xstats_size(const struct rte_eth_dev *dev)
 
 	if (rte_eth_dev_is_repr(dev)) {
 		repr = dev->data->dev_private;
-		if (repr->mac_stats == NULL)
+		if (nfp_flower_repr_is_vf(repr))
 			vf_flag = true;
 	} else {
 		hw = dev->data->dev_private;
@@ -1065,7 +1066,7 @@ nfp_net_xstats_info(const struct rte_eth_dev *dev,
 		uint32_t index)
 {
 	if (index >= nfp_net_xstats_size(dev)) {
-		PMD_DRV_LOG(ERR, "xstat index out of bounds");
+		PMD_DRV_LOG(ERR, "The xstat index out of bounds.");
 		return NULL;
 	}
 
@@ -1422,7 +1423,7 @@ nfp_net_common_init(struct nfp_pf_dev *pf_dev,
 	hw->max_tx_queues = nn_cfg_readl(&hw->super, NFP_NET_CFG_MAX_TXRINGS);
 	if (hw->max_rx_queues == 0 || hw->max_tx_queues == 0) {
 		PMD_INIT_LOG(ERR, "Device %s can not be used, there are no valid queue "
-				"pairs for use", pci_dev->name);
+				"pairs for use.", pci_dev->name);
 		return -ENODEV;
 	}
 
@@ -1587,12 +1588,12 @@ nfp_net_dev_link_status_print(struct rte_eth_dev *dev)
 
 	rte_eth_linkstatus_get(dev, &link);
 	if (link.link_status != 0)
-		PMD_DRV_LOG(INFO, "Port %d: Link Up - speed %u Mbps - %s",
+		PMD_DRV_LOG(INFO, "Port %d: Link Up - speed %u Mbps - %s.",
 				dev->data->port_id, link.link_speed,
 				link.link_duplex == RTE_ETH_LINK_FULL_DUPLEX ?
 				"full-duplex" : "half-duplex");
 	else
-		PMD_DRV_LOG(INFO, " Port %d: Link Down", dev->data->port_id);
+		PMD_DRV_LOG(INFO, " Port %d: Link Down.", dev->data->port_id);
 
 	PMD_DRV_LOG(INFO, "PCI Address: " PCI_PRI_FMT,
 			pci_dev->addr.domain, pci_dev->addr.bus,
@@ -1674,7 +1675,7 @@ nfp_net_dev_interrupt_handler(void *param)
 	if (rte_eal_alarm_set(timeout * 1000,
 			nfp_net_dev_interrupt_delayed_handler,
 			(void *)dev) != 0) {
-		PMD_INIT_LOG(ERR, "Error setting alarm");
+		PMD_INIT_LOG(ERR, "Error setting alarm.");
 		/* Unmasking */
 		nfp_net_irq_unmask(dev);
 	}
@@ -1690,14 +1691,14 @@ nfp_net_dev_mtu_set(struct rte_eth_dev *dev,
 
 	/* MTU setting is forbidden if port is started */
 	if (dev->data->dev_started) {
-		PMD_DRV_LOG(ERR, "port %d must be stopped before configuration",
+		PMD_DRV_LOG(ERR, "Port %d must be stopped before configuration.",
 				dev->data->port_id);
 		return -EBUSY;
 	}
 
 	/* MTU larger than current mbufsize not supported */
 	if (mtu > hw->flbufsz) {
-		PMD_DRV_LOG(ERR, "MTU (%u) larger than current mbufsize (%u) not supported",
+		PMD_DRV_LOG(ERR, "MTU (%u) larger than current mbufsize (%u) not supported.",
 				mtu, hw->flbufsz);
 		return -ERANGE;
 	}
@@ -1777,7 +1778,7 @@ nfp_net_rss_reta_write(struct rte_eth_dev *dev,
 
 	if (reta_size != NFP_NET_CFG_RSS_ITBL_SZ) {
 		PMD_DRV_LOG(ERR, "The size of hash lookup table configured (%hu)"
-				" doesn't match hardware can supported (%d)",
+				" does not match hardware can supported (%d).",
 				reta_size, NFP_NET_CFG_RSS_ITBL_SZ);
 		return -EINVAL;
 	}
@@ -1869,7 +1870,7 @@ nfp_net_reta_query(struct rte_eth_dev *dev,
 
 	if (reta_size != NFP_NET_CFG_RSS_ITBL_SZ) {
 		PMD_DRV_LOG(ERR, "The size of hash lookup table configured (%d)"
-				" doesn't match hardware can supported (%d)",
+				" does not match hardware can supported (%d).",
 				reta_size, NFP_NET_CFG_RSS_ITBL_SZ);
 		return -EINVAL;
 	}
@@ -1979,7 +1980,7 @@ nfp_net_rss_hash_update(struct rte_eth_dev *dev,
 	/* Checking if RSS is enabled */
 	if ((hw->ctrl & NFP_NET_CFG_CTRL_RSS_ANY) == 0) {
 		if (rss_hf != 0) {
-			PMD_DRV_LOG(ERR, "RSS unsupported");
+			PMD_DRV_LOG(ERR, "RSS unsupported.");
 			return -EINVAL;
 		}
 
@@ -1987,7 +1988,7 @@ nfp_net_rss_hash_update(struct rte_eth_dev *dev,
 	}
 
 	if (rss_conf->rss_key_len > NFP_NET_CFG_RSS_KEY_SZ) {
-		PMD_DRV_LOG(ERR, "RSS hash key too long");
+		PMD_DRV_LOG(ERR, "RSS hash key too long.");
 		return -EINVAL;
 	}
 
@@ -2089,7 +2090,7 @@ nfp_net_rss_config_default(struct rte_eth_dev *dev)
 
 	dev_conf = &dev->data->dev_conf;
 	if (dev_conf == NULL) {
-		PMD_DRV_LOG(ERR, "Wrong rss conf");
+		PMD_DRV_LOG(ERR, "Wrong rss conf.");
 		return -EINVAL;
 	}
 
@@ -2154,9 +2155,9 @@ nfp_net_close_tx_queue(struct rte_eth_dev *dev)
 int
 nfp_net_set_vxlan_port(struct nfp_net_hw *net_hw,
 		size_t idx,
-		uint16_t port)
+		uint16_t port,
+		uint32_t ctrl)
 {
-	int ret;
 	uint32_t i;
 	struct nfp_hw *hw = &net_hw->super;
 
@@ -2172,16 +2173,7 @@ nfp_net_set_vxlan_port(struct nfp_net_hw *net_hw,
 				(net_hw->vxlan_ports[i + 1] << 16) | net_hw->vxlan_ports[i]);
 	}
 
-	rte_spinlock_lock(&hw->reconfig_lock);
-
-	nn_cfg_writel(hw, NFP_NET_CFG_UPDATE, NFP_NET_CFG_UPDATE_VXLAN);
-	rte_wmb();
-
-	ret = nfp_reconfig_real(hw, NFP_NET_CFG_UPDATE_VXLAN);
-
-	rte_spinlock_unlock(&hw->reconfig_lock);
-
-	return ret;
+	return nfp_reconfig(hw, ctrl, NFP_NET_CFG_UPDATE_VXLAN);
 }
 
 /*
@@ -2194,7 +2186,7 @@ nfp_net_check_dma_mask(struct nfp_pf_dev *pf_dev,
 {
 	if (pf_dev->ver.extend == NFP_NET_CFG_VERSION_DP_NFD3 &&
 			rte_mem_check_dma_mask(40) != 0) {
-		PMD_DRV_LOG(ERR, "Device %s can't be used: restricted dma mask to 40 bits!",
+		PMD_DRV_LOG(ERR, "Device %s can not be used: restricted dma mask to 40 bits!",
 				name);
 		return -ENODEV;
 	}
@@ -2215,7 +2207,7 @@ nfp_net_txrwb_alloc(struct rte_eth_dev *eth_dev)
 			rte_socket_id(),
 			RTE_MEMZONE_IOVA_CONTIG, RTE_CACHE_LINE_SIZE);
 	if (net_hw->txrwb_mz == NULL) {
-		PMD_INIT_LOG(ERR, "Failed to alloc %s for TX ring write back",
+		PMD_INIT_LOG(ERR, "Failed to alloc %s for TX ring write back.",
 				mz_name);
 		return -ENOMEM;
 	}
@@ -2390,7 +2382,7 @@ nfp_net_is_valid_nfd_version(struct nfp_net_fw_ver version)
 
 	if (nfd_version == NFP_NET_CFG_VERSION_DP_NFDK) {
 		if (version.major < 5) {
-			PMD_INIT_LOG(ERR, "NFDK must use ABI 5 or newer, found: %d",
+			PMD_INIT_LOG(ERR, "NFDK must use ABI 5 or newer, found: %d.",
 					version.major);
 			return false;
 		}
@@ -2796,7 +2788,7 @@ nfp_net_sriov_update(struct nfp_net_hw *net_hw,
 	ret = nfp_net_vf_reconfig(net_hw, pf_dev, update, pf_dev->vf_base_id,
 			NFP_NET_VF_CFG_MB_VF_NUM);
 	if (ret != 0) {
-		PMD_INIT_LOG(ERR, "Error nfp VF reconfig");
+		PMD_INIT_LOG(ERR, "Error nfp VF reconfig.");
 		return ret;
 	}
 
@@ -2814,11 +2806,11 @@ nfp_net_vf_queues_config(struct nfp_net_hw *net_hw,
 	ret = nfp_net_sriov_check(pf_dev, NFP_NET_VF_CFG_MB_CAP_QUEUE_CONFIG);
 	if (ret != 0) {
 		if (ret == -ENOTSUP) {
-			PMD_INIT_LOG(WARNING, "Set VF max queue not supported");
+			PMD_INIT_LOG(DEBUG, "Set VF max queue not supported.");
 			return 0;
 		}
 
-		PMD_INIT_LOG(ERR, "Set VF max queue failed");
+		PMD_INIT_LOG(ERR, "Set VF max queue failed.");
 		return ret;
 	}
 
@@ -2827,7 +2819,7 @@ nfp_net_vf_queues_config(struct nfp_net_hw *net_hw,
 		ret = nfp_net_vf_reconfig(net_hw, pf_dev, NFP_NET_VF_CFG_MB_UPD_QUEUE_CONFIG,
 				pf_dev->queue_per_vf, pf_dev->vf_base_id + offset + i);
 		if (ret != 0) {
-			PMD_INIT_LOG(ERR, "Set VF max_queue failed");
+			PMD_INIT_LOG(ERR, "Set VF max_queue failed.");
 			return ret;
 		}
 	}
@@ -2844,11 +2836,11 @@ nfp_net_sriov_init(struct nfp_net_hw *net_hw,
 	ret = nfp_net_sriov_check(pf_dev, NFP_NET_VF_CFG_MB_CAP_SPLIT);
 	if (ret != 0) {
 		if (ret == -ENOTSUP) {
-			PMD_INIT_LOG(WARNING, "Set VF split not supported");
+			PMD_INIT_LOG(DEBUG, "Set VF split not supported.");
 			return 0;
 		}
 
-		PMD_INIT_LOG(ERR, "Set VF split failed");
+		PMD_INIT_LOG(ERR, "Set VF split failed.");
 		return ret;
 	}
 
@@ -2856,7 +2848,7 @@ nfp_net_sriov_init(struct nfp_net_hw *net_hw,
 
 	ret = nfp_net_sriov_update(net_hw, pf_dev, NFP_NET_VF_CFG_MB_UPD_SPLIT);
 	if (ret != 0) {
-		PMD_INIT_LOG(ERR, "The nfp sriov update spilt failed");
+		PMD_INIT_LOG(ERR, "The nfp sriov update spilt failed.");
 		return ret;
 	}
 
@@ -2874,15 +2866,350 @@ nfp_net_vf_config_app_init(struct nfp_net_hw *net_hw,
 
 	ret = nfp_net_sriov_init(net_hw, pf_dev);
 	if (ret != 0) {
-		PMD_INIT_LOG(ERR, "Failed to init sriov module");
+		PMD_INIT_LOG(ERR, "Failed to init sriov module.");
 		return ret;
 	}
 
 	ret = nfp_net_vf_queues_config(net_hw, pf_dev);
 	if (ret != 0) {
-		PMD_INIT_LOG(ERR, "Failed to config vf queue");
+		PMD_INIT_LOG(ERR, "Failed to config vf queue.");
 		return ret;
 	}
 
 	return 0;
+}
+
+static inline bool
+nfp_net_meta_has_no_port_type(__rte_unused struct nfp_net_meta_parsed *meta)
+{
+	return true;
+}
+
+static inline bool
+nfp_net_meta_is_not_pf_port(__rte_unused struct nfp_net_meta_parsed *meta)
+{
+	return false;
+}
+
+static inline bool
+nfp_net_meta_is_pf_port(struct nfp_net_meta_parsed *meta)
+{
+	return nfp_flower_port_is_phy_port(meta->port_id);
+}
+
+bool
+nfp_net_recv_pkt_meta_check_register(struct nfp_net_hw_priv *hw_priv)
+{
+	struct nfp_pf_dev *pf_dev;
+
+	pf_dev = hw_priv->pf_dev;
+	if (!hw_priv->is_pf) {
+		pf_dev->recv_pkt_meta_check_t = nfp_net_meta_has_no_port_type;
+		return true;
+	}
+
+	switch (pf_dev->app_fw_id) {
+	case NFP_APP_FW_CORE_NIC:
+		pf_dev->recv_pkt_meta_check_t = nfp_net_meta_has_no_port_type;
+		break;
+	case NFP_APP_FW_FLOWER_NIC:
+		if (pf_dev->multi_pf.enabled)
+			pf_dev->recv_pkt_meta_check_t = nfp_net_meta_is_pf_port;
+		else
+			pf_dev->recv_pkt_meta_check_t = nfp_net_meta_is_not_pf_port;
+		break;
+	default:
+		PMD_INIT_LOG(ERR, "Unsupported Firmware loaded.");
+		return false;
+	}
+
+	return true;
+}
+
+static int
+nfp_net_get_nfp_index(struct rte_eth_dev *dev)
+{
+	int nfp_idx;
+
+	if (rte_eth_dev_is_repr(dev)) {
+		struct nfp_flower_representor *repr;
+		repr = dev->data->dev_private;
+		nfp_idx = repr->nfp_idx;
+	} else {
+		struct nfp_net_hw *net_hw;
+		net_hw = dev->data->dev_private;
+		nfp_idx = net_hw->nfp_idx;
+	}
+
+	return nfp_idx;
+}
+
+int
+nfp_net_get_eeprom_len(__rte_unused struct rte_eth_dev *dev)
+{
+	return RTE_ETHER_ADDR_LEN;
+}
+
+static int
+nfp_net_get_port_mac_hwinfo(struct nfp_net_hw_priv *hw_priv,
+		uint32_t index,
+		struct rte_ether_addr *mac_addr)
+{
+	int ret;
+	char hwinfo[32];
+	struct nfp_nsp *nsp;
+
+	snprintf(hwinfo, sizeof(hwinfo), "eth%u.mac", index);
+
+	nsp = nfp_nsp_open(hw_priv->pf_dev->cpp);
+	if (nsp == NULL)
+		return -EOPNOTSUPP;
+
+	ret = nfp_nsp_hwinfo_lookup(nsp, hwinfo, sizeof(hwinfo));
+	nfp_nsp_close(nsp);
+
+	if (ret != 0) {
+		PMD_DRV_LOG(ERR, "Read persistent MAC address failed for eth_index %u.", index);
+		return ret;
+	}
+
+	ret = rte_ether_unformat_addr(hwinfo, mac_addr);
+	if (ret != 0) {
+		PMD_DRV_LOG(ERR, "Can not parse persistent MAC address.");
+		return -EOPNOTSUPP;
+	}
+
+	return 0;
+}
+
+static int
+nfp_net_set_port_mac_hwinfo(struct nfp_net_hw_priv *hw_priv,
+		uint32_t index,
+		struct rte_ether_addr *mac_addr)
+{
+	int ret;
+	char hwinfo_mac[32];
+	struct nfp_nsp *nsp;
+	char buf[RTE_ETHER_ADDR_FMT_SIZE];
+
+	rte_ether_format_addr(buf, RTE_ETHER_ADDR_FMT_SIZE, mac_addr);
+	snprintf(hwinfo_mac, sizeof(hwinfo_mac), "eth%u.mac=%s", index, buf);
+
+	nsp = nfp_nsp_open(hw_priv->pf_dev->cpp);
+	if (nsp == NULL)
+		return -EOPNOTSUPP;
+
+	ret = nfp_nsp_hwinfo_set(nsp, hwinfo_mac, sizeof(hwinfo_mac));
+	nfp_nsp_close(nsp);
+
+	if (ret != 0) {
+		PMD_DRV_LOG(ERR, "HWinfo set failed: %d.", ret);
+		return ret;
+	}
+
+	return 0;
+}
+
+int
+nfp_net_get_eeprom(struct rte_eth_dev *dev,
+		struct rte_dev_eeprom_info *eeprom)
+{
+	int ret;
+	uint32_t nfp_idx;
+	struct nfp_net_hw *net_hw;
+	struct rte_ether_addr mac_addr;
+	struct nfp_net_hw_priv *hw_priv;
+
+	if (eeprom->length == 0)
+		return -EINVAL;
+
+	hw_priv = dev->process_private;
+	nfp_idx = nfp_net_get_nfp_index(dev);
+
+	ret = nfp_net_get_port_mac_hwinfo(hw_priv, nfp_idx, &mac_addr);
+	if (ret != 0)
+		return -EOPNOTSUPP;
+
+	net_hw = nfp_net_get_hw(dev);
+	eeprom->magic = net_hw->vendor_id | (net_hw->device_id << 16);
+	memcpy(eeprom->data, mac_addr.addr_bytes + eeprom->offset, eeprom->length);
+
+	return 0;
+}
+
+int
+nfp_net_set_eeprom(struct rte_eth_dev *dev,
+		struct rte_dev_eeprom_info *eeprom)
+{
+	int ret;
+	uint32_t nfp_idx;
+	struct nfp_net_hw *net_hw;
+	struct rte_ether_addr mac_addr;
+	struct nfp_net_hw_priv *hw_priv;
+
+	if (eeprom->length == 0)
+		return -EINVAL;
+
+	net_hw = nfp_net_get_hw(dev);
+	if (eeprom->magic != (uint32_t)(net_hw->vendor_id | (net_hw->device_id << 16)))
+		return -EINVAL;
+
+	hw_priv = dev->process_private;
+	nfp_idx = nfp_net_get_nfp_index(dev);
+	ret = nfp_net_get_port_mac_hwinfo(hw_priv, nfp_idx, &mac_addr);
+	if (ret != 0)
+		return -EOPNOTSUPP;
+
+	memcpy(mac_addr.addr_bytes + eeprom->offset, eeprom->data, eeprom->length);
+	ret = nfp_net_set_port_mac_hwinfo(hw_priv, nfp_idx, &mac_addr);
+	if (ret != 0)
+		return -EOPNOTSUPP;
+
+	return 0;
+}
+
+int
+nfp_net_get_module_info(struct rte_eth_dev *dev,
+		struct rte_eth_dev_module_info *info)
+{
+	int ret = 0;
+	uint8_t data;
+	uint32_t idx;
+	uint32_t read_len;
+	struct nfp_nsp *nsp;
+	struct nfp_net_hw_priv *hw_priv;
+	struct nfp_eth_table_port *eth_port;
+
+	hw_priv = dev->process_private;
+	nsp = nfp_nsp_open(hw_priv->pf_dev->cpp);
+	if (nsp == NULL) {
+		PMD_DRV_LOG(ERR, "Unable to open NSP.");
+		return -EIO;
+	}
+
+	if (!nfp_nsp_has_read_module_eeprom(nsp)) {
+		PMD_DRV_LOG(ERR, "Read module eeprom not supported. Please update flash.");
+		ret = -EOPNOTSUPP;
+		goto exit_close_nsp;
+	}
+
+	idx = nfp_net_get_idx(dev);
+	eth_port = &hw_priv->pf_dev->nfp_eth_table->ports[idx];
+	switch (eth_port->interface) {
+	case NFP_INTERFACE_SFP:
+		/* FALLTHROUGH */
+	case NFP_INTERFACE_SFP28:
+		/* Read which revision the transceiver compiles with */
+		ret = nfp_nsp_read_module_eeprom(nsp, eth_port->eth_index,
+				SFP_SFF8472_COMPLIANCE, &data, 1, &read_len);
+		if (ret != 0)
+			goto exit_close_nsp;
+
+		if (data == 0) {
+			info->type = RTE_ETH_MODULE_SFF_8079;
+			info->eeprom_len = RTE_ETH_MODULE_SFF_8079_LEN;
+		} else {
+			info->type = RTE_ETH_MODULE_SFF_8472;
+			info->eeprom_len = RTE_ETH_MODULE_SFF_8472_LEN;
+		}
+		break;
+	case NFP_INTERFACE_QSFP:
+		/* Read which revision the transceiver compiles with */
+		ret = nfp_nsp_read_module_eeprom(nsp, eth_port->eth_index,
+				SFP_SFF_REV_COMPLIANCE, &data, 1, &read_len);
+		if (ret != 0)
+			goto exit_close_nsp;
+
+		if (data == 0) {
+			info->type = RTE_ETH_MODULE_SFF_8436;
+			info->eeprom_len = RTE_ETH_MODULE_SFF_8436_MAX_LEN;
+		} else {
+			info->type = RTE_ETH_MODULE_SFF_8636;
+			info->eeprom_len = RTE_ETH_MODULE_SFF_8636_MAX_LEN;
+		}
+		break;
+	case NFP_INTERFACE_QSFP28:
+		info->type = RTE_ETH_MODULE_SFF_8636;
+		info->eeprom_len = RTE_ETH_MODULE_SFF_8636_MAX_LEN;
+		break;
+	default:
+		PMD_DRV_LOG(ERR, "Unsupported module %#x detected.",
+				eth_port->interface);
+		ret = -EINVAL;
+	}
+
+exit_close_nsp:
+	nfp_nsp_close(nsp);
+	return ret;
+}
+
+int
+nfp_net_get_module_eeprom(struct rte_eth_dev *dev,
+		struct rte_dev_eeprom_info *info)
+{
+	int ret = 0;
+	uint32_t idx;
+	struct nfp_nsp *nsp;
+	struct nfp_net_hw_priv *hw_priv;
+	struct nfp_eth_table_port *eth_port;
+
+	hw_priv = dev->process_private;
+	nsp = nfp_nsp_open(hw_priv->pf_dev->cpp);
+	if (nsp == NULL) {
+		PMD_DRV_LOG(ERR, "Unable to open NSP.");
+		return -EIO;
+	}
+
+	if (!nfp_nsp_has_read_module_eeprom(nsp)) {
+		PMD_DRV_LOG(ERR, "Read module eeprom not supported. Please update flash.");
+		ret = -EOPNOTSUPP;
+		goto exit_close_nsp;
+	}
+
+	idx = nfp_net_get_idx(dev);
+	eth_port = &hw_priv->pf_dev->nfp_eth_table->ports[idx];
+	ret = nfp_nsp_read_module_eeprom(nsp, eth_port->eth_index, info->offset,
+			info->data, info->length, &info->length);
+	if (ret != 0) {
+		if (info->length)
+			PMD_DRV_LOG(ERR, "Incomplete read from module EEPROM: %d.", ret);
+		else
+			PMD_DRV_LOG(ERR, "Read from module EEPROM failed: %d.", ret);
+	}
+
+exit_close_nsp:
+	nfp_nsp_close(nsp);
+	return ret;
+}
+
+static int
+nfp_net_led_control(struct rte_eth_dev *dev,
+		bool is_on)
+{
+	int ret;
+	uint32_t nfp_idx;
+	struct nfp_net_hw_priv *hw_priv;
+
+	hw_priv = dev->process_private;
+	nfp_idx = nfp_net_get_nfp_index(dev);
+
+	ret = nfp_eth_set_idmode(hw_priv->pf_dev->cpp, nfp_idx, is_on);
+	if (ret < 0) {
+		PMD_DRV_LOG(ERR, "Set nfp idmode failed.");
+		return ret;
+	}
+
+	return 0;
+}
+
+int
+nfp_net_led_on(struct rte_eth_dev *dev)
+{
+	return nfp_net_led_control(dev, true);
+}
+
+int
+nfp_net_led_off(struct rte_eth_dev *dev)
+{
+	return nfp_net_led_control(dev, false);
 }

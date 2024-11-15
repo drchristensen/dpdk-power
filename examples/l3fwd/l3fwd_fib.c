@@ -121,7 +121,7 @@ fib_send_packets(int nb_rx, struct rte_mbuf **pkts_burst,
 {
 	uint32_t ipv4_arr[nb_rx];
 	struct rte_ipv6_addr ipv6_arr[nb_rx];
-	uint16_t hops[nb_rx];
+	uint16_t hops[SENDM_PORT_OVERHEAD(nb_rx)];
 	uint64_t hopsv4[nb_rx], hopsv6[nb_rx];
 	uint8_t type_arr[nb_rx];
 	uint32_t ipv4_cnt = 0, ipv6_cnt = 0;
@@ -672,8 +672,12 @@ setup_fib(const int socketid)
 				enabled_port_mask) == 0)
 			continue;
 
-		rte_eth_dev_info_get(route_base_v4[i].if_out,
-				     &dev_info);
+		ret = rte_eth_dev_info_get(route_base_v4[i].if_out, &dev_info);
+		if (ret < 0)
+			rte_exit(EXIT_FAILURE,
+				 "Unable to get device info for port %u\n",
+				 route_base_v4[i].if_out);
+
 		ret = rte_fib_add(ipv4_l3fwd_fib_lookup_struct[socketid],
 			route_base_v4[i].ip,
 			route_base_v4[i].depth,
@@ -726,8 +730,12 @@ setup_fib(const int socketid)
 				enabled_port_mask) == 0)
 			continue;
 
-		rte_eth_dev_info_get(route_base_v6[i].if_out,
-				     &dev_info);
+		ret = rte_eth_dev_info_get(route_base_v6[i].if_out, &dev_info);
+		if (ret < 0)
+			rte_exit(EXIT_FAILURE,
+				 "Unable to get device info for port %u\n",
+				 route_base_v6[i].if_out);
+
 		ret = rte_fib6_add(ipv6_l3fwd_fib_lookup_struct[socketid],
 			&route_base_v6[i].ip6,
 			route_base_v6[i].depth,

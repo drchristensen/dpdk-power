@@ -155,13 +155,15 @@ static enum rte_flow_item_type first_items[] = {
 	RTE_FLOW_ITEM_TYPE_NVGRE,
 	RTE_FLOW_ITEM_TYPE_VXLAN,
 	RTE_FLOW_ITEM_TYPE_GENEVE,
-	RTE_FLOW_ITEM_TYPE_VXLAN_GPE
+	RTE_FLOW_ITEM_TYPE_VXLAN_GPE,
+	RTE_FLOW_ITEM_TYPE_PTYPE
 };
 
 static enum rte_flow_item_type L2_next_items[] = {
 	RTE_FLOW_ITEM_TYPE_VLAN,
 	RTE_FLOW_ITEM_TYPE_IPV4,
-	RTE_FLOW_ITEM_TYPE_IPV6
+	RTE_FLOW_ITEM_TYPE_IPV6,
+	RTE_FLOW_ITEM_TYPE_PTYPE
 };
 
 static enum rte_flow_item_type L3_next_items[] = {
@@ -169,7 +171,8 @@ static enum rte_flow_item_type L3_next_items[] = {
 	RTE_FLOW_ITEM_TYPE_UDP,
 	RTE_FLOW_ITEM_TYPE_SCTP,
 	RTE_FLOW_ITEM_TYPE_NVGRE,
-	RTE_FLOW_ITEM_TYPE_ICMP
+	RTE_FLOW_ITEM_TYPE_ICMP,
+	RTE_FLOW_ITEM_TYPE_PTYPE
 };
 
 static enum rte_flow_item_type L4_next_items[] = {
@@ -283,7 +286,7 @@ hns3_counter_new(struct rte_eth_dev *dev, uint32_t indirect, uint32_t id,
 	cnt = hns3_counter_lookup(dev, id);
 	if (cnt) {
 		if (!cnt->indirect || cnt->indirect != indirect)
-			return rte_flow_error_set(error, ENOTSUP,
+			return rte_flow_error_set(error, EINVAL,
 				RTE_FLOW_ERROR_TYPE_ACTION_CONF,
 				cnt,
 				"Counter id is used, indirect flag not match");
@@ -594,14 +597,63 @@ hns3_check_attr(const struct rte_flow_attr *attr, struct rte_flow_error *error)
 		return rte_flow_error_set(error, ENOTSUP,
 					  RTE_FLOW_ERROR_TYPE_ATTR_TRANSFER,
 					  attr, "No support for transfer");
-	if (attr->priority)
-		return rte_flow_error_set(error, ENOTSUP,
-					  RTE_FLOW_ERROR_TYPE_ATTR_PRIORITY,
-					  attr, "Not support priority");
 	if (attr->group)
 		return rte_flow_error_set(error, ENOTSUP,
 					  RTE_FLOW_ERROR_TYPE_ATTR_GROUP,
 					  attr, "Not support group");
+	return 0;
+}
+
+static int
+hns3_check_tuple(const struct rte_eth_dev *dev, const struct hns3_fdir_rule *rule,
+		 struct rte_flow_error *error)
+{
+	const char * const err_msg[] = {
+		"Not support outer dst mac",
+		"Not support outer src mac",
+		"Not support outer vlan1 tag",
+		"Not support outer vlan2 tag",
+		"Not support outer eth type",
+		"Not support outer l2 rsv",
+		"Not support outer ip tos",
+		"Not support outer ip proto",
+		"Not support outer src ip",
+		"Not support outer dst ip",
+		"Not support outer l3 rsv",
+		"Not support outer src port",
+		"Not support outer dst port",
+		"Not support outer l4 rsv",
+		"Not support outer tun vni",
+		"Not support outer tun flow id",
+		"Not support inner dst mac",
+		"Not support inner src mac",
+		"Not support inner vlan tag1",
+		"Not support inner vlan tag2",
+		"Not support inner eth type",
+		"Not support inner l2 rsv",
+		"Not support inner ip tos",
+		"Not support inner ip proto",
+		"Not support inner src ip",
+		"Not support inner dst ip",
+		"Not support inner l3 rsv",
+		"Not support inner src port",
+		"Not support inner dst port",
+		"Not support inner sctp tag",
+	};
+	struct hns3_adapter *hns = dev->data->dev_private;
+	uint32_t tuple_active = hns->pf.fdir.fd_cfg.key_cfg[HNS3_FD_STAGE_1].tuple_active;
+	uint32_t i;
+
+	for (i = 0; i < MAX_TUPLE; i++) {
+		if ((rule->input_set & BIT(i)) == 0)
+			continue;
+		if (tuple_active & BIT(i))
+			continue;
+		return rte_flow_error_set(error, ENOTSUP,
+					  RTE_FLOW_ERROR_TYPE_ITEM,
+					  NULL, err_msg[i]);
+	}
+
 	return 0;
 }
 
@@ -1026,12 +1078,22 @@ hns3_handle_tunnel(const struct rte_flow_item *item,
 		rule->key_conf.mask.ether_type = 0;
 	}
 
-	/* check vlan config */
-	if (rule->input_set & (BIT(INNER_VLAN_TAG1) | BIT(INNER_VLAN_TAG2)))
-		return rte_flow_error_set(error, EINVAL,
-					  RTE_FLOW_ERROR_TYPE_ITEM,
-					  item,
-					  "Outer vlan tags is unsupported");
+	if (rule->input_set & BIT(INNER_VLAN_TAG1)) {
+		hns3_set_bit(rule->input_set, OUTER_VLAN_TAG_FST, 1);
+		hns3_set_bit(rule->input_set, INNER_VLAN_TAG1, 0);
+		rule->key_conf.spec.outer_vlan_tag1 = rule->key_conf.spec.vlan_tag1;
+		rule->key_conf.mask.outer_vlan_tag1 = rule->key_conf.mask.vlan_tag1;
+		rule->key_conf.spec.vlan_tag1 = 0;
+		rule->key_conf.mask.vlan_tag1 = 0;
+	}
+	if (rule->input_set & BIT(INNER_VLAN_TAG2)) {
+		hns3_set_bit(rule->input_set, OUTER_VLAN_TAG_SEC, 1);
+		hns3_set_bit(rule->input_set, INNER_VLAN_TAG2, 0);
+		rule->key_conf.spec.outer_vlan_tag2 = rule->key_conf.spec.vlan_tag2;
+		rule->key_conf.mask.outer_vlan_tag2 = rule->key_conf.mask.vlan_tag2;
+		rule->key_conf.spec.vlan_tag2 = 0;
+		rule->key_conf.mask.vlan_tag2 = 0;
+	}
 
 	/* clear vlan_num for inner vlan select */
 	rule->key_conf.outer_vlan_num = rule->key_conf.vlan_num;
@@ -1205,6 +1267,32 @@ hns3_parse_geneve(const struct rte_flow_item *item, struct hns3_fdir_rule *rule,
 }
 
 static int
+hns3_parse_ptype(const struct rte_flow_item *item, struct hns3_fdir_rule *rule,
+		  struct rte_flow_error *error)
+{
+	const struct rte_flow_item_ptype *spec = item->spec;
+	const struct rte_flow_item_ptype *mask = item->mask;
+
+	if (spec == NULL || mask == NULL)
+		return rte_flow_error_set(error, EINVAL,
+					  RTE_FLOW_ERROR_TYPE_ITEM, item,
+					  "PTYPE must set spec and mask at the same time!");
+
+	if (spec->packet_type != RTE_PTYPE_TUNNEL_MASK ||
+	    (mask->packet_type & RTE_PTYPE_TUNNEL_MASK) != RTE_PTYPE_TUNNEL_MASK)
+		return rte_flow_error_set(error, EINVAL,
+					  RTE_FLOW_ERROR_TYPE_ITEM_MASK, item,
+					  "PTYPE only support general tunnel!");
+
+	/*
+	 * Set tunnel_type to non-zero, so that meta-data's tunnel packet bit
+	 * will be set, then hardware will match tunnel packet.
+	 */
+	rule->key_conf.spec.tunnel_type = 1;
+	return 0;
+}
+
+static int
 hns3_parse_tunnel(const struct rte_flow_item *item, struct hns3_fdir_rule *rule,
 		  struct rte_flow_error *error)
 {
@@ -1221,6 +1309,11 @@ hns3_parse_tunnel(const struct rte_flow_item *item, struct hns3_fdir_rule *rule,
 					  "Tunnel packets must configure "
 					  "with mask");
 
+	if (rule->key_conf.spec.tunnel_type != 0)
+		return rte_flow_error_set(error, EINVAL,
+					  RTE_FLOW_ERROR_TYPE_ITEM,
+					  item, "Too many tunnel headers!");
+
 	switch (item->type) {
 	case RTE_FLOW_ITEM_TYPE_VXLAN:
 	case RTE_FLOW_ITEM_TYPE_VXLAN_GPE:
@@ -1231,6 +1324,9 @@ hns3_parse_tunnel(const struct rte_flow_item *item, struct hns3_fdir_rule *rule,
 		break;
 	case RTE_FLOW_ITEM_TYPE_GENEVE:
 		ret = hns3_parse_geneve(item, rule, error);
+		break;
+	case RTE_FLOW_ITEM_TYPE_PTYPE:
+		ret = hns3_parse_ptype(item, rule, error);
 		break;
 	default:
 		return rte_flow_error_set(error, ENOTSUP,
@@ -1331,9 +1427,48 @@ is_tunnel_packet(enum rte_flow_item_type type)
 	if (type == RTE_FLOW_ITEM_TYPE_VXLAN_GPE ||
 	    type == RTE_FLOW_ITEM_TYPE_VXLAN ||
 	    type == RTE_FLOW_ITEM_TYPE_NVGRE ||
-	    type == RTE_FLOW_ITEM_TYPE_GENEVE)
+	    type == RTE_FLOW_ITEM_TYPE_GENEVE ||
+	    /*
+	     * Here treat PTYPE as tunnel type because driver only support PTYPE_TUNNEL,
+	     * other PTYPE will return error in hns3_parse_ptype() later.
+	     */
+	    type == RTE_FLOW_ITEM_TYPE_PTYPE)
 		return true;
 	return false;
+}
+
+static int
+hns3_handle_attributes(struct rte_eth_dev *dev,
+		       const struct rte_flow_attr *attr,
+		       struct hns3_fdir_rule *rule,
+		       struct rte_flow_error *error)
+{
+	struct hns3_pf *pf = HNS3_DEV_PRIVATE_TO_PF(dev->data->dev_private);
+	struct hns3_fdir_info fdir = pf->fdir;
+	uint32_t rule_num;
+
+	if (fdir.index_cfg != HNS3_FDIR_INDEX_CONFIG_PRIORITY) {
+		if (attr->priority == 0)
+			return 0;
+		return rte_flow_error_set(error, ENOTSUP,
+					  RTE_FLOW_ERROR_TYPE_ATTR_PRIORITY,
+					  attr, "Not support priority");
+	}
+
+	rule_num = fdir.fd_cfg.rule_num[HNS3_FD_STAGE_1];
+	if (attr->priority >= rule_num)
+		return rte_flow_error_set(error, EINVAL,
+					  RTE_FLOW_ERROR_TYPE_ATTR_PRIORITY,
+					  attr, "Priority out of range");
+
+	if (fdir.hash_map[attr->priority] != NULL)
+		return rte_flow_error_set(error, EINVAL,
+					  RTE_FLOW_ERROR_TYPE_ATTR_PRIORITY,
+					  attr, "Priority already exists");
+
+	rule->location = attr->priority;
+
+	return 0;
 }
 
 /*
@@ -1363,6 +1498,7 @@ is_tunnel_packet(enum rte_flow_item_type type)
  */
 static int
 hns3_parse_fdir_filter(struct rte_eth_dev *dev,
+		       const struct rte_flow_attr *attr,
 		       const struct rte_flow_item pattern[],
 		       const struct rte_flow_action actions[],
 		       struct hns3_fdir_rule *rule,
@@ -1378,6 +1514,10 @@ hns3_parse_fdir_filter(struct rte_eth_dev *dev,
 		return rte_flow_error_set(error, ENOTSUP,
 					  RTE_FLOW_ERROR_TYPE_HANDLE, NULL,
 					  "Fdir not supported in VF");
+
+	ret = hns3_handle_attributes(dev, attr, rule, error);
+	if (ret)
+		return ret;
 
 	step_mngr.items = first_items;
 	step_mngr.count = RTE_DIM(first_items);
@@ -1401,6 +1541,10 @@ hns3_parse_fdir_filter(struct rte_eth_dev *dev,
 				return ret;
 		}
 	}
+
+	ret = hns3_check_tuple(dev, rule, error);
+	if (ret)
+		return ret;
 
 	return hns3_handle_actions(dev, actions, rule, error);
 }
@@ -2139,7 +2283,7 @@ hns3_flow_validate(struct rte_eth_dev *dev, const struct rte_flow_attr *attr,
 		return hns3_parse_rss_filter(dev, pattern, actions,
 					     &conf->rss_conf, error);
 
-	return hns3_parse_fdir_filter(dev, pattern, actions,
+	return hns3_parse_fdir_filter(dev, attr, pattern, actions,
 				      &conf->fdir_conf, error);
 }
 

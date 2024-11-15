@@ -8,7 +8,7 @@
 #include <fcntl.h>
 
 
-#include <linux/vduse.h>
+#include <uapi/linux/vduse.h>
 #include <linux/virtio_net.h>
 
 #include <sys/ioctl.h>
@@ -431,6 +431,9 @@ vduse_reconnect_path_init(void)
 	const char *directory;
 	int ret;
 
+	if (vduse_reconnect_path_set == true)
+		return 0;
+
 	/* from RuntimeDirectory= see systemd.exec */
 	directory = getenv("RUNTIME_DIRECTORY");
 	if (directory == NULL) {
@@ -462,6 +465,100 @@ vduse_reconnect_path_init(void)
 	VHOST_CONFIG_LOG("vduse", INFO, "Created VDUSE reconnect directory in %s",
 			vduse_reconnect_dir);
 
+	vduse_reconnect_path_set = true;
+
+	return 0;
+}
+
+static int
+vduse_reconnect_log_map(struct virtio_net *dev, bool create)
+{
+	char reco_file[PATH_MAX];
+	int fd, ret;
+	const char *name = dev->ifname + strlen("/dev/vduse/");
+
+	if (vduse_reconnect_path_init() < 0) {
+		VHOST_CONFIG_LOG(dev->ifname, ERR, "Failed to initialize reconnect path");
+		return -1;
+	}
+
+	ret = snprintf(reco_file, sizeof(reco_file), "%s/%s", vduse_reconnect_dir, name);
+	if (ret < 0 || ret == sizeof(reco_file)) {
+		VHOST_CONFIG_LOG(dev->ifname, ERR, "Failed to create vduse reconnect path name");
+		return -1;
+	}
+
+	if (create) {
+		fd = open(reco_file, O_CREAT | O_EXCL | O_RDWR, 0600);
+		if (fd < 0) {
+			if (errno == EEXIST) {
+				VHOST_CONFIG_LOG(dev->ifname, ERR, "Reconnect file %s exists but not the device",
+						reco_file);
+			} else {
+				VHOST_CONFIG_LOG(dev->ifname, ERR, "Failed to open reconnect file %s (%s)",
+						reco_file, strerror(errno));
+			}
+			return -1;
+		}
+
+		ret = ftruncate(fd, sizeof(*dev->reconnect_log));
+		if (ret < 0) {
+			VHOST_CONFIG_LOG(dev->ifname, ERR, "Failed to truncate reconnect file %s (%s)",
+					reco_file, strerror(errno));
+			goto out_close;
+		}
+	} else {
+		fd = open(reco_file, O_RDWR, 0600);
+		if (fd < 0) {
+			if (errno == ENOENT)
+				VHOST_CONFIG_LOG(dev->ifname, ERR, "Missing reconnect file (%s)", reco_file);
+			else
+				VHOST_CONFIG_LOG(dev->ifname, ERR, "Failed to open reconnect file %s (%s)",
+						reco_file, strerror(errno));
+			return -1;
+		}
+	}
+
+	dev->reconnect_log = mmap(NULL, sizeof(*dev->reconnect_log), PROT_READ | PROT_WRITE,
+				MAP_SHARED, fd, 0);
+	if (dev->reconnect_log == MAP_FAILED) {
+		VHOST_CONFIG_LOG(dev->ifname, ERR, "Failed to mmap reconnect file %s (%s)",
+				reco_file, strerror(errno));
+		ret = -1;
+		goto out_close;
+	}
+	ret = 0;
+
+out_close:
+	close(fd);
+
+	return ret;
+}
+
+static int
+vduse_reconnect_log_check(struct virtio_net *dev, uint64_t features, uint32_t total_queues)
+{
+	if (dev->reconnect_log->version != VHOST_RECONNECT_VERSION) {
+		VHOST_CONFIG_LOG(dev->ifname, ERR,
+				"Version mismatch between backend (0x%x) & reconnection file (0x%x)",
+				VHOST_RECONNECT_VERSION, dev->reconnect_log->version);
+		return -1;
+	}
+
+	if ((dev->reconnect_log->features & features) != dev->reconnect_log->features) {
+		VHOST_CONFIG_LOG(dev->ifname, ERR,
+				"Features mismatch between backend (0x%" PRIx64 ") & reconnection file (0x%" PRIx64 ")",
+				features, dev->reconnect_log->features);
+		return -1;
+	}
+
+	if (dev->reconnect_log->nr_vrings != total_queues) {
+		VHOST_CONFIG_LOG(dev->ifname, ERR,
+				"Queues number mismatch between backend (%u) and reconnection file (%u)",
+				total_queues, dev->reconnect_log->nr_vrings);
+		return -1;
+	}
+
 	return 0;
 }
 
@@ -476,19 +573,56 @@ vduse_reconnect_handler(int fd, void *arg, int *remove)
 	*remove = 1;
 }
 
+static int
+vduse_reconnect_start_device(struct virtio_net *dev)
+{
+	int fd, ret;
+
+	/*
+	 * Make vduse_device_start() being executed in the same
+	 * context for both reconnection and fresh startup.
+	 */
+	fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+	if (fd < 0) {
+		VHOST_CONFIG_LOG(dev->ifname, ERR, "Failed to create reconnect efd: %s",
+				strerror(errno));
+		ret = -1;
+		goto out_err;
+	}
+
+	ret = fdset_add(vduse.fdset, fd, vduse_reconnect_handler, NULL, dev);
+	if (ret) {
+		VHOST_CONFIG_LOG(dev->ifname, ERR, "Failed to add reconnect efd %d to vduse fdset",
+				fd);
+		goto out_err_close;
+	}
+
+	ret = eventfd_write(fd, (eventfd_t)1);
+	if (ret < 0) {
+		VHOST_CONFIG_LOG(dev->ifname, ERR, "Failed to write to reconnect eventfd");
+		goto out_err_fdset;
+	}
+
+	return 0;
+
+out_err_fdset:
+	fdset_del(vduse.fdset, fd);
+out_err_close:
+	close(fd);
+out_err:
+	return ret;
+}
+
 int
 vduse_device_create(const char *path, bool compliant_ol_flags)
 {
-	int control_fd, dev_fd, vid, ret, reco_fd;
+	int control_fd, dev_fd, vid, ret;
 	uint32_t i, max_queue_pairs, total_queues;
 	struct virtio_net *dev;
 	struct virtio_net_config vnet_config = {{ 0 }};
 	uint64_t ver = VHOST_VDUSE_API_VERSION;
 	uint64_t features;
-	struct vduse_dev_config *dev_config = NULL;
 	const char *name = path + strlen("/dev/vduse/");
-	char reconnect_file[PATH_MAX];
-	struct vhost_reconnect_data *reconnect_log = NULL;
 	bool reconnect = false;
 
 	if (vduse.fdset == NULL) {
@@ -497,20 +631,6 @@ vduse_device_create(const char *path, bool compliant_ol_flags)
 			VHOST_CONFIG_LOG(path, ERR, "failed to init VDUSE fdset");
 			return -1;
 		}
-	}
-
-	if (vduse_reconnect_path_set == false) {
-		if (vduse_reconnect_path_init() < 0) {
-			VHOST_CONFIG_LOG(path, ERR, "failed to initialize reconnect path");
-			return -1;
-		}
-		vduse_reconnect_path_set = true;
-	}
-
-	ret = snprintf(reconnect_file, sizeof(reconnect_file), "%s/%s", vduse_reconnect_dir, name);
-	if (ret < 0 || ret == sizeof(reconnect_file)) {
-		VHOST_CONFIG_LOG(name, ERR, "Failed to create vduse reconnect path name");
-		return -1;
 	}
 
 	control_fd = open(VDUSE_CTRL_PATH, O_RDWR);
@@ -530,13 +650,13 @@ vduse_device_create(const char *path, bool compliant_ol_flags)
 	ret = rte_vhost_driver_get_features(path, &features);
 	if (ret < 0) {
 		VHOST_CONFIG_LOG(name, ERR, "Failed to get backend features");
-		goto out_free;
+		goto out_ctrl_close;
 	}
 
 	ret = rte_vhost_driver_get_queue_num(path, &max_queue_pairs);
 	if (ret < 0) {
 		VHOST_CONFIG_LOG(name, ERR, "Failed to get max queue pairs");
-		goto out_free;
+		goto out_ctrl_close;
 	}
 
 	VHOST_CONFIG_LOG(path, INFO, "VDUSE max queue pairs: %u", max_queue_pairs);
@@ -547,86 +667,12 @@ vduse_device_create(const char *path, bool compliant_ol_flags)
 	else
 		total_queues += 1; /* Includes ctrl queue */
 
-	if (access(path, F_OK) == 0) {
+	dev_fd = open(path, O_RDWR);
+	if (dev_fd >= 0) {
 		VHOST_CONFIG_LOG(name, INFO, "Device already exists, reconnecting...");
 		reconnect = true;
-
-		reco_fd = open(reconnect_file, O_RDWR, 0600);
-		if (reco_fd < 0) {
-			if (errno == ENOENT)
-				VHOST_CONFIG_LOG(name, ERR, "Missing reconnect file (%s)",
-						reconnect_file);
-			else
-				VHOST_CONFIG_LOG(name, ERR, "Failed to open reconnect file %s (%s)",
-						reconnect_file, strerror(errno));
-			ret = -1;
-			goto out_ctrl_close;
-		}
-
-		reconnect_log = mmap(NULL, sizeof(*reconnect_log), PROT_READ | PROT_WRITE,
-				MAP_SHARED, reco_fd, 0);
-		close(reco_fd);
-		if (reconnect_log == MAP_FAILED) {
-			VHOST_CONFIG_LOG(name, ERR, "Failed to mmap reconnect file %s (%s)",
-					reconnect_file, strerror(errno));
-			ret = -1;
-			goto out_ctrl_close;
-		}
-
-		if (reconnect_log->version != VHOST_RECONNECT_VERSION) {
-			VHOST_CONFIG_LOG(name, ERR,
-					"Version mismatch between backend (0x%x) & reconnection file (0x%x)",
-					VHOST_RECONNECT_VERSION, reconnect_log->version);
-		}
-
-		if ((reconnect_log->features & features) != reconnect_log->features) {
-			VHOST_CONFIG_LOG(name, ERR,
-					"Features mismatch between backend (0x%" PRIx64 ") & reconnection file (0x%" PRIx64 ")",
-					features, reconnect_log->features);
-			ret = -1;
-			goto out_ctrl_close;
-		}
-
-		if (reconnect_log->nr_vrings != total_queues) {
-			VHOST_CONFIG_LOG(name, ERR,
-					"Queues number mismatch between backend (%u) and reconnection file (%u)",
-					total_queues, reconnect_log->nr_vrings);
-			ret = -1;
-			goto out_ctrl_close;
-		}
-	} else {
-		reco_fd = open(reconnect_file, O_CREAT | O_EXCL | O_RDWR, 0600);
-		if (reco_fd < 0) {
-			if (errno == EEXIST) {
-				VHOST_CONFIG_LOG(name, ERR, "Reconnect file %s exists but not the device",
-						reconnect_file);
-			} else {
-				VHOST_CONFIG_LOG(name, ERR, "Failed to open reconnect file %s (%s)",
-						reconnect_file, strerror(errno));
-			}
-			ret = -1;
-			goto out_ctrl_close;
-		}
-
-		ret = ftruncate(reco_fd, sizeof(*reconnect_log));
-		if (ret < 0) {
-			VHOST_CONFIG_LOG(name, ERR, "Failed to truncate reconnect file %s (%s)",
-					reconnect_file, strerror(errno));
-			close(reco_fd);
-			goto out_ctrl_close;
-		}
-
-		reconnect_log = mmap(NULL, sizeof(*reconnect_log), PROT_READ | PROT_WRITE,
-					MAP_SHARED, reco_fd, 0);
-		close(reco_fd);
-		if (reconnect_log == MAP_FAILED) {
-			VHOST_CONFIG_LOG(name, ERR, "Failed to mmap reconnect file %s (%s)",
-					reconnect_file, strerror(errno));
-			ret = -1;
-			goto out_ctrl_close;
-		}
-
-		reconnect_log->version = VHOST_RECONNECT_VERSION;
+	} else if (errno == ENOENT) {
+		struct vduse_dev_config *dev_config;
 
 		dev_config = malloc(offsetof(struct vduse_dev_config, config) +
 				sizeof(vnet_config));
@@ -649,24 +695,26 @@ vduse_device_create(const char *path, bool compliant_ol_flags)
 		memcpy(dev_config->config, &vnet_config, sizeof(vnet_config));
 
 		ret = ioctl(control_fd, VDUSE_CREATE_DEV, dev_config);
+		free(dev_config);
+		dev_config = NULL;
 		if (ret < 0) {
 			VHOST_CONFIG_LOG(name, ERR, "Failed to create VDUSE device: %s",
 					strerror(errno));
-			goto out_free;
+			goto out_ctrl_close;
 		}
 
-		memcpy(&reconnect_log->config, &vnet_config, sizeof(vnet_config));
-		reconnect_log->nr_vrings = total_queues;
-		free(dev_config);
-		dev_config = NULL;
-	}
-
-	dev_fd = open(path, O_RDWR);
-	if (dev_fd < 0) {
+		dev_fd = open(path, O_RDWR);
+		if (dev_fd < 0) {
+			VHOST_CONFIG_LOG(name, ERR, "Failed to open newly created device %s: %s",
+					path, strerror(errno));
+			ret = -1;
+			goto out_ctrl_close;
+		}
+	} else {
 		VHOST_CONFIG_LOG(name, ERR, "Failed to open device %s: %s",
 				path, strerror(errno));
 		ret = -1;
-		goto out_dev_close;
+		goto out_ctrl_close;
 	}
 
 	ret = fcntl(dev_fd, F_SETFL, O_NONBLOCK);
@@ -686,15 +734,28 @@ vduse_device_create(const char *path, bool compliant_ol_flags)
 	dev = get_device(vid);
 	if (!dev) {
 		ret = -1;
-		goto out_dev_close;
+		goto out_dev_destroy;
 	}
 
 	strncpy(dev->ifname, path, IF_NAME_SZ - 1);
 	dev->vduse_ctrl_fd = control_fd;
 	dev->vduse_dev_fd = dev_fd;
-	dev->reconnect_log = reconnect_log;
-	if (reconnect)
+
+	ret = vduse_reconnect_log_map(dev, !reconnect);
+	if (ret < 0)
+		goto out_dev_destroy;
+
+	if (reconnect) {
+		ret = vduse_reconnect_log_check(dev, features, total_queues);
+		if (ret < 0)
+			goto out_log_unmap;
+
 		dev->status = dev->reconnect_log->status;
+	} else {
+		dev->reconnect_log->version = VHOST_RECONNECT_VERSION;
+		dev->reconnect_log->nr_vrings = total_queues;
+		memcpy(&dev->reconnect_log->config, &vnet_config, sizeof(vnet_config));
+	}
 
 	vhost_setup_virtio_net(dev->vid, true, compliant_ol_flags, true, true);
 
@@ -705,11 +766,11 @@ vduse_device_create(const char *path, bool compliant_ol_flags)
 		ret = alloc_vring_queue(dev, i);
 		if (ret) {
 			VHOST_CONFIG_LOG(name, ERR, "Failed to alloc vring %d metadata", i);
-			goto out_dev_destroy;
+			goto out_log_unmap;
 		}
 
 		vq = dev->virtqueue[i];
-		vq->reconnect_log = &reconnect_log->vring[i];
+		vq->reconnect_log = &dev->reconnect_log->vring[i];
 
 		if (reconnect)
 			continue;
@@ -720,7 +781,7 @@ vduse_device_create(const char *path, bool compliant_ol_flags)
 		ret = ioctl(dev->vduse_dev_fd, VDUSE_VQ_SETUP, &vq_cfg);
 		if (ret) {
 			VHOST_CONFIG_LOG(name, ERR, "Failed to set-up VQ %d", i);
-			goto out_dev_destroy;
+			goto out_log_unmap;
 		}
 	}
 
@@ -730,46 +791,25 @@ vduse_device_create(const char *path, bool compliant_ol_flags)
 	if (ret) {
 		VHOST_CONFIG_LOG(name, ERR, "Failed to add fd %d to vduse fdset",
 				dev->vduse_dev_fd);
-		goto out_dev_destroy;
+		goto out_log_unmap;
 	}
 
 	if (reconnect && dev->status & VIRTIO_DEVICE_STATUS_DRIVER_OK)  {
-		/*
-		 * Make vduse_device_start() being executed in the same
-		 * context for both reconnection and fresh startup.
-		 */
-		reco_fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
-		if (reco_fd < 0) {
-			VHOST_CONFIG_LOG(name, ERR, "Failed to create reco_fd: %s",
-					strerror(errno));
-			ret = -1;
-			goto out_dev_destroy;
-		}
-
-		ret = fdset_add(vduse.fdset, reco_fd, vduse_reconnect_handler, NULL, dev);
-		if (ret) {
-			VHOST_CONFIG_LOG(name, ERR, "Failed to add reconnect fd %d to vduse fdset",
-					reco_fd);
-			goto out_dev_destroy;
-		}
-
-		ret = eventfd_write(reco_fd, (eventfd_t)1);
-		if (ret < 0) {
-			VHOST_CONFIG_LOG(name, ERR, "Failed to write to reconnect eventfd");
-			goto out_dev_destroy;
-		}
+		ret = vduse_reconnect_start_device(dev);
+		if (ret)
+			goto out_log_unmap;
 	}
 
 	return 0;
 
+out_log_unmap:
+	munmap(dev->reconnect_log, sizeof(*dev->reconnect_log));
 out_dev_destroy:
 	vhost_destroy_device(vid);
 out_dev_close:
 	if (dev_fd >= 0)
 		close(dev_fd);
 	ioctl(control_fd, VDUSE_DESTROY_DEV, name);
-out_free:
-	free(dev_config);
 out_ctrl_close:
 	close(control_fd);
 

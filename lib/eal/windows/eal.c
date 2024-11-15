@@ -16,6 +16,7 @@
 #include <eal_memcfg.h>
 #include <rte_errno.h>
 #include <rte_lcore.h>
+#include "eal_lcore_var.h"
 #include <eal_thread.h>
 #include <eal_internal_cfg.h>
 #include <eal_filesystem.h>
@@ -96,41 +97,6 @@ eal_usage(const char *prgname)
 	}
 }
 
-/* Parse the arguments for --log-level only */
-static void
-eal_log_level_parse(int argc, char **argv)
-{
-	int opt;
-	char **argvopt;
-	int option_index;
-	struct internal_config *internal_conf =
-		eal_get_internal_configuration();
-
-	argvopt = argv;
-
-	eal_reset_internal_config(internal_conf);
-
-	while ((opt = getopt_long(argc, argvopt, eal_short_options,
-		eal_long_options, &option_index)) != EOF) {
-
-		int ret;
-
-		/* getopt is not happy, stop right now */
-		if (opt == '?')
-			break;
-
-		ret = (opt == OPT_LOG_LEVEL_NUM) ?
-			eal_parse_common_option(opt, optarg,
-				internal_conf) : 0;
-
-		/* common parser is not happy */
-		if (ret < 0)
-			break;
-	}
-
-	optind = 0; /* reset getopt lib */
-}
-
 /* Parse the argument given in the command line of the application */
 static int
 eal_parse_args(int argc, char **argv)
@@ -155,8 +121,8 @@ eal_parse_args(int argc, char **argv)
 			return -1;
 		}
 
-		/* eal_log_level_parse() already handled this option */
-		if (opt == OPT_LOG_LEVEL_NUM)
+		/* eal_parse_log_options() already handled this option */
+		if (eal_option_is_log(opt))
 			continue;
 
 		ret = eal_parse_common_option(opt, optarg, internal_conf);
@@ -216,8 +182,7 @@ sync_func(void *arg __rte_unused)
 static void
 rte_eal_init_alert(const char *msg)
 {
-	fprintf(stderr, "EAL: FATAL: %s\n", msg);
-	EAL_LOG(ERR, "%s", msg);
+	EAL_LOG(ALERT, "%s", msg);
 }
 
 /* Stubs to enable EAL trace point compilation
@@ -268,6 +233,7 @@ rte_eal_cleanup(void)
 	/* after this point, any DPDK pointers will become dangling */
 	rte_eal_memory_detach();
 	eal_cleanup_config(internal_conf);
+	eal_lcore_var_cleanup();
 	return 0;
 }
 
@@ -285,9 +251,14 @@ rte_eal_init(int argc, char **argv)
 	char cpuset[RTE_CPU_AFFINITY_STR_LEN];
 	char thread_name[RTE_THREAD_NAME_SIZE];
 
-	eal_log_init(NULL, 0);
+	/* setup log as early as possible */
+	if (eal_parse_log_options(argc, argv) < 0) {
+		rte_eal_init_alert("invalid log arguments.");
+		rte_errno = EINVAL;
+		return -1;
+	}
 
-	eal_log_level_parse(argc, argv);
+	eal_log_init(NULL);
 
 	if (eal_create_cpu_map() < 0) {
 		rte_eal_init_alert("Cannot discover CPU and NUMA.");

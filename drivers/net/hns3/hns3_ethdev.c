@@ -6651,8 +6651,6 @@ static const struct rte_pci_id pci_id_hns3_map[] = {
 	{ RTE_PCI_DEVICE(PCI_VENDOR_ID_HUAWEI, HNS3_DEV_ID_50GE_RDMA) },
 	{ RTE_PCI_DEVICE(PCI_VENDOR_ID_HUAWEI, HNS3_DEV_ID_100G_RDMA_MACSEC) },
 	{ RTE_PCI_DEVICE(PCI_VENDOR_ID_HUAWEI, HNS3_DEV_ID_200G_RDMA) },
-	{ RTE_PCI_DEVICE(PCI_VENDOR_ID_HUAWEI, HNS3_DEV_ID_100G_ROH) },
-	{ RTE_PCI_DEVICE(PCI_VENDOR_ID_HUAWEI, HNS3_DEV_ID_200G_ROH) },
 	{ .vendor_id = 0, }, /* sentinel */
 };
 
@@ -6670,7 +6668,12 @@ RTE_PMD_REGISTER_PARAM_STRING(net_hns3,
 		HNS3_DEVARG_RX_FUNC_HINT "=vec|sve|simple|common "
 		HNS3_DEVARG_TX_FUNC_HINT "=vec|sve|simple|common "
 		HNS3_DEVARG_DEV_CAPS_MASK "=<1-65535> "
-		HNS3_DEVARG_MBX_TIME_LIMIT_MS "=<uint16> ");
+		HNS3_DEVARG_MBX_TIME_LIMIT_MS "=<uint16> "
+		HNS3_DEVARG_FDIR_VLAN_MATCH_MODE "=strict|nostrict "
+		HNS3_DEVARG_FDIR_TUPLE_CONFIG "=+outvlan-insmac|+outvlan-indmac|"
+					      "+outvlan-insip|+outvlan-indip"
+					      "+outvlan-sctptag|+outvlan-tunvni "
+		HNS3_DEVARG_FDIR_INDEX_CONFIG "=hash|priority ");
 RTE_LOG_REGISTER_SUFFIX(hns3_logtype_init, init, NOTICE);
 RTE_LOG_REGISTER_SUFFIX(hns3_logtype_driver, driver, NOTICE);
 #ifdef RTE_ETHDEV_DEBUG_RX

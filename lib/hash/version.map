@@ -52,6 +52,9 @@ EXPERIMENTAL {
 
 	# added in 24.07
 	rte_hash_rcu_qsbr_dq_reclaim;
+
+	# added in 24.11
+	rte_thash_gen_key;
 };
 
 INTERNAL {
@@ -59,4 +62,5 @@ INTERNAL {
 
 	rte_thash_gfni_stub;
 	rte_thash_gfni_bulk_stub;
+	thash_get_rand_poly;
 };

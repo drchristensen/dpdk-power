@@ -37,6 +37,7 @@ M: Ajit Khaparde <ajit.khaparde@broadcom.com>
 T: git://dpdk.org/next/dpdk-next-net-brcm
 
 Next-net-intel Tree
+M: Bruce Richardson <bruce.richardson@intel.com>
 T: git://dpdk.org/next/dpdk-next-net-intel
 
 Next-net-mrvl Tree
@@ -112,6 +113,12 @@ F: license/
 F: .editorconfig
 F: .mailmap
 
+Linux kernel uAPI headers
+M: Maxime Coquelin <maxime.coquelin@redhat.com>
+F: devtools/linux-uapi.sh
+F: doc/guides/contributing/linux_uapi.rst
+F: kernel/linux/uapi/
+
 Build System
 M: Bruce Richardson <bruce.richardson@intel.com>
 F: Makefile
@@ -186,6 +193,7 @@ F: app/test/test_threads.c
 F: app/test/test_version.c
 
 Logging
+M: Stephen Hemminger <stephen@networkplumber.org>
 F: lib/log/
 F: doc/guides/prog_guide/log_lib.rst
 F: app/test/test_logs.c
@@ -219,6 +227,13 @@ F: app/test/test_malloc.c
 F: app/test/test_malloc_perf.c
 F: app/test/test_memory.c
 F: app/test/test_memzone.c
+
+Lcore Variables
+M: Mattias Rönnblom <mattias.ronnblom@ericsson.com>
+F: lib/eal/include/rte_lcore_var.h
+F: lib/eal/common/eal_common_lcore_var.c
+F: app/test/test_lcore_var*
+F: doc/guides/prog_guide/lcore_var.rst
 
 Interrupt Subsystem
 M: Harman Kalra <hkalra@marvell.com>
@@ -770,6 +785,8 @@ F: doc/guides/nics/features/e1000.ini
 F: doc/guides/nics/features/igb*.ini
 
 Intel ixgbe
+M: Anatoly Burakov <anatoly.burakov@intel.com>
+M: Vladimir Medvedkin <vladimir.medvedkin@intel.com>
 T: git://dpdk.org/next/dpdk-next-net-intel
 F: drivers/net/ixgbe/
 F: doc/guides/nics/ixgbe.rst
@@ -777,6 +794,8 @@ F: doc/guides/nics/intel_vf.rst
 F: doc/guides/nics/features/ixgbe*.ini
 
 Intel i40e
+M: Ian Stokes <ian.stokes@intel.com>
+M: Bruce Richardson <bruce.richardson@intel.com>
 T: git://dpdk.org/next/dpdk-next-net-intel
 F: drivers/net/i40e/
 F: doc/guides/nics/i40e.rst
@@ -790,13 +809,16 @@ F: doc/guides/nics/fm10k.rst
 F: doc/guides/nics/features/fm10k*.ini
 
 Intel iavf
-M: Jingjing Wu <jingjing.wu@intel.com>
+M: Vladimir Medvedkin <vladimir.medvedkin@intel.com>
+M: Ian Stokes <ian.stokes@intel.com>
 T: git://dpdk.org/next/dpdk-next-net-intel
 F: drivers/net/iavf/
 F: drivers/common/iavf/
 F: doc/guides/nics/features/iavf*.ini
 
 Intel ice
+M: Bruce Richardson <bruce.richardson@intel.com>
+M: Anatoly Burakov <anatoly.burakov@intel.com>
 T: git://dpdk.org/next/dpdk-next-net-intel
 F: drivers/net/ice/
 F: doc/guides/nics/ice.rst
@@ -804,6 +826,7 @@ F: doc/guides/nics/features/ice.ini
 
 Intel idpf
 M: Jingjing Wu <jingjing.wu@intel.com>
+M: Praveen Shetty <praveen.shetty@intel.com>
 T: git://dpdk.org/next/dpdk-next-net-intel
 F: drivers/net/idpf/
 F: drivers/common/idpf/
@@ -811,6 +834,7 @@ F: doc/guides/nics/idpf.rst
 F: doc/guides/nics/features/idpf.ini
 
 Intel cpfl - EXPERIMENTAL
+M: Praveen Shetty <praveen.shetty@intel.com>
 T: git://dpdk.org/next/dpdk-next-net-intel
 F: drivers/net/cpfl/
 F: doc/guides/nics/cpfl.rst
@@ -1041,6 +1065,13 @@ M: Matt Peters <matt.peters@windriver.com>
 F: drivers/net/avp/
 F: doc/guides/nics/avp.rst
 F: doc/guides/nics/features/avp.ini
+
+ZTE zxdh - EXPERIMENTAL
+M: Junlong Wang <wang.junlong1@zte.com.cn>
+M: Lijie Shan <shan.lijie@zte.com.cn>
+F: drivers/net/zxdh/
+F: doc/guides/nics/zxdh.rst
+F: doc/guides/nics/features/zxdh.ini
 
 PCAP PMD
 F: drivers/net/pcap/
@@ -1393,7 +1424,7 @@ M: Pavan Nikhilesh <pbhagavatula@marvell.com>
 F: drivers/event/octeontx/timvf_*
 
 Intel DLB2
-M: Abdullah Sevincer <abdullah.sevincer@intel.com>
+M: Pravin Pathak <pravin.pathak@intel.com>
 F: drivers/event/dlb2/
 F: doc/guides/eventdevs/dlb2.rst
 
@@ -1502,6 +1533,12 @@ M: Tomasz Duszynski <tduszynski@marvell.com>
 T: git://dpdk.org/next/dpdk-next-net-mrvl
 F: doc/guides/rawdevs/cnxk_gpio.rst
 F: drivers/raw/cnxk_gpio/
+
+Marvell CNXK RVU LF
+M: Akhil Goyal <gakhil@marvell.com>
+T: git://dpdk.org/next/dpdk-next-net-mrvl
+F: drivers/raw/cnxk_rvu_lf/
+F: doc/guides/rawdevs/cnxk_rvu_lf.rst
 
 NTB
 M: Jingjing Wu <jingjing.wu@intel.com>
@@ -1744,6 +1781,7 @@ M: David Hunt <david.hunt@intel.com>
 M: Sivaprasad Tummala <sivaprasad.tummala@amd.com>
 F: lib/power/
 F: doc/guides/prog_guide/power_man.rst
+F: drivers/power/
 F: app/test/test_power*
 F: examples/l3fwd-power/
 F: doc/guides/sample_app_ug/l3_forward_power_man.rst

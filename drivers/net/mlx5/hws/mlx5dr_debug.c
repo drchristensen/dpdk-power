@@ -29,6 +29,7 @@ const char *mlx5dr_debug_action_type_str[] = {
 	[MLX5DR_ACTION_TYP_POP_IPV6_ROUTE_EXT] = "POP_IPV6_ROUTE_EXT",
 	[MLX5DR_ACTION_TYP_PUSH_IPV6_ROUTE_EXT] = "PUSH_IPV6_ROUTE_EXT",
 	[MLX5DR_ACTION_TYP_NAT64] = "NAT64",
+	[MLX5DR_ACTION_TYP_JUMP_TO_MATCHER] = "JUMP_TO_MATCHER",
 };
 
 static_assert(ARRAY_SIZE(mlx5dr_debug_action_type_str) == MLX5DR_ACTION_TYP_MAX,
@@ -182,7 +183,7 @@ mlx5dr_debug_dump_matcher_attr(FILE *f, struct mlx5dr_matcher *matcher)
 	struct mlx5dr_matcher_attr *attr = &matcher->attr;
 	int ret;
 
-	ret = fprintf(f, "%d,0x%" PRIx64 ",%d,%d,%d,%d,%d,%d,%d,%d\n",
+	ret = fprintf(f, "%d,0x%" PRIx64 ",%d,%d,%d,%d,%d,%d,%d,%d,%d,%d\n",
 		      MLX5DR_DEBUG_RES_TYPE_MATCHER_ATTR,
 		      (uint64_t)(uintptr_t)matcher,
 		      attr->priority,
@@ -192,7 +193,9 @@ mlx5dr_debug_dump_matcher_attr(FILE *f, struct mlx5dr_matcher *matcher)
 		      attr->optimize_using_rule_idx,
 		      attr->optimize_flow_src,
 		      attr->insert_mode,
-		      attr->distribute_mode);
+		      attr->distribute_mode,
+		      attr->match_mode,
+		      attr->isolated);
 	if (ret < 0) {
 		rte_errno = EINVAL;
 		return rte_errno;
@@ -372,6 +375,12 @@ static int mlx5dr_debug_dump_table(FILE *f, struct mlx5dr_table *tbl)
 		goto out_err;
 
 	LIST_FOREACH(matcher, &tbl->head, next) {
+		ret = mlx5dr_debug_dump_matcher(f, matcher);
+		if (ret)
+			return ret;
+	}
+
+	LIST_FOREACH(matcher, &tbl->isolated_matchers, next) {
 		ret = mlx5dr_debug_dump_matcher(f, matcher);
 		if (ret)
 			return ret;

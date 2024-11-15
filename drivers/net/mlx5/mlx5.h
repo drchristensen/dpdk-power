@@ -1787,21 +1787,23 @@ struct mlx5_obj_ops {
 
 #define MLX5_RSS_HASH_FIELDS_LEN RTE_DIM(mlx5_rss_hash_fields)
 
-enum mlx5_hw_ctrl_flow_type {
-	MLX5_HW_CTRL_FLOW_TYPE_GENERAL,
-	MLX5_HW_CTRL_FLOW_TYPE_SQ_MISS_ROOT,
-	MLX5_HW_CTRL_FLOW_TYPE_SQ_MISS,
-	MLX5_HW_CTRL_FLOW_TYPE_DEFAULT_JUMP,
-	MLX5_HW_CTRL_FLOW_TYPE_TX_META_COPY,
-	MLX5_HW_CTRL_FLOW_TYPE_TX_REPR_MATCH,
-	MLX5_HW_CTRL_FLOW_TYPE_LACP_RX,
-	MLX5_HW_CTRL_FLOW_TYPE_DEFAULT_RX_RSS,
+enum mlx5_ctrl_flow_type {
+	MLX5_CTRL_FLOW_TYPE_GENERAL,
+	MLX5_CTRL_FLOW_TYPE_SQ_MISS_ROOT,
+	MLX5_CTRL_FLOW_TYPE_SQ_MISS,
+	MLX5_CTRL_FLOW_TYPE_DEFAULT_JUMP,
+	MLX5_CTRL_FLOW_TYPE_TX_META_COPY,
+	MLX5_CTRL_FLOW_TYPE_TX_REPR_MATCH,
+	MLX5_CTRL_FLOW_TYPE_LACP_RX,
+	MLX5_CTRL_FLOW_TYPE_DEFAULT_RX_RSS,
+	MLX5_CTRL_FLOW_TYPE_DEFAULT_RX_RSS_UNICAST_DMAC,
+	MLX5_CTRL_FLOW_TYPE_DEFAULT_RX_RSS_UNICAST_DMAC_VLAN,
 };
 
 /** Additional info about control flow rule. */
-struct mlx5_hw_ctrl_flow_info {
+struct mlx5_ctrl_flow_info {
 	/** Determines the kind of control flow rule. */
-	enum mlx5_hw_ctrl_flow_type type;
+	enum mlx5_ctrl_flow_type type;
 	union {
 		/**
 		 * If control flow is a SQ miss flow (root or not),
@@ -1813,12 +1815,36 @@ struct mlx5_hw_ctrl_flow_info {
 		 * then fields contains matching SQ number.
 		 */
 		uint32_t tx_repr_sq;
+		/** Contains data relevant for unicast control flow rules. */
+		struct {
+			/**
+			 * If control flow is a unicast DMAC (or with VLAN) flow rule,
+			 * then this field contains DMAC.
+			 */
+			struct rte_ether_addr dmac;
+			/**
+			 * If control flow is a unicast DMAC with VLAN flow rule,
+			 * then this field contains VLAN ID.
+			 */
+			uint16_t vlan;
+		} uc;
 	};
 };
 
+/** Returns true if a control flow rule with unicast DMAC match on given address was created. */
+bool mlx5_ctrl_flow_uc_dmac_exists(struct rte_eth_dev *dev, const struct rte_ether_addr *addr);
+
+/**
+ * Returns true if a control flow rule with unicast DMAC and VLAN match
+ * on given values was created.
+ */
+bool mlx5_ctrl_flow_uc_dmac_vlan_exists(struct rte_eth_dev *dev,
+					const struct rte_ether_addr *addr,
+					const uint16_t vid);
+
 /** Entry for tracking control flow rules in HWS. */
-struct mlx5_hw_ctrl_flow {
-	LIST_ENTRY(mlx5_hw_ctrl_flow) next;
+struct mlx5_ctrl_flow_entry {
+	LIST_ENTRY(mlx5_ctrl_flow_entry) next;
 	/**
 	 * Owner device is a port on behalf of which flow rule was created.
 	 *
@@ -1830,7 +1856,7 @@ struct mlx5_hw_ctrl_flow {
 	/** Pointer to flow rule handle. */
 	struct rte_flow *flow;
 	/** Additional information about the control flow rule. */
-	struct mlx5_hw_ctrl_flow_info info;
+	struct mlx5_ctrl_flow_info info;
 };
 
 /* HW Steering port configuration passed to rte_flow_configure(). */
@@ -1939,8 +1965,8 @@ struct mlx5_priv {
 	struct mlx5_drop drop_queue; /* Flow drop queues. */
 	void *root_drop_action; /* Pointer to root drop action. */
 	rte_spinlock_t hw_ctrl_lock;
-	LIST_HEAD(hw_ctrl_flow, mlx5_hw_ctrl_flow) hw_ctrl_flows;
-	LIST_HEAD(hw_ext_ctrl_flow, mlx5_hw_ctrl_flow) hw_ext_ctrl_flows;
+	LIST_HEAD(hw_ctrl_flow, mlx5_ctrl_flow_entry) hw_ctrl_flows;
+	LIST_HEAD(hw_ext_ctrl_flow, mlx5_ctrl_flow_entry) hw_ext_ctrl_flows;
 	struct mlx5_flow_hw_ctrl_fdb *hw_ctrl_fdb;
 	struct rte_flow_pattern_template *hw_tx_repr_tagging_pt;
 	struct rte_flow_actions_template *hw_tx_repr_tagging_at;
@@ -2346,6 +2372,10 @@ int mlx5_hairpin_bind(struct rte_eth_dev *dev, uint16_t rx_port);
 int mlx5_hairpin_unbind(struct rte_eth_dev *dev, uint16_t rx_port);
 int mlx5_hairpin_get_peer_ports(struct rte_eth_dev *dev, uint16_t *peer_ports,
 				size_t len, uint32_t direction);
+int mlx5_traffic_mac_add(struct rte_eth_dev *dev, const struct rte_ether_addr *addr);
+int mlx5_traffic_mac_remove(struct rte_eth_dev *dev, const struct rte_ether_addr *addr);
+int mlx5_traffic_vlan_add(struct rte_eth_dev *dev, const uint16_t vid);
+int mlx5_traffic_vlan_remove(struct rte_eth_dev *dev, const uint16_t vid);
 
 /* mlx5_flow.c */
 
@@ -2652,4 +2682,22 @@ int mlx5_quota_query(struct rte_eth_dev *dev, uint32_t queue,
 int mlx5_alloc_srh_flex_parser(struct rte_eth_dev *dev);
 
 void mlx5_free_srh_flex_parser(struct rte_eth_dev *dev);
+
+/* mlx5_flow_hw.c */
+struct rte_pmd_mlx5_host_action;
+
+struct mlx5dr_action *
+mlx5_flow_hw_get_dr_action(struct rte_eth_dev *dev,
+			   struct rte_pmd_mlx5_host_action *action,
+			   void **release_data);
+
+void
+mlx5_flow_hw_put_dr_action(struct rte_eth_dev *dev,
+			   enum rte_flow_action_type type,
+			   void *release_data);
+
+bool
+mlx5_hw_ctx_validate(const struct rte_eth_dev *dev,
+		     struct rte_flow_error *error);
+
 #endif /* RTE_PMD_MLX5_H_ */

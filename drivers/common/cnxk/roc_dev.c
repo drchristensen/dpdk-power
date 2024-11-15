@@ -218,6 +218,51 @@ af_pf_wait_msg(struct dev *dev, uint16_t vf, int num_msg)
 	return req_hdr->num_msgs;
 }
 
+static int
+process_rvu_lf_msgs(struct dev *dev, uint16_t vf, struct mbox_msghdr *msg, size_t size)
+{
+	uint16_t max_bits = sizeof(dev->active_vfs[0]) * 8;
+	uint8_t req[MBOX_MSG_REQ_SIZE_MAX];
+	struct msg_rsp *rsp;
+	uint16_t rsp_len;
+	void *resp;
+	int rc = 0;
+
+	/* Handle BPHY mailbox message in PF */
+	dev->active_vfs[vf / max_bits] |= BIT_ULL(vf % max_bits);
+
+	if ((size - sizeof(struct mbox_msghdr)) > MBOX_MSG_REQ_SIZE_MAX) {
+		plt_err("MBOX request size greater than %d", MBOX_MSG_REQ_SIZE_MAX);
+		return -1;
+	}
+	mbox_memcpy(req, (uint8_t *)msg + sizeof(struct mbox_msghdr),
+		    size - sizeof(struct mbox_msghdr));
+
+	rc = dev->ops->msg_process_cb(dev_get_vf(msg->pcifunc), msg->id, req,
+				      size - sizeof(struct mbox_msghdr), &resp, &rsp_len);
+	if (rc < 0) {
+		plt_err("Failed to process VF%d  message", vf);
+		return -1;
+	}
+
+	rsp = (struct msg_rsp *)mbox_alloc_msg(&dev->mbox_vfpf, vf,
+					       rsp_len + sizeof(struct mbox_msghdr));
+	if (!rsp) {
+		plt_err("Failed to alloc VF%d response message", vf);
+		return -1;
+	}
+
+	mbox_rsp_init(msg->id, rsp);
+
+	mbox_memcpy((uint8_t *)rsp + sizeof(struct mbox_msghdr), resp, rsp_len);
+	free(resp);
+	/* PF/VF function ID */
+	rsp->hdr.pcifunc = msg->pcifunc;
+	rsp->hdr.rc = 0;
+
+	return 0;
+}
+
 /* PF receives mbox DOWN messages from VF and forwards to AF */
 static int
 vf_pf_process_msgs(struct dev *dev, uint16_t vf)
@@ -264,6 +309,9 @@ vf_pf_process_msgs(struct dev *dev, uint16_t vf)
 			/* PF/VF function ID */
 			rsp->hdr.pcifunc = msg->pcifunc;
 			rsp->hdr.rc = 0;
+		} else if (roc_rvu_lf_msg_id_range_check(dev->roc_rvu_lf, msg->id)) {
+			if (process_rvu_lf_msgs(dev, vf, msg, size) < 0)
+				continue;
 		} else {
 			struct mbox_msghdr *af_req;
 			/* Reserve AF/PF mbox message */
@@ -342,8 +390,13 @@ vf_pf_process_up_msgs(struct dev *dev, uint16_t vf)
 				     dev_get_vf(msg->pcifunc));
 			break;
 		default:
-			plt_err("Not handled UP msg 0x%x (%s) func:0x%x",
-				msg->id, mbox_id2name(msg->id), msg->pcifunc);
+			if (roc_rvu_lf_msg_id_range_check(dev->roc_rvu_lf, msg->id))
+				plt_base_dbg("PF: Msg 0x%x fn:0x%x (pf:%d,vf:%d)",
+					     msg->id, msg->pcifunc, dev_get_pf(msg->pcifunc),
+					     dev_get_vf(msg->pcifunc));
+			else
+				plt_err("Not handled UP msg 0x%x (%s) func:0x%x",
+					msg->id, mbox_id2name(msg->id), msg->pcifunc);
 		}
 		offset = mbox->rx_start + msg->next_msgoff;
 	}
@@ -543,16 +596,16 @@ pf_vf_mbox_send_up_msg(struct dev *dev, void *rec_msg)
 }
 
 static int
-mbox_up_handler_rep_repte_notify(struct dev *dev, struct rep_repte_req *req, struct msg_rsp *rsp)
+mbox_up_handler_rep_event_up_notify(struct dev *dev, struct rep_event *req, struct msg_rsp *rsp)
 {
 	struct roc_eswitch_repte_notify_msg *notify_msg;
 	int rc = 0;
 
+	plt_base_dbg("mbox_up_handler_rep_event_up_notify");
 	plt_base_dbg("pf:%d/vf:%d msg id 0x%x (%s) from: pf:%d/vf:%d", dev_get_pf(dev->pf_func),
 		     dev_get_vf(dev->pf_func), req->hdr.id, mbox_id2name(req->hdr.id),
 		     dev_get_pf(req->hdr.pcifunc), dev_get_vf(req->hdr.pcifunc));
 
-	plt_base_dbg("repte pcifunc %x, enable %d", req->repte_pcifunc, req->enable);
 	if (dev->ops && dev->ops->repte_notify) {
 		notify_msg = plt_zmalloc(sizeof(struct roc_eswitch_repte_notify_msg), 0);
 		if (!notify_msg) {
@@ -560,49 +613,39 @@ mbox_up_handler_rep_repte_notify(struct dev *dev, struct rep_repte_req *req, str
 			rc = -ENOMEM;
 			goto fail;
 		}
-		notify_msg->type = ROC_ESWITCH_REPTE_STATE;
-		notify_msg->state.hw_func = req->repte_pcifunc;
-		notify_msg->state.enable = req->enable;
 
-		rc = dev->ops->repte_notify(dev->roc_nix, (void *)notify_msg);
-		if (rc < 0)
-			plt_err("Failed to sent new representee %x notification to %s",
-				req->repte_pcifunc, (req->enable == true) ? "enable" : "disable");
-
-		plt_free(notify_msg);
-	}
-fail:
-	rsp->hdr.rc = rc;
-	return rc;
-}
-
-static int
-mbox_up_handler_rep_set_mtu(struct dev *dev, struct rep_mtu *req, struct msg_rsp *rsp)
-{
-	struct roc_eswitch_repte_notify_msg *notify_msg;
-	int rc = 0;
-
-	plt_base_dbg("pf:%d/vf:%d msg id 0x%x (%s) from: pf:%d/vf:%d", dev_get_pf(dev->pf_func),
-		     dev_get_vf(dev->pf_func), req->hdr.id, mbox_id2name(req->hdr.id),
-		     dev_get_pf(req->hdr.pcifunc), dev_get_vf(req->hdr.pcifunc));
-
-	plt_base_dbg("rep pcifunc %x, rep id %d mtu %d", req->rep_pcifunc, req->rep_id, req->mtu);
-	if (dev->ops && dev->ops->repte_notify) {
-		notify_msg = plt_zmalloc(sizeof(struct roc_eswitch_repte_notify_msg), 0);
-		if (!notify_msg) {
-			plt_err("Failed to allocate memory");
-			rc = -ENOMEM;
+		switch (req->event) {
+		case RVU_EVENT_PORT_STATE:
+			plt_base_dbg("pcifunc %x, port_state %d", req->pcifunc,
+				     req->evt_data.port_state);
+			notify_msg->type = ROC_ESWITCH_LINK_STATE;
+			notify_msg->link.hw_func = req->pcifunc;
+			notify_msg->link.enable = req->evt_data.port_state;
+			break;
+		case RVU_EVENT_PFVF_STATE:
+			plt_base_dbg("pcifunc %x, repte_state %d", req->pcifunc,
+				     req->evt_data.vf_state);
+			notify_msg->type = ROC_ESWITCH_REPTE_STATE;
+			notify_msg->state.hw_func = req->pcifunc;
+			notify_msg->state.enable = req->evt_data.vf_state;
+			break;
+		case RVU_EVENT_MTU_CHANGE:
+			plt_base_dbg("pcifunc %x, mtu val %d", req->pcifunc, req->evt_data.mtu);
+			notify_msg->type = ROC_ESWITCH_REPTE_MTU;
+			notify_msg->mtu.hw_func = req->pcifunc;
+			notify_msg->mtu.mtu = req->evt_data.mtu;
+			break;
+		default:
+			plt_err("Unknown event type %u", req->event);
+			plt_free(notify_msg);
+			rc = -EINVAL;
 			goto fail;
 		}
-		notify_msg->type = ROC_ESWITCH_REPTE_MTU;
-		notify_msg->mtu.hw_func = req->rep_pcifunc;
-		notify_msg->mtu.rep_id = req->rep_id;
-		notify_msg->mtu.mtu = req->mtu;
 
 		rc = dev->ops->repte_notify(dev->roc_nix, (void *)notify_msg);
 		if (rc < 0)
-			plt_err("Failed to send new mtu notification for representee %x ",
-				req->rep_pcifunc);
+			plt_err("Failed to send notification type %x for representee %x",
+				notify_msg->type, notify_msg->state.hw_func);
 
 		plt_free(notify_msg);
 	}
@@ -792,6 +835,50 @@ mbox_process_msgs_up(struct dev *dev, struct mbox_msghdr *req)
 	return -ENODEV;
 }
 
+static int
+process_rvu_lf_msgs_up(struct dev *dev, struct mbox_msghdr *msg, size_t size)
+{
+	uint8_t req[MBOX_MSG_REQ_SIZE_MAX];
+	struct msg_rsp *rsp;
+	uint16_t rsp_len;
+	void *resp;
+	int rc = 0;
+
+	/* Check if valid, if not reply with an invalid msg */
+	if (msg->sig != MBOX_REQ_SIG)
+		return -EIO;
+
+	if ((size - sizeof(struct mbox_msghdr)) > MBOX_MSG_REQ_SIZE_MAX) {
+		plt_err("MBOX request size greater than %d", MBOX_MSG_REQ_SIZE_MAX);
+		return -ENOMEM;
+	}
+	mbox_memcpy(req, (uint8_t *)msg + sizeof(struct mbox_msghdr),
+		    size - sizeof(struct mbox_msghdr));
+	rc = dev->ops->msg_process_cb(dev_get_vf(msg->pcifunc), msg->id, req,
+				      size - sizeof(struct mbox_msghdr), &resp, &rsp_len);
+	if (rc < 0) {
+		plt_err("Failed to process VF%d  message", dev->vf);
+		return rc;
+	}
+
+	rsp = (struct msg_rsp *)mbox_alloc_msg(&dev->mbox_up, 0,
+					       rsp_len + sizeof(struct mbox_msghdr));
+	if (!rsp) {
+		plt_err("Failed to alloc VF%d response message", dev->vf);
+		return -ENOMEM;
+	}
+
+	mbox_rsp_init(msg->id, rsp);
+
+	mbox_memcpy((uint8_t *)rsp + sizeof(struct mbox_msghdr), resp, rsp_len);
+	free(resp);
+	/* PF/VF function ID */
+	rsp->hdr.pcifunc = msg->pcifunc;
+	rsp->hdr.rc = 0;
+
+	return rc;
+}
+
 /* Received up messages from AF (PF context) / PF (in context) */
 static void
 process_msgs_up(struct dev *dev, struct mbox *mbox)
@@ -800,6 +887,7 @@ process_msgs_up(struct dev *dev, struct mbox *mbox)
 	struct mbox_hdr *req_hdr;
 	struct mbox_msghdr *msg;
 	int i, err, offset;
+	size_t size;
 
 	req_hdr = (struct mbox_hdr *)((uintptr_t)mdev->mbase + mbox->rx_start);
 	if (req_hdr->num_msgs == 0)
@@ -812,10 +900,17 @@ process_msgs_up(struct dev *dev, struct mbox *mbox)
 		plt_base_dbg("Message 0x%x (%s) pf:%d/vf:%d", msg->id,
 			     mbox_id2name(msg->id), dev_get_pf(msg->pcifunc),
 			     dev_get_vf(msg->pcifunc));
-		err = mbox_process_msgs_up(dev, msg);
-		if (err)
-			plt_err("Error %d handling 0x%x (%s)", err, msg->id,
-				mbox_id2name(msg->id));
+		if (roc_rvu_lf_msg_id_range_check(dev->roc_rvu_lf, msg->id)) {
+			size = mbox->rx_start + msg->next_msgoff - offset;
+			err = process_rvu_lf_msgs_up(dev, msg, size);
+			if (err)
+				plt_err("Error %d handling 0x%x RVU_LF up msg", err, msg->id);
+		} else {
+			err = mbox_process_msgs_up(dev, msg);
+			if (err)
+				plt_err("Error %d handling 0x%x (%s)", err, msg->id,
+					mbox_id2name(msg->id));
+		}
 		offset = mbox->rx_start + msg->next_msgoff;
 	}
 	/* Send mbox responses */
@@ -1304,6 +1399,7 @@ dev_vf_hwcap_update(struct plt_pci_device *pci_dev, struct dev *dev)
 	case PCI_DEVID_CNXK_RVU_VF:
 	case PCI_DEVID_CNXK_RVU_SDP_VF:
 	case PCI_DEVID_CNXK_RVU_NIX_INL_VF:
+	case PCI_DEVID_CNXK_RVU_BPHY_VF:
 	case PCI_DEVID_CNXK_RVU_ESWITCH_VF:
 		dev->hwcap |= DEV_HWCAP_F_VF;
 		break;

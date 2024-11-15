@@ -897,7 +897,7 @@ hns3_get_name_by_module(enum hns3_reg_modules module)
 	size_t i;
 
 	for (i = 0; i < RTE_DIM(hns3_module_name_map); i++) {
-		if (hns3_module_name_map[i].module && HNS3_MODULE_MASK(module) != 0)
+		if ((hns3_module_name_map[i].module & HNS3_MODULE_MASK(module)) != 0)
 			return hns3_module_name_map[i].name;
 	}
 	return "unknown";
@@ -1178,9 +1178,9 @@ hns3_direct_access_tqp_regs_help(struct hns3_hw *hw, struct rte_dev_reg_info *re
 				 uint32_t modules, enum hns3_reg_modules idx)
 {
 	const struct hns3_dirt_reg_entry *reg_list;
-	uint16_t tqp_num, reg_offset;
+	uint32_t reg_num, i, j, reg_offset;
 	uint32_t *data = regs->data;
-	uint32_t reg_num, i, j;
+	uint16_t tqp_num;
 
 	if ((modules & HNS3_MODULE_MASK(idx)) == 0)
 		return;
@@ -1274,6 +1274,7 @@ hns3_get_dfx_regs(struct hns3_hw *hw, struct rte_dev_reg_info *regs, uint32_t mo
 	if (cmd_descs == NULL)
 		return -ENOMEM;
 
+	data += regs->length;
 	for (i = 0; i < opcode_num; i++) {
 		opcode = hns3_dfx_reg_opcode_list[i];
 		bd_num = bd_num_list[i];
@@ -1285,7 +1286,6 @@ hns3_get_dfx_regs(struct hns3_hw *hw, struct rte_dev_reg_info *regs, uint32_t mo
 		if (ret)
 			break;
 
-		data += regs->length;
 		regs_num = hns3_dfx_reg_fetch_data(cmd_descs, bd_num, data);
 		if (regs_num !=  hns3_reg_lists[i].entry_num) {
 			hns3_err(hw, "Query register number differ from the list for module %s!",
@@ -1294,6 +1294,7 @@ hns3_get_dfx_regs(struct hns3_hw *hw, struct rte_dev_reg_info *regs, uint32_t mo
 		}
 		hns3_fill_dfx_regs_name(hw, regs, hns3_reg_lists[i].reg_list, regs_num);
 		regs->length += regs_num;
+		data += regs_num;
 	}
 	rte_free(cmd_descs);
 

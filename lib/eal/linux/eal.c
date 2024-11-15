@@ -45,6 +45,7 @@
 #include <telemetry_internal.h>
 #include "eal_private.h"
 #include "eal_thread.h"
+#include "eal_lcore_var.h"
 #include "eal_internal_cfg.h"
 #include "eal_filesystem.h"
 #include "eal_hugepages.h"
@@ -546,45 +547,6 @@ eal_parse_vfio_vf_token(const char *vf_token)
 	return -1;
 }
 
-/* Parse the arguments for --log-level only */
-static void
-eal_log_level_parse(int argc, char **argv)
-{
-	int opt;
-	char **argvopt;
-	int option_index;
-	const int old_optind = optind;
-	const int old_optopt = optopt;
-	char * const old_optarg = optarg;
-	struct internal_config *internal_conf =
-		eal_get_internal_configuration();
-
-	argvopt = argv;
-	optind = 1;
-
-	while ((opt = getopt_long(argc, argvopt, eal_short_options,
-				  eal_long_options, &option_index)) != EOF) {
-
-		int ret;
-
-		/* getopt is not happy, stop right now */
-		if (opt == '?')
-			break;
-
-		ret = (opt == OPT_LOG_LEVEL_NUM) ?
-			eal_parse_common_option(opt, optarg, internal_conf) : 0;
-
-		/* common parser is not happy */
-		if (ret < 0)
-			break;
-	}
-
-	/* restore getopt lib */
-	optind = old_optind;
-	optopt = old_optopt;
-	optarg = old_optarg;
-}
-
 static int
 eal_parse_huge_worker_stack(const char *arg)
 {
@@ -649,8 +611,8 @@ eal_parse_args(int argc, char **argv)
 			goto out;
 		}
 
-		/* eal_log_level_parse() already handled this option */
-		if (opt == OPT_LOG_LEVEL_NUM)
+		/* eal_parse_log_options() already handled this option */
+		if (eal_option_is_log(opt))
 			continue;
 
 		ret = eal_parse_common_option(opt, optarg, internal_conf);
@@ -869,8 +831,7 @@ rte_eal_iopl_init(void)
 
 static void rte_eal_init_alert(const char *msg)
 {
-	fprintf(stderr, "EAL: FATAL: %s\n", msg);
-	EAL_LOG(ERR, "%s", msg);
+	EAL_LOG(ALERT, "%s", msg);
 }
 
 /*
@@ -966,6 +927,15 @@ rte_eal_init(int argc, char **argv)
 	struct internal_config *internal_conf =
 		eal_get_internal_configuration();
 
+	/* setup log as early as possible */
+	if (eal_parse_log_options(argc, argv) < 0) {
+		rte_eal_init_alert("invalid log arguments.");
+		rte_errno = EINVAL;
+		return -1;
+	}
+
+	eal_log_init(program_invocation_short_name);
+
 	/* checks if the machine is adequate */
 	if (!rte_cpu_is_supported()) {
 		rte_eal_init_alert("unsupported cpu type.");
@@ -988,9 +958,6 @@ rte_eal_init(int argc, char **argv)
 	}
 
 	eal_reset_internal_config(internal_conf);
-
-	/* set log level as early as possible */
-	eal_log_level_parse(argc, argv);
 
 	/* clone argv to report out later in telemetry */
 	eal_save_args(argc, argv);
@@ -1141,14 +1108,6 @@ rte_eal_init(int argc, char **argv)
 		EAL_LOG(WARNING, "Ignoring --vmware-tsc-map because "
 				"RTE_LIBRTE_EAL_VMWARE_TSC_MAP_SUPPORT is not set");
 #endif
-	}
-
-	if (eal_log_init(program_invocation_short_name,
-			 internal_conf->syslog_facility) < 0) {
-		rte_eal_init_alert("Cannot init logging.");
-		rte_errno = ENOMEM;
-		rte_atomic_store_explicit(&run_once, 0, rte_memory_order_relaxed);
-		return -1;
 	}
 
 #ifdef VFIO_PRESENT
@@ -1370,6 +1329,7 @@ rte_eal_cleanup(void)
 	rte_eal_memory_detach();
 	rte_eal_malloc_heap_cleanup();
 	eal_cleanup_config(internal_conf);
+	eal_lcore_var_cleanup();
 	rte_eal_log_cleanup();
 	return 0;
 }

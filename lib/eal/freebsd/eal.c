@@ -11,7 +11,6 @@
 #include <stdarg.h>
 #include <unistd.h>
 #include <pthread.h>
-#include <syslog.h>
 #include <getopt.h>
 #include <sys/file.h>
 #include <stddef.h>
@@ -47,12 +46,14 @@
 
 #include "eal_private.h"
 #include "eal_thread.h"
+#include "eal_lcore_var.h"
 #include "eal_internal_cfg.h"
 #include "eal_filesystem.h"
 #include "eal_hugepages.h"
 #include "eal_options.h"
 #include "eal_memcfg.h"
 #include "eal_trace.h"
+#include "log_internal.h"
 
 #define MEMSIZE_IF_NO_HUGE_PAGE (64ULL * 1024ULL * 1024ULL)
 
@@ -363,48 +364,6 @@ eal_get_hugepage_mem_size(void)
 	return (size < SIZE_MAX) ? (size_t)(size) : SIZE_MAX;
 }
 
-/* Parse the arguments for --log-level only */
-static void
-eal_log_level_parse(int argc, char **argv)
-{
-	int opt;
-	char **argvopt;
-	int option_index;
-	const int old_optind = optind;
-	const int old_optopt = optopt;
-	const int old_optreset = optreset;
-	char * const old_optarg = optarg;
-	struct internal_config *internal_conf =
-		eal_get_internal_configuration();
-
-	argvopt = argv;
-	optind = 1;
-	optreset = 1;
-
-	while ((opt = getopt_long(argc, argvopt, eal_short_options,
-				  eal_long_options, &option_index)) != EOF) {
-
-		int ret;
-
-		/* getopt is not happy, stop right now */
-		if (opt == '?')
-			break;
-
-		ret = (opt == OPT_LOG_LEVEL_NUM) ?
-		    eal_parse_common_option(opt, optarg, internal_conf) : 0;
-
-		/* common parser is not happy */
-		if (ret < 0)
-			break;
-	}
-
-	/* restore getopt lib */
-	optind = old_optind;
-	optopt = old_optopt;
-	optreset = old_optreset;
-	optarg = old_optarg;
-}
-
 /* Parse the argument given in the command line of the application */
 static int
 eal_parse_args(int argc, char **argv)
@@ -434,8 +393,8 @@ eal_parse_args(int argc, char **argv)
 			goto out;
 		}
 
-		/* eal_log_level_parse() already handled this option */
-		if (opt == OPT_LOG_LEVEL_NUM)
+		/* eal_parse_log_options() already handled this option */
+		if (eal_option_is_log(opt))
 			continue;
 
 		ret = eal_parse_common_option(opt, optarg, internal_conf);
@@ -571,8 +530,7 @@ rte_eal_iopl_init(void)
 
 static void rte_eal_init_alert(const char *msg)
 {
-	fprintf(stderr, "EAL: FATAL: %s\n", msg);
-	EAL_LOG(ERR, "%s", msg);
+	EAL_LOG(ALERT, "%s", msg);
 }
 
 /* Launch threads, called at application init(). */
@@ -589,6 +547,15 @@ rte_eal_init(int argc, char **argv)
 		eal_get_internal_configuration();
 	bool has_phys_addr;
 	enum rte_iova_mode iova_mode;
+
+	/* setup log as early as possible */
+	if (eal_parse_log_options(argc, argv) < 0) {
+		rte_eal_init_alert("invalid log arguments.");
+		rte_errno = EINVAL;
+		return -1;
+	}
+
+	eal_log_init(getprogname());
 
 	/* checks if the machine is adequate */
 	if (!rte_cpu_is_supported()) {
@@ -615,9 +582,6 @@ rte_eal_init(int argc, char **argv)
 
 	/* clone argv to report out later in telemetry */
 	eal_save_args(argc, argv);
-
-	/* set log level as early as possible */
-	eal_log_level_parse(argc, argv);
 
 	if (rte_eal_cpu_init() < 0) {
 		rte_eal_init_alert("Cannot detect lcores.");
@@ -941,6 +905,7 @@ rte_eal_cleanup(void)
 	/* after this point, any DPDK pointers will become dangling */
 	rte_eal_memory_detach();
 	eal_cleanup_config(internal_conf);
+	eal_lcore_var_cleanup();
 	return 0;
 }
 

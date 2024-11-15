@@ -460,9 +460,6 @@ soc_cn9k = {
     'implementer': '0x43',
     'part_number': '0xb2',
     'numa': false,
-    'flags': [
-        ['RTE_IOVA_IN_MBUF', 0]
-    ]
 }
 
 soc_cn10k = {
@@ -472,7 +469,6 @@ soc_cn10k = {
         ['RTE_MAX_LCORE', 24],
         ['RTE_MAX_NUMA_NODES', 1],
         ['RTE_MEMPOOL_ALIGN', 128],
-        ['RTE_IOVA_IN_MBUF', 0]
     ],
     'part_number': '0xd49',
     'extra_march_features': ['crypto'],
@@ -488,7 +484,9 @@ soc_dpaa = {
         ['RTE_MACHINE', '"dpaa"'],
         ['RTE_LIBRTE_DPAA2_USE_PHYS_IOVA', false],
         ['RTE_MAX_LCORE', 16],
-        ['RTE_MAX_NUMA_NODES', 1]
+        ['RTE_MAX_NUMA_NODES', 1],
+        ['RTE_DMA_DPAA_ERRATA_ERR050757', true],
+        ['RTE_DMA_DPAA_ERRATA_ERR050265', true],
     ],
     'numa': false
 }
@@ -784,9 +782,8 @@ else
             # native build
             # The script returns ['Implementer', 'Variant', 'Architecture',
             # 'Primary Part number', 'Revision']
-            detect_vendor = find_program(join_paths(meson.current_source_dir(),
-                                                    'armv8_machine.py'))
-            cmd = run_command(detect_vendor.path(), check: false)
+            detect_vendor = py3 + files('armv8_machine.py')
+            cmd = run_command(detect_vendor, check: false)
             if cmd.returncode() == 0
                 cmd_output = cmd.stdout().to_lower().strip().split(' ')
                 implementer_id = cmd_output[0]

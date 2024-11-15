@@ -21,16 +21,13 @@
 
 #include "cnxk_eventdev_dp.h"
 
-#include "roc_platform.h"
-#include "roc_sso.h"
-
 #include "cnxk_tim_evdev.h"
 
 #define CNXK_SSO_XAE_CNT   "xae_cnt"
 #define CNXK_SSO_GGRP_QOS  "qos"
 #define CNXK_SSO_FORCE_BP  "force_rx_bp"
 #define CN9K_SSO_SINGLE_WS "single_ws"
-#define CN10K_SSO_STASH	   "stash"
+#define CNXK_SSO_STASH	   "stash"
 
 #define CNXK_SSO_MAX_PROFILES 2
 
@@ -41,9 +38,9 @@
 #define CN9K_SSOW_GET_BASE_ADDR(_GW) ((_GW)-SSOW_LF_GWS_OP_GET_WORK0)
 #define CN9K_DUAL_WS_NB_WS	     2
 
-#define CN10K_GW_MODE_NONE     0
-#define CN10K_GW_MODE_PREF     1
-#define CN10K_GW_MODE_PREF_WFE 2
+#define CNXK_GW_MODE_NONE     0
+#define CNXK_GW_MODE_PREF     1
+#define CNXK_GW_MODE_PREF_WFE 2
 
 #define CNXK_QOS_NORMALIZE(val, min, max, cnt)                                 \
 	(min + val / ((max + cnt - 1) / cnt))
@@ -136,7 +133,7 @@ struct __rte_cache_aligned cn9k_sso_hws {
 	struct cnxk_timesync_info **tstamp;
 	/* Add Work Fastpath data */
 	alignas(RTE_CACHE_LINE_SIZE) uint64_t xaq_lmt;
-	uint64_t *fc_mem;
+	uint64_t __rte_atomic *fc_mem;
 	uintptr_t grp_base;
 	/* Tx Fastpath data */
 	alignas(RTE_CACHE_LINE_SIZE) uint64_t lso_tun_fmt;
@@ -154,7 +151,7 @@ struct __rte_cache_aligned cn9k_sso_hws_dual {
 	struct cnxk_timesync_info **tstamp;
 	/* Add Work Fastpath data */
 	alignas(RTE_CACHE_LINE_SIZE) uint64_t xaq_lmt;
-	uint64_t *fc_mem;
+	uint64_t __rte_atomic *fc_mem;
 	uintptr_t grp_base;
 	/* Tx Fastpath data */
 	alignas(RTE_CACHE_LINE_SIZE) uint64_t lso_tun_fmt;
@@ -269,6 +266,9 @@ int cnxk_sso_rx_adapter_start(const struct rte_eventdev *event_dev,
 			      const struct rte_eth_dev *eth_dev);
 int cnxk_sso_rx_adapter_stop(const struct rte_eventdev *event_dev,
 			     const struct rte_eth_dev *eth_dev);
+void cnxk_sso_tstamp_cfg(uint16_t port_id, const struct rte_eth_dev *eth_dev,
+			 struct cnxk_sso_evdev *dev);
+int cnxk_sso_rxq_disable(const struct rte_eth_dev *eth_dev, uint16_t rq_id);
 int cnxk_sso_tx_adapter_queue_add(const struct rte_eventdev *event_dev,
 				  const struct rte_eth_dev *eth_dev,
 				  int32_t tx_queue_id);

@@ -521,9 +521,11 @@ mlx5_dev_spawn(struct rte_device *dpdk_dev,
 	claim_zero(mlx5_mac_addr_add(eth_dev, &mac, 0, 0));
 	priv->ctrl_flows = 0;
 	TAILQ_INIT(&priv->flow_meters);
-	priv->mtr_profile_tbl = mlx5_l3t_create(MLX5_L3T_TYPE_PTR);
-	if (!priv->mtr_profile_tbl)
-		goto error;
+	if (priv->mtr_en) {
+		priv->mtr_profile_tbl = mlx5_l3t_create(MLX5_L3T_TYPE_PTR);
+		if (!priv->mtr_profile_tbl)
+			goto error;
+	}
 	/* Bring Ethernet device up. */
 	DRV_LOG(DEBUG, "port %u forcing Ethernet interface up.",
 		eth_dev->data->port_id);
@@ -600,6 +602,9 @@ mlx5_dev_spawn(struct rte_device *dpdk_dev,
 	}
 	mlx5_flow_counter_mode_config(eth_dev);
 	mlx5_queue_counter_id_prepare(eth_dev);
+	rte_spinlock_init(&priv->hw_ctrl_lock);
+	LIST_INIT(&priv->hw_ctrl_flows);
+	LIST_INIT(&priv->hw_ext_ctrl_flows);
 	return eth_dev;
 error:
 	if (priv) {

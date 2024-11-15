@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
  *   Copyright (c) 2016 Freescale Semiconductor, Inc. All rights reserved.
- *   Copyright 2016-2021 NXP
+ *   Copyright 2016-2024 NXP
  *
  */
 
@@ -14,6 +14,7 @@
 
 #include <mc/fsl_mc_sys.h>
 #include <fsl_qbman_portal.h>
+#include <bus_fslmc_driver.h>
 
 #ifndef false
 #define false      0
@@ -80,6 +81,8 @@
 #define DPAA2_PACKET_LAYOUT_ALIGN	64 /*changing from 256 */
 
 #define DPAA2_DPCI_MAX_QUEUES 2
+#define DPAA2_INVALID_FLOW_ID 0xffff
+#define DPAA2_INVALID_CGID 0xff
 
 struct dpaa2_queue;
 
@@ -165,7 +168,9 @@ struct __rte_cache_aligned dpaa2_queue {
 	uint64_t tx_pkts;
 	uint64_t err_pkts;
 	union {
-		struct queue_storage_info_t *q_storage;
+		/**Ingress*/
+		struct queue_storage_info_t *q_storage[RTE_MAX_LCORE];
+		/**Egress*/
 		struct qbman_result *cscn;
 	};
 	struct rte_event ev;
@@ -176,7 +181,7 @@ struct __rte_cache_aligned dpaa2_queue {
 	struct dpaa2_queue *tx_conf_queue;
 	int32_t eventfd;	/*!< Event Fd of this queue */
 	uint16_t nb_desc;
-	uint16_t resv;
+	uint16_t tm_sw_td;	/*!< TM software taildrop */
 	uint64_t offloads;
 	uint64_t lpbk_cntx;
 	uint8_t data_stashing_off;
@@ -186,6 +191,38 @@ struct swp_active_dqs {
 	struct qbman_result *global_active_dqs;
 	uint64_t reserved[7];
 };
+
+#define dpaa2_queue_storage_alloc(q, num) \
+({ \
+	int ret = 0, i; \
+	\
+	for (i = 0; i < (num); i++) { \
+		(q)->q_storage[i] = rte_zmalloc(NULL, \
+			sizeof(struct queue_storage_info_t), \
+			RTE_CACHE_LINE_SIZE); \
+		if (!(q)->q_storage[i]) { \
+			ret = -ENOBUFS; \
+			break; \
+		} \
+		ret = dpaa2_alloc_dq_storage((q)->q_storage[i]); \
+		if (ret) \
+			break; \
+	} \
+	ret; \
+})
+
+#define dpaa2_queue_storage_free(q, num) \
+({ \
+	int i; \
+	\
+	for (i = 0; i < (num); i++) { \
+		if ((q)->q_storage[i]) { \
+			dpaa2_free_dq_storage((q)->q_storage[i]); \
+			rte_free((q)->q_storage[i]); \
+			(q)->q_storage[i] = NULL; \
+		} \
+	} \
+})
 
 #define NUM_MAX_SWP 64
 
@@ -326,6 +363,7 @@ enum qbman_fd_format {
 #define DPAA2_GET_FD_BPID(fd)	(((fd)->simple.bpid_offset & 0x00003FFF))
 #define DPAA2_GET_FD_IVP(fd)   (((fd)->simple.bpid_offset & 0x00004000) >> 14)
 #define DPAA2_GET_FD_OFFSET(fd)	(((fd)->simple.bpid_offset & 0x0FFF0000) >> 16)
+#define DPAA2_GET_FD_DROPP(fd)  (((fd)->simple.ctrl & 0x07000000) >> 24)
 #define DPAA2_GET_FD_FRC(fd)   ((fd)->simple.frc)
 #define DPAA2_GET_FD_FLC(fd) \
 	(((uint64_t)((fd)->simple.flc_hi) << 32) + (fd)->simple.flc_lo)
@@ -366,83 +404,63 @@ enum qbman_fd_format {
  */
 #define DPAA2_EQ_RESP_ALWAYS		1
 
-/* Various structures representing contiguous memory maps */
-struct dpaa2_memseg {
-	TAILQ_ENTRY(dpaa2_memseg) next;
-	char *vaddr;
-	rte_iova_t iova;
-	size_t len;
-};
-
-#ifdef RTE_LIBRTE_DPAA2_USE_PHYS_IOVA
-extern uint8_t dpaa2_virt_mode;
-static void *dpaa2_mem_ptov(phys_addr_t paddr) __rte_unused;
-
-static void *dpaa2_mem_ptov(phys_addr_t paddr)
+static inline uint64_t
+dpaa2_mem_va_to_iova(void *va)
 {
-	void *va;
+	if (likely(rte_eal_iova_mode() == RTE_IOVA_VA))
+		return (uint64_t)va;
 
-	if (dpaa2_virt_mode)
-		return (void *)(size_t)paddr;
-
-	va = (void *)dpaax_iova_table_get_va(paddr);
-	if (likely(va != NULL))
-		return va;
-
-	/* If not, Fallback to full memseg list searching */
-	va = rte_mem_iova2virt(paddr);
-
-	return va;
+	return rte_fslmc_mem_vaddr_to_iova(va);
 }
 
-static phys_addr_t dpaa2_mem_vtop(uint64_t vaddr) __rte_unused;
-
-static phys_addr_t dpaa2_mem_vtop(uint64_t vaddr)
+static inline void *
+dpaa2_mem_iova_to_va(uint64_t iova)
 {
-	const struct rte_memseg *memseg;
+	if (likely(rte_eal_iova_mode() == RTE_IOVA_VA))
+		return (void *)(uintptr_t)iova;
 
-	if (dpaa2_virt_mode)
-		return vaddr;
-
-	memseg = rte_mem_virt2memseg((void *)(uintptr_t)vaddr, NULL);
-	if (memseg)
-		return memseg->iova + RTE_PTR_DIFF(vaddr, memseg->addr);
-	return (size_t)NULL;
+	return rte_fslmc_mem_iova_to_vaddr(iova);
 }
-
-/**
- * When we are using Physical addresses as IO Virtual Addresses,
- * Need to call conversion routines dpaa2_mem_vtop & dpaa2_mem_ptov
- * wherever required.
- * These routines are called with help of below MACRO's
- */
 
 #define DPAA2_MBUF_VADDR_TO_IOVA(mbuf) ((mbuf)->buf_iova)
-
-/**
- * macro to convert Virtual address to IOVA
- */
-#define DPAA2_VADDR_TO_IOVA(_vaddr) dpaa2_mem_vtop((size_t)(_vaddr))
-
-/**
- * macro to convert IOVA to Virtual address
- */
-#define DPAA2_IOVA_TO_VADDR(_iova) dpaa2_mem_ptov((size_t)(_iova))
-
-/**
- * macro to convert modify the memory containing IOVA to Virtual address
- */
+#define DPAA2_VADDR_TO_IOVA(_vaddr) \
+	dpaa2_mem_va_to_iova((void *)(uintptr_t)_vaddr)
+#define DPAA2_IOVA_TO_VADDR(_iova) \
+	dpaa2_mem_iova_to_va((uint64_t)_iova)
 #define DPAA2_MODIFY_IOVA_TO_VADDR(_mem, _type) \
-	{_mem = (_type)(dpaa2_mem_ptov((size_t)(_mem))); }
+	{_mem = (_type)DPAA2_IOVA_TO_VADDR(_mem); }
 
-#else	/* RTE_LIBRTE_DPAA2_USE_PHYS_IOVA */
+#define DPAA2_VAMODE_VADDR_TO_IOVA(_vaddr) ((uint64_t)_vaddr)
+#define DPAA2_VAMODE_IOVA_TO_VADDR(_iova) ((void *)_iova)
+#define DPAA2_VAMODE_MODIFY_IOVA_TO_VADDR(_mem, _type) \
+	{_mem = (_type)(_mem); }
 
-#define DPAA2_MBUF_VADDR_TO_IOVA(mbuf) ((mbuf)->buf_addr)
-#define DPAA2_VADDR_TO_IOVA(_vaddr) (phys_addr_t)(_vaddr)
-#define DPAA2_IOVA_TO_VADDR(_iova) (void *)(_iova)
-#define DPAA2_MODIFY_IOVA_TO_VADDR(_mem, _type)
+#define DPAA2_PAMODE_VADDR_TO_IOVA(_vaddr) \
+	rte_fslmc_mem_vaddr_to_iova((void *)_vaddr)
+#define DPAA2_PAMODE_IOVA_TO_VADDR(_iova) \
+	rte_fslmc_mem_iova_to_vaddr((uint64_t)_iova)
+#define DPAA2_PAMODE_MODIFY_IOVA_TO_VADDR(_mem, _type) \
+	{_mem = (_type)rte_fslmc_mem_iova_to_vaddr(_mem); }
 
-#endif /* RTE_LIBRTE_DPAA2_USE_PHYS_IOVA */
+static inline uint64_t
+dpaa2_mem_va_to_iova_check(void *va, uint64_t size)
+{
+	uint64_t iova = rte_fslmc_cold_mem_vaddr_to_iova(va, size);
+
+	if (iova == RTE_BAD_IOVA)
+		return RTE_BAD_IOVA;
+
+	/** Double check the iova is valid.*/
+	if (iova != rte_mem_virt2iova(va))
+		return RTE_BAD_IOVA;
+
+	return iova;
+}
+
+#define DPAA2_VADDR_TO_IOVA_AND_CHECK(_vaddr, size) \
+	dpaa2_mem_va_to_iova_check(_vaddr, size)
+#define DPAA2_IOVA_TO_VADDR_AND_CHECK(_iova, size) \
+	rte_fslmc_cold_mem_iova_to_vaddr(_iova, size)
 
 static inline
 int check_swp_active_dqs(uint16_t dpio_index)

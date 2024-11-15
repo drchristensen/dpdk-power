@@ -19,6 +19,42 @@ const struct sg_ops_s *get_sg_ops(void)
 	return sg_ops;
 }
 
+/*
+ *
+ */
+static struct meter_ops_s *meter_ops;
+
+void register_meter_ops(struct meter_ops_s *ops)
+{
+	meter_ops = ops;
+}
+
+const struct meter_ops_s *get_meter_ops(void)
+{
+	if (meter_ops == NULL)
+		meter_init();
+
+	return meter_ops;
+}
+
+/*
+ *
+ */
+static const struct ntnic_filter_ops *ntnic_filter_ops;
+
+void register_ntnic_filter_ops(const struct ntnic_filter_ops *ops)
+{
+	ntnic_filter_ops = ops;
+}
+
+const struct ntnic_filter_ops *get_ntnic_filter_ops(void)
+{
+	if (ntnic_filter_ops == NULL)
+		ntnic_filter_init();
+
+	return ntnic_filter_ops;
+}
+
 static struct link_ops_s *link_100g_ops;
 
 void register_100g_link_ops(struct link_ops_s *ops)
@@ -45,6 +81,21 @@ const struct port_ops *get_port_ops(void)
 	if (port_ops == NULL)
 		port_init();
 	return port_ops;
+}
+
+static const struct nt4ga_stat_ops *nt4ga_stat_ops;
+
+void register_nt4ga_stat_ops(const struct nt4ga_stat_ops *ops)
+{
+	nt4ga_stat_ops = ops;
+}
+
+const struct nt4ga_stat_ops *get_nt4ga_stat_ops(void)
+{
+	if (nt4ga_stat_ops == NULL)
+		nt4ga_stat_ops_init();
+
+	return nt4ga_stat_ops;
 }
 
 static const struct adapter_ops *adapter_ops;
@@ -118,6 +169,21 @@ const struct flow_backend_ops *get_flow_backend_ops(void)
 	return flow_backend_ops;
 }
 
+static const struct profile_inline_ops *profile_inline_ops;
+
+void register_profile_inline_ops(const struct profile_inline_ops *ops)
+{
+	profile_inline_ops = ops;
+}
+
+const struct profile_inline_ops *get_profile_inline_ops(void)
+{
+	if (profile_inline_ops == NULL)
+		profile_inline_init();
+
+	return profile_inline_ops;
+}
+
 static const struct flow_filter_ops *flow_filter_ops;
 
 void register_flow_filter_ops(const struct flow_filter_ops *ops)
@@ -131,4 +197,49 @@ const struct flow_filter_ops *get_flow_filter_ops(void)
 		init_flow_filter();
 
 	return flow_filter_ops;
+}
+
+static const struct rte_flow_fp_ops *dev_fp_flow_ops;
+
+void register_dev_fp_flow_ops(const struct rte_flow_fp_ops *ops)
+{
+	dev_fp_flow_ops = ops;
+}
+
+const struct rte_flow_fp_ops *get_dev_fp_flow_ops(void)
+{
+	if (dev_fp_flow_ops == NULL)
+		dev_fp_flow_init();
+
+	return dev_fp_flow_ops;
+}
+
+static const struct rte_flow_ops *dev_flow_ops;
+
+void register_dev_flow_ops(const struct rte_flow_ops *ops)
+{
+	dev_flow_ops = ops;
+}
+
+const struct rte_flow_ops *get_dev_flow_ops(void)
+{
+	if (dev_flow_ops == NULL)
+		dev_flow_init();
+
+	return dev_flow_ops;
+}
+
+static struct ntnic_xstats_ops *ntnic_xstats_ops;
+
+void register_ntnic_xstats_ops(struct ntnic_xstats_ops *ops)
+{
+	ntnic_xstats_ops = ops;
+}
+
+struct ntnic_xstats_ops *get_ntnic_xstats_ops(void)
+{
+	if (ntnic_xstats_ops == NULL)
+		ntnic_xstats_ops_init();
+
+	return ntnic_xstats_ops;
 }

@@ -429,12 +429,45 @@ with them once they're registered.
 Per-lcore and Shared Variables
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-.. note::
+By default, static variables, memory blocks allocated on the DPDK heap,
+and other types of memory are shared by all DPDK threads.
 
-    lcore refers to a logical execution unit of the processor, sometimes called a hardware *thread*.
+An application, a DPDK library, or a PMD may opt to keep per-thread state.
 
-Shared variables are the default behavior.
-Per-lcore variables are implemented using *Thread Local Storage* (TLS) to provide per-thread local storage.
+Per-thread data can be maintained using either :doc:`lcore variables <lcore_var>`,
+*thread-local storage (TLS)* (see ``rte_per_lcore.h``),
+or a static array of ``RTE_MAX_LCORE`` elements, indexed by ``rte_lcore_id()``.
+These methods allow per-lcore data to be largely internal to the module
+and not directly exposed in its API.
+Another approach is to explicitly handle per-thread aspects in the API
+(e.g., the ports in the eventdev API).
+
+Lcore variables are suitable for small objects that are statically allocated
+at the time of module or application initialization.
+An lcore variable takes on one value for each lcore ID-equipped thread
+(i.e., for both EAL threads and registered non-EAL threads,
+in total ``RTE_MAX_LCORE`` instances).
+The lifetime of lcore variables is independent of the owning threads
+and can, therefore, be initialized before the threads are created.
+
+Variables with thread-local storage are allocated when the thread is created
+and exist until the thread terminates.
+These are applicable for every thread in the process.
+Only very small objects should be allocated in TLS,
+as large TLS objects can significantly slow down thread creation
+and may unnecessarily increase the memory footprint of applications
+that extensively use unregistered threads.
+
+A common but now largely obsolete DPDK pattern is to use a static array
+sized according to the maximum number of lcore ID-equipped threads
+(i.e., with ``RTE_MAX_LCORE`` elements).
+To avoid *false sharing*, each element must be both cache-aligned
+and include an ``RTE_CACHE_GUARD``.
+This extensive use of padding causes internal fragmentation (i.e., unused space)
+and reduces cache hit rates.
+
+For more discussions on per-lcore state,
+refer to the :doc:`lcore variables documentation <lcore_var>`.
 
 Logs
 ~~~~
@@ -851,9 +884,9 @@ Signal Safety
   Other functions are not signal safe because they use one or more
   library routines that are not themselves signal safe.
   For example, calling ``rte_panic()`` is not safe in a signal handler
-  because it uses ``rte_log()`` and ``rte_log()`` calls the
-  ``syslog()`` library function which is in the list of
-  signal safe functions in
+  because it uses ``rte_log()`` and ``rte_log()`` may call ``vfprintf()`` or
+  ``syslog()`` library functions which are not in the list of
+  signal safe functions
   `Signal-Safety manual page <https://man7.org/linux/man-pages/man7/signal-safety.7.html>`_.
 
   The set of functions that are expected to be async-signal-safe in DPDK

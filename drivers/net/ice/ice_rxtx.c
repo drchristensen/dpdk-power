@@ -747,6 +747,7 @@ ice_tx_queue_start(struct rte_eth_dev *dev, uint16_t tx_queue_id)
 	int err;
 	struct ice_vsi *vsi;
 	struct ice_hw *hw;
+	struct ice_pf *pf;
 	struct ice_aqc_add_tx_qgrp *txq_elem;
 	struct ice_tlan_ctx tx_ctx;
 	int buf_len;
@@ -777,6 +778,7 @@ ice_tx_queue_start(struct rte_eth_dev *dev, uint16_t tx_queue_id)
 
 	vsi = txq->vsi;
 	hw = ICE_VSI_TO_HW(vsi);
+	pf = ICE_VSI_TO_PF(vsi);
 
 	memset(&tx_ctx, 0, sizeof(tx_ctx));
 	txq_elem->num_txqs = 1;
@@ -811,6 +813,14 @@ ice_tx_queue_start(struct rte_eth_dev *dev, uint16_t tx_queue_id)
 	}
 	/* store the schedule node id */
 	txq->q_teid = txq_elem->txqs[0].q_teid;
+
+	/* move the queue to correct position in hierarchy, if explicit hierarchy configured */
+	if (pf->tm_conf.committed)
+		if (ice_tm_setup_txq_node(pf, hw, tx_queue_id, txq->q_teid) != 0) {
+			PMD_DRV_LOG(ERR, "Failed to set up txq traffic management node");
+			rte_free(txq_elem);
+			return -EIO;
+		}
 
 	dev->data->tx_queue_state[tx_queue_id] = RTE_ETH_QUEUE_STATE_STARTED;
 
@@ -1139,6 +1149,10 @@ ice_fdir_tx_queue_stop(struct rte_eth_dev *dev, uint16_t tx_queue_id)
 			    tx_queue_id);
 		return -EINVAL;
 	}
+	if (txq->qtx_tail == NULL) {
+		PMD_DRV_LOG(INFO, "TX queue %u not started", tx_queue_id);
+		return 0;
+	}
 	vsi = txq->vsi;
 
 	q_ids[0] = txq->reg_idx;
@@ -1153,6 +1167,7 @@ ice_fdir_tx_queue_stop(struct rte_eth_dev *dev, uint16_t tx_queue_id)
 	}
 
 	txq->tx_rel_mbufs(txq);
+	txq->qtx_tail = NULL;
 
 	return 0;
 }

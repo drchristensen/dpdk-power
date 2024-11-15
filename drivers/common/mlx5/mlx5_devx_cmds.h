@@ -267,10 +267,11 @@ struct mlx5_hca_attr {
 	struct mlx5_hca_flow_attr flow;
 	struct mlx5_hca_flex_attr flex;
 	struct mlx5_hca_crypto_mmo_attr crypto_mmo;
-	int log_max_qp_sz;
-	int log_max_cq_sz;
-	int log_max_qp;
-	int log_max_cq;
+	uint8_t log_max_wq_sz;
+	uint8_t log_max_qp_sz;
+	uint8_t log_max_cq_sz;
+	uint8_t log_max_qp;
+	uint8_t log_max_cq;
 	uint32_t log_max_pd;
 	uint32_t log_max_mrw_sz;
 	uint32_t log_max_srq;

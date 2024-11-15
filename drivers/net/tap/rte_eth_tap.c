@@ -15,7 +15,6 @@
 #include <rte_net.h>
 #include <rte_debug.h>
 #include <rte_ip.h>
-#include <rte_string_fns.h>
 #include <rte_ethdev.h>
 #include <rte_errno.h>
 #include <rte_cycles.h>
@@ -1110,7 +1109,8 @@ tap_dev_close(struct rte_eth_dev *dev)
 	struct pmd_process_private *process_private = dev->process_private;
 
 	if (rte_eal_process_type() != RTE_PROC_PRIMARY) {
-		rte_free(dev->process_private);
+		free(dev->process_private);
+		dev->process_private = NULL;
 		if (tap_devices_count == 1)
 			rte_mp_action_unregister(TAP_MP_REQ_START_RXTX);
 		tap_devices_count--;
@@ -1171,7 +1171,9 @@ tap_dev_close(struct rte_eth_dev *dev)
 		close(internals->ioctl_sock);
 		internals->ioctl_sock = -1;
 	}
-	rte_free(dev->process_private);
+	free(dev->process_private);
+	dev->process_private = NULL;
+
 	if (tap_devices_count == 1)
 		rte_mp_action_unregister(TAP_MP_KEY);
 	tap_devices_count--;
@@ -1395,11 +1397,13 @@ tap_mac_set(struct rte_eth_dev *dev, struct rte_ether_addr *mac_addr)
 			mac_addr))
 		mode = LOCAL_AND_REMOTE;
 	ifr.ifr_hwaddr.sa_family = AF_LOCAL;
-	rte_memcpy(ifr.ifr_hwaddr.sa_data, mac_addr, RTE_ETHER_ADDR_LEN);
+
+	rte_ether_addr_copy(mac_addr, (struct rte_ether_addr *)&ifr.ifr_hwaddr.sa_data);
 	ret = tap_ioctl(pmd, SIOCSIFHWADDR, &ifr, 1, mode);
 	if (ret < 0)
 		return ret;
-	rte_memcpy(&pmd->eth_addr, mac_addr, RTE_ETHER_ADDR_LEN);
+
+	rte_ether_addr_copy(mac_addr, &pmd->eth_addr);
 
 #ifdef HAVE_TCA_FLOWER
 	if (pmd->remote_if_index && !pmd->flow_isolate) {
@@ -1922,14 +1926,13 @@ eth_dev_tap_create(struct rte_vdev_device *vdev, const char *tap_name,
 		goto error_exit_nodev;
 	}
 
-	process_private = (struct pmd_process_private *)
-		rte_zmalloc_socket(tap_name, sizeof(struct pmd_process_private),
-			RTE_CACHE_LINE_SIZE, dev->device->numa_node);
-
+	process_private = malloc(sizeof(struct pmd_process_private));
 	if (process_private == NULL) {
 		TAP_LOG(ERR, "Failed to alloc memory for process private");
 		return -1;
 	}
+	memset(process_private, 0, sizeof(struct pmd_process_private));
+
 	pmd = dev->data->dev_private;
 	dev->process_private = process_private;
 	pmd->dev = dev;
@@ -1987,7 +1990,7 @@ eth_dev_tap_create(struct rte_vdev_device *vdev, const char *tap_name,
 		if (rte_is_zero_ether_addr(mac_addr))
 			rte_eth_random_addr((uint8_t *)&pmd->eth_addr);
 		else
-			rte_memcpy(&pmd->eth_addr, mac_addr, sizeof(*mac_addr));
+			rte_ether_addr_copy(mac_addr, &pmd->eth_addr);
 	}
 
 	/*
@@ -2010,8 +2013,7 @@ eth_dev_tap_create(struct rte_vdev_device *vdev, const char *tap_name,
 	if (pmd->type == ETH_TUNTAP_TYPE_TAP) {
 		memset(&ifr, 0, sizeof(struct ifreq));
 		ifr.ifr_hwaddr.sa_family = AF_LOCAL;
-		rte_memcpy(ifr.ifr_hwaddr.sa_data, &pmd->eth_addr,
-				RTE_ETHER_ADDR_LEN);
+		rte_ether_addr_copy(&pmd->eth_addr, (struct rte_ether_addr *)&ifr.ifr_hwaddr.sa_data);
 		if (tap_ioctl(pmd, SIOCSIFHWADDR, &ifr, 0, LOCAL_ONLY) < 0)
 			goto error_exit;
 	}
@@ -2070,8 +2072,8 @@ eth_dev_tap_create(struct rte_vdev_device *vdev, const char *tap_name,
 				pmd->name, pmd->remote_iface);
 			goto error_remote;
 		}
-		rte_memcpy(&pmd->eth_addr, ifr.ifr_hwaddr.sa_data,
-			   RTE_ETHER_ADDR_LEN);
+
+		rte_ether_addr_copy((struct rte_ether_addr *)&ifr.ifr_hwaddr.sa_data, &pmd->eth_addr);
 		/* The desired MAC is already in ifreq after SIOCGIFHWADDR. */
 		if (tap_ioctl(pmd, SIOCSIFHWADDR, &ifr, 0, LOCAL_ONLY) < 0) {
 			TAP_LOG(ERR, "%s: failed to get %s MAC address.",
@@ -2435,16 +2437,13 @@ rte_pmd_tap_probe(struct rte_vdev_device *dev)
 			TAP_LOG(ERR, "Primary process is missing");
 			return -1;
 		}
-		eth_dev->process_private = (struct pmd_process_private *)
-			rte_zmalloc_socket(name,
-				sizeof(struct pmd_process_private),
-				RTE_CACHE_LINE_SIZE,
-				eth_dev->device->numa_node);
+		eth_dev->process_private = malloc(sizeof(struct pmd_process_private));
 		if (eth_dev->process_private == NULL) {
 			TAP_LOG(ERR,
 				"Failed to alloc memory for process private");
 			return -1;
 		}
+		memset(eth_dev->process_private, 0, sizeof(struct pmd_process_private));
 
 		ret = tap_mp_attach_queues(name, eth_dev);
 		if (ret != 0)

@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
  *   Copyright (c) 2016 Freescale Semiconductor, Inc. All rights reserved.
- *   Copyright 2016-2021 NXP
+ *   Copyright 2016-2024 NXP
  *
  */
 
@@ -25,6 +25,7 @@
 #include "dpaa2_pmd_logs.h"
 #include "dpaa2_ethdev.h"
 #include "base/dpaa2_hw_dpni_annot.h"
+#include "dpaa2_parse_dump.h"
 
 static inline uint32_t __rte_hot
 dpaa2_dev_rx_parse_slow(struct rte_mbuf *mbuf,
@@ -56,6 +57,9 @@ dpaa2_dev_rx_parse_new(struct rte_mbuf *m, const struct qbman_fd *fd,
 	uint16_t frc = DPAA2_GET_FD_FRC_PARSE_SUM(fd);
 	struct dpaa2_annot_hdr *annotation =
 			(struct dpaa2_annot_hdr *)hw_annot_addr;
+
+	if (unlikely(dpaa2_print_parser_result))
+		dpaa2_print_parse_result(annotation);
 
 	m->packet_type = RTE_PTYPE_UNKNOWN;
 	switch (frc) {
@@ -252,6 +256,9 @@ dpaa2_dev_rx_parse(struct rte_mbuf *mbuf, void *hw_annot_addr)
 	else
 		mbuf->ol_flags |= RTE_MBUF_F_RX_L4_CKSUM_GOOD;
 
+	if (unlikely(dpaa2_print_parser_result))
+		dpaa2_print_parse_result(annotation);
+
 	if (dpaa2_enable_ts[mbuf->port]) {
 		*dpaa2_timestamp_dynfield(mbuf) = annotation->word2;
 		mbuf->ol_flags |= dpaa2_timestamp_rx_dynflag;
@@ -381,6 +388,7 @@ eth_fd_to_mbuf(const struct qbman_fd *fd,
 	mbuf->pkt_len = mbuf->data_len;
 	mbuf->port = port_id;
 	mbuf->next = NULL;
+	mbuf->hash.sched.color = DPAA2_GET_FD_DROPP(fd);
 	rte_mbuf_refcnt_set(mbuf, 1);
 #ifdef RTE_LIBRTE_MEMPOOL_DEBUG
 	rte_mempool_check_cookies(rte_mempool_from_obj((void *)mbuf),
@@ -647,7 +655,7 @@ dump_err_pkts(struct dpaa2_queue *dpaa2_q)
 	}
 	swp = DPAA2_PER_LCORE_PORTAL;
 
-	dq_storage = dpaa2_q->q_storage[lcore_id].dq_storage[0];
+	dq_storage = dpaa2_q->q_storage[lcore_id]->dq_storage[0];
 	qbman_pull_desc_clear(&pulldesc);
 	qbman_pull_desc_set_fq(&pulldesc, fqid);
 	qbman_pull_desc_set_storage(&pulldesc, dq_storage,
@@ -716,7 +724,7 @@ uint16_t
 dpaa2_dev_prefetch_rx(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 {
 	/* Function receive frames for a given device and VQ*/
-	struct dpaa2_queue *dpaa2_q = (struct dpaa2_queue *)queue;
+	struct dpaa2_queue *dpaa2_q = queue;
 	struct qbman_result *dq_storage, *dq_storage1 = NULL;
 	uint32_t fqid = dpaa2_q->fqid;
 	int ret, num_rx = 0, pull_size;
@@ -724,9 +732,11 @@ dpaa2_dev_prefetch_rx(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 	struct qbman_swp *swp;
 	const struct qbman_fd *fd;
 	struct qbman_pull_desc pulldesc;
-	struct queue_storage_info_t *q_storage = dpaa2_q->q_storage;
+	struct queue_storage_info_t *q_storage;
 	struct rte_eth_dev_data *eth_data = dpaa2_q->eth_data;
 	struct dpaa2_dev_priv *priv = eth_data->dev_private;
+
+	q_storage = dpaa2_q->q_storage[rte_lcore_id()];
 
 	if (unlikely(dpaa2_enable_err_queue))
 		dump_err_pkts(priv->rx_err_vq);
@@ -958,7 +968,7 @@ uint16_t
 dpaa2_dev_rx(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 {
 	/* Function receive frames for a given device and VQ */
-	struct dpaa2_queue *dpaa2_q = (struct dpaa2_queue *)queue;
+	struct dpaa2_queue *dpaa2_q = queue;
 	struct qbman_result *dq_storage;
 	uint32_t fqid = dpaa2_q->fqid;
 	int ret, num_rx = 0, next_pull = nb_pkts, num_pulled;
@@ -984,7 +994,7 @@ dpaa2_dev_rx(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 	swp = DPAA2_PER_LCORE_PORTAL;
 
 	do {
-		dq_storage = dpaa2_q->q_storage->dq_storage[0];
+		dq_storage = dpaa2_q->q_storage[0]->dq_storage[0];
 		qbman_pull_desc_clear(&pulldesc);
 		qbman_pull_desc_set_fq(&pulldesc, fqid);
 		qbman_pull_desc_set_storage(&pulldesc, dq_storage,
@@ -1115,7 +1125,7 @@ uint16_t dpaa2_dev_tx_conf(void *queue)
 	swp = DPAA2_PER_LCORE_PORTAL;
 
 	do {
-		dq_storage = dpaa2_q->q_storage->dq_storage[0];
+		dq_storage = dpaa2_q->q_storage[0]->dq_storage[0];
 		qbman_pull_desc_clear(&pulldesc);
 		qbman_pull_desc_set_fq(&pulldesc, fqid);
 		qbman_pull_desc_set_storage(&pulldesc, dq_storage,
@@ -1290,8 +1300,11 @@ dpaa2_dev_tx(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 		while (qbman_result_SCN_state(dpaa2_q->cscn)) {
 			retry_count++;
 			/* Retry for some time before giving up */
-			if (retry_count > CONG_RETRY_COUNT)
+			if (retry_count > CONG_RETRY_COUNT) {
+				if (dpaa2_q->tm_sw_td)
+					goto sw_td;
 				goto skip_tx;
+			}
 		}
 
 		frames_to_send = (nb_pkts > dpaa2_eqcr_size) ?
@@ -1482,6 +1495,25 @@ skip_tx:
 		if (buf_to_free[loop].pkt_id < num_tx)
 			rte_pktmbuf_free_seg(buf_to_free[loop].seg);
 	}
+
+	return num_tx;
+sw_td:
+	loop = 0;
+	while (loop < num_tx) {
+		if (unlikely(RTE_MBUF_HAS_EXTBUF(*bufs)))
+			rte_pktmbuf_free(*bufs);
+		bufs++;
+		loop++;
+	}
+
+	/* free the pending buffers */
+	while (nb_pkts) {
+		rte_pktmbuf_free(*bufs);
+		bufs++;
+		nb_pkts--;
+		num_tx++;
+	}
+	dpaa2_q->tx_pkts += num_tx;
 
 	return num_tx;
 }
@@ -1954,12 +1986,13 @@ dpaa2_dev_loopback_rx(void *queue,
 	struct qbman_fd *fd[DPAA2_LX2_DQRR_RING_SIZE];
 	struct qbman_pull_desc pulldesc;
 	struct qbman_eq_desc eqdesc;
-	struct queue_storage_info_t *q_storage = dpaa2_q->q_storage;
+	struct queue_storage_info_t *q_storage;
 	struct rte_eth_dev_data *eth_data = dpaa2_q->eth_data;
 	struct dpaa2_dev_priv *priv = eth_data->dev_private;
 	struct dpaa2_queue *tx_q = priv->tx_vq[0];
 	/* todo - currently we are using 1st TX queue only for loopback*/
 
+	q_storage = dpaa2_q->q_storage[rte_lcore_id()];
 	if (unlikely(!DPAA2_PER_LCORE_ETHRX_DPIO)) {
 		ret = dpaa2_affine_qbman_ethrx_swp();
 		if (ret) {

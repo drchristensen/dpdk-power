@@ -2,6 +2,8 @@
  * Copyright (c) 2022 NVIDIA Corporation & Affiliates
  */
 
+#include <rte_bitops.h>
+
 #include "mlx5dr_internal.h"
 
 #define GTP_PDU_SC	0x85
@@ -380,6 +382,27 @@ mlx5dr_definer_ptype_l4_set(struct mlx5dr_definer_fc *fc,
 			    uint8_t *tag)
 {
 	bool inner = (fc->fname == MLX5DR_DEFINER_FNAME_PTYPE_L4_I);
+	const struct rte_flow_item_ptype *v = item_spec;
+	uint32_t packet_type = v->packet_type &
+		(inner ? RTE_PTYPE_INNER_L4_MASK : RTE_PTYPE_L4_MASK);
+	uint8_t l4_type = STE_NO_L4;
+
+	if (packet_type == (inner ? RTE_PTYPE_INNER_L4_TCP : RTE_PTYPE_L4_TCP))
+		l4_type = STE_TCP;
+	else if (packet_type == (inner ? RTE_PTYPE_INNER_L4_UDP : RTE_PTYPE_L4_UDP))
+		l4_type = STE_UDP;
+	else if (packet_type == (inner ? RTE_PTYPE_INNER_L4_ESP : RTE_PTYPE_L4_ESP))
+		l4_type = STE_ESP;
+
+	DR_SET(tag, l4_type, fc->byte_off, fc->bit_off, fc->bit_mask);
+}
+
+static void
+mlx5dr_definer_ptype_l4_ext_set(struct mlx5dr_definer_fc *fc,
+				const void *item_spec,
+				uint8_t *tag)
+{
+	bool inner = (fc->fname == MLX5DR_DEFINER_FNAME_PTYPE_L4_EXT_I);
 	const struct rte_flow_item_ptype *v = item_spec;
 	uint32_t packet_type = v->packet_type &
 		(inner ? RTE_PTYPE_INNER_L4_MASK : RTE_PTYPE_L4_MASK);
@@ -1548,7 +1571,7 @@ mlx5dr_definer_conv_item_port(struct mlx5dr_definer_conv_data *cd,
 		fc->tag_set = &mlx5dr_definer_vport_set;
 		fc->tag_mask_set = &mlx5dr_definer_ones_set;
 		DR_CALC_SET_HDR(fc, registers, register_c_0);
-		fc->bit_off = __builtin_ctz(caps->wire_regc_mask);
+		fc->bit_off = rte_ctz32(caps->wire_regc_mask);
 		fc->bit_mask = caps->wire_regc_mask >> fc->bit_off;
 		fc->dr_ctx = cd->ctx;
 	} else {
@@ -2193,6 +2216,12 @@ mlx5dr_definer_conv_item_ptype(struct mlx5dr_definer_conv_data *cd,
 			fc->item_idx = item_idx;
 			fc->tag_set = &mlx5dr_definer_ptype_l4_set;
 			fc->tag_mask_set = &mlx5dr_definer_ones_set;
+			DR_CALC_SET(fc, eth_l2, l4_type_bwc, false);
+
+			fc = &cd->fc[DR_CALC_FNAME(PTYPE_L4_EXT, false)];
+			fc->item_idx = item_idx;
+			fc->tag_set = &mlx5dr_definer_ptype_l4_ext_set;
+			fc->tag_mask_set = &mlx5dr_definer_ones_set;
 			DR_CALC_SET(fc, eth_l2, l4_type, false);
 		}
 	}
@@ -2208,6 +2237,12 @@ mlx5dr_definer_conv_item_ptype(struct mlx5dr_definer_conv_data *cd,
 			fc = &cd->fc[DR_CALC_FNAME(PTYPE_L4, true)];
 			fc->item_idx = item_idx;
 			fc->tag_set = &mlx5dr_definer_ptype_l4_set;
+			fc->tag_mask_set = &mlx5dr_definer_ones_set;
+			DR_CALC_SET(fc, eth_l2, l4_type_bwc, true);
+
+			fc = &cd->fc[DR_CALC_FNAME(PTYPE_L4_EXT, true)];
+			fc->item_idx = item_idx;
+			fc->tag_set = &mlx5dr_definer_ptype_l4_ext_set;
 			fc->tag_mask_set = &mlx5dr_definer_ones_set;
 			DR_CALC_SET(fc, eth_l2, l4_type, true);
 		}
@@ -2666,8 +2701,8 @@ mlx5dr_definer_conv_item_geneve_opt(struct mlx5dr_definer_conv_data *cd,
 		fc->item_idx = item_idx;
 		fc->tag_set = &mlx5dr_definer_ones_set;
 		fc->byte_off = hl_ok_bit->dw_offset * DW_SIZE +
-				__builtin_clz(hl_ok_bit->dw_mask) / 8;
-		fc->bit_off = __builtin_ctz(hl_ok_bit->dw_mask);
+				rte_clz32(hl_ok_bit->dw_mask) / 8;
+		fc->bit_off = rte_ctz32(hl_ok_bit->dw_mask);
 		fc->bit_mask = 0x1;
 	}
 
@@ -4056,6 +4091,7 @@ mlx5dr_definer_matcher_range_init(struct mlx5dr_context *ctx,
 
 		if (i && ((is_range && !has_range) || (!is_range && has_range))) {
 			DR_LOG(ERR, "Using range and non range templates is not allowed");
+			rte_errno = EINVAL;
 			goto free_definers;
 		}
 

@@ -61,7 +61,7 @@ nfp_devarg_handle_int(const char *key,
 
 	*num = strtoul(value, &end_ptr, 10);
 	if (*num == ULONG_MAX) {
-		PMD_DRV_LOG(ERR, "%s: '%s' is not a valid param", key, value);
+		PMD_DRV_LOG(ERR, "%s: '%s' is not a valid param.", key, value);
 		return -ERANGE;
 	} else if (value == end_ptr) {
 		return -EPERM;
@@ -84,7 +84,7 @@ nfp_devarg_parse_bool_para(struct rte_kvargs *kvlist,
 		return 0;
 
 	if (count > 1) {
-		PMD_DRV_LOG(ERR, "Too much bool arguments: %s", key_match);
+		PMD_DRV_LOG(ERR, "Too much bool arguments: %s.", key_match);
 		return -EINVAL;
 	}
 
@@ -97,7 +97,7 @@ nfp_devarg_parse_bool_para(struct rte_kvargs *kvlist,
 	} else if (value == 0) {
 		*value_ret = false;
 	} else {
-		PMD_DRV_LOG(ERR, "The param does not work, the format is %s=0/1",
+		PMD_DRV_LOG(ERR, "The param does not work, the format is %s=0/1.",
 				key_match);
 		return -EINVAL;
 	}
@@ -389,7 +389,7 @@ nfp_net_start(struct rte_eth_dev *dev)
 	if (dev->data->dev_conf.intr_conf.rxq != 0) {
 		if (app_fw_nic->multiport) {
 			PMD_INIT_LOG(ERR, "PMD rx interrupt is not supported "
-					"with NFP multiport PF");
+					"with NFP multiport PF.");
 				return -EINVAL;
 		}
 
@@ -403,7 +403,7 @@ nfp_net_start(struct rte_eth_dev *dev)
 
 			if (dev->data->nb_rx_queues > 1) {
 				PMD_INIT_LOG(ERR, "PMD rx interrupt only "
-						"supports 1 queue with UIO");
+						"supports 1 queue with UIO.");
 				return -EIO;
 			}
 		}
@@ -418,7 +418,7 @@ nfp_net_start(struct rte_eth_dev *dev)
 
 	/* Checking MTU set */
 	if (dev->data->mtu > net_hw->flbufsz) {
-		PMD_INIT_LOG(ERR, "MTU (%u) can't be larger than the current NFP_FRAME_SIZE (%u)",
+		PMD_INIT_LOG(ERR, "MTU (%u) can not be larger than the current NFP_FRAME_SIZE (%u).",
 				dev->data->mtu, net_hw->flbufsz);
 		return -ERANGE;
 	}
@@ -443,13 +443,6 @@ nfp_net_start(struct rte_eth_dev *dev)
 	update |= NFP_NET_CFG_UPDATE_GEN | NFP_NET_CFG_UPDATE_RING;
 
 	txmode = &dev->data->dev_conf.txmode;
-	/* Enable vxlan */
-	if ((txmode->offloads & RTE_ETH_TX_OFFLOAD_VXLAN_TNL_TSO) != 0) {
-		if ((hw->cap & NFP_NET_CFG_CTRL_VXLAN) != 0) {
-			new_ctrl |= NFP_NET_CFG_CTRL_VXLAN;
-			update |= NFP_NET_CFG_UPDATE_VXLAN;
-		}
-	}
 
 	if ((hw->cap & NFP_NET_CFG_CTRL_RINGCFG) != 0)
 		new_ctrl |= NFP_NET_CFG_CTRL_RINGCFG;
@@ -573,7 +566,7 @@ nfp_net_beat_timer(void *arg)
 	/* Beat once per second. */
 	if (rte_eal_alarm_set(1000 * 1000, nfp_net_beat_timer,
 			(void *)multi_pf) < 0) {
-		PMD_DRV_LOG(ERR, "Error setting alarm");
+		PMD_DRV_LOG(ERR, "Error setting alarm.");
 	}
 }
 
@@ -620,7 +613,7 @@ nfp_net_keepalive_start(struct nfp_multi_pf *multi_pf)
 {
 	if (rte_eal_alarm_set(1000 * 1000, nfp_net_beat_timer,
 			(void *)multi_pf) < 0) {
-		PMD_DRV_LOG(ERR, "Error setting alarm");
+		PMD_DRV_LOG(ERR, "Error setting alarm.");
 		return -EIO;
 	}
 
@@ -854,34 +847,41 @@ nfp_udp_tunnel_port_add(struct rte_eth_dev *dev,
 {
 	int ret;
 	uint32_t idx;
+	uint32_t ctrl;
+	struct nfp_hw *hw;
 	uint16_t vxlan_port;
-	struct nfp_net_hw *hw;
+	struct nfp_net_hw *net_hw;
 	enum rte_eth_tunnel_type tnl_type;
 
-	hw = dev->data->dev_private;
+	net_hw = dev->data->dev_private;
 	vxlan_port = tunnel_udp->udp_port;
 	tnl_type   = tunnel_udp->prot_type;
 
 	if (tnl_type != RTE_ETH_TUNNEL_TYPE_VXLAN) {
-		PMD_DRV_LOG(ERR, "Not VXLAN tunnel");
+		PMD_DRV_LOG(ERR, "Not VXLAN tunnel.");
 		return -ENOTSUP;
 	}
 
-	ret = nfp_net_find_vxlan_idx(hw, vxlan_port, &idx);
+	ret = nfp_net_find_vxlan_idx(net_hw, vxlan_port, &idx);
 	if (ret != 0) {
-		PMD_DRV_LOG(ERR, "Failed find valid vxlan idx");
+		PMD_DRV_LOG(ERR, "Failed find valid vxlan idx.");
 		return -EINVAL;
 	}
 
-	if (hw->vxlan_usecnt[idx] == 0) {
-		ret = nfp_net_set_vxlan_port(hw, idx, vxlan_port);
+	if (net_hw->vxlan_usecnt[idx] == 0) {
+		hw = &net_hw->super;
+		ctrl = hw->ctrl | NFP_NET_CFG_CTRL_VXLAN;
+
+		ret = nfp_net_set_vxlan_port(net_hw, idx, vxlan_port, ctrl);
 		if (ret != 0) {
-			PMD_DRV_LOG(ERR, "Failed set vxlan port");
+			PMD_DRV_LOG(ERR, "Failed set vxlan port.");
 			return -EINVAL;
 		}
+
+		hw->ctrl = ctrl;
 	}
 
-	hw->vxlan_usecnt[idx]++;
+	net_hw->vxlan_usecnt[idx]++;
 
 	return 0;
 }
@@ -892,33 +892,40 @@ nfp_udp_tunnel_port_del(struct rte_eth_dev *dev,
 {
 	int ret;
 	uint32_t idx;
+	uint32_t ctrl;
+	struct nfp_hw *hw;
 	uint16_t vxlan_port;
-	struct nfp_net_hw *hw;
+	struct nfp_net_hw *net_hw;
 	enum rte_eth_tunnel_type tnl_type;
 
-	hw = dev->data->dev_private;
+	net_hw = dev->data->dev_private;
 	vxlan_port = tunnel_udp->udp_port;
 	tnl_type   = tunnel_udp->prot_type;
 
 	if (tnl_type != RTE_ETH_TUNNEL_TYPE_VXLAN) {
-		PMD_DRV_LOG(ERR, "Not VXLAN tunnel");
+		PMD_DRV_LOG(ERR, "Not VXLAN tunnel.");
 		return -ENOTSUP;
 	}
 
-	ret = nfp_net_find_vxlan_idx(hw, vxlan_port, &idx);
-	if (ret != 0 || hw->vxlan_usecnt[idx] == 0) {
-		PMD_DRV_LOG(ERR, "Failed find valid vxlan idx");
+	ret = nfp_net_find_vxlan_idx(net_hw, vxlan_port, &idx);
+	if (ret != 0 || net_hw->vxlan_usecnt[idx] == 0) {
+		PMD_DRV_LOG(ERR, "Failed find valid vxlan idx.");
 		return -EINVAL;
 	}
 
-	hw->vxlan_usecnt[idx]--;
+	net_hw->vxlan_usecnt[idx]--;
 
-	if (hw->vxlan_usecnt[idx] == 0) {
-		ret = nfp_net_set_vxlan_port(hw, idx, 0);
+	if (net_hw->vxlan_usecnt[idx] == 0) {
+		hw = &net_hw->super;
+		ctrl = hw->ctrl & ~NFP_NET_CFG_CTRL_VXLAN;
+
+		ret = nfp_net_set_vxlan_port(net_hw, idx, 0, ctrl);
 		if (ret != 0) {
-			PMD_DRV_LOG(ERR, "Failed set vxlan port");
+			PMD_DRV_LOG(ERR, "Failed set vxlan port.");
 			return -EINVAL;
 		}
+
+		hw->ctrl = ctrl;
 	}
 
 	return 0;
@@ -971,6 +978,13 @@ static const struct eth_dev_ops nfp_net_eth_dev_ops = {
 	.fec_get_capability     = nfp_net_fec_get_capability,
 	.fec_get                = nfp_net_fec_get,
 	.fec_set                = nfp_net_fec_set,
+	.get_eeprom_length      = nfp_net_get_eeprom_len,
+	.get_eeprom             = nfp_net_get_eeprom,
+	.set_eeprom             = nfp_net_set_eeprom,
+	.get_module_info        = nfp_net_get_module_info,
+	.get_module_eeprom      = nfp_net_get_module_eeprom,
+	.dev_led_on             = nfp_net_led_on,
+	.dev_led_off            = nfp_net_led_off,
 };
 
 static inline void
@@ -1023,14 +1037,14 @@ nfp_net_init(struct rte_eth_dev *eth_dev,
 
 	port = net_hw->idx;
 	if (port > 7) {
-		PMD_DRV_LOG(ERR, "Port value is wrong");
+		PMD_DRV_LOG(ERR, "Port value is wrong.");
 		return -ENODEV;
 	}
 
 	hw = &net_hw->super;
 
 	PMD_INIT_LOG(DEBUG, "Working with physical port number: %hu, "
-			"NFP internal port number: %d", port, net_hw->nfp_idx);
+			"NFP internal port number: %d.", port, net_hw->nfp_idx);
 
 	rte_eth_copy_pci_info(eth_dev, pci_dev);
 
@@ -1042,8 +1056,8 @@ nfp_net_init(struct rte_eth_dev *eth_dev,
 	net_hw->mac_stats = pf_dev->mac_stats_bar +
 				(net_hw->nfp_idx * NFP_MAC_STATS_SIZE);
 
-	PMD_INIT_LOG(DEBUG, "ctrl bar: %p", hw->ctrl_bar);
-	PMD_INIT_LOG(DEBUG, "MAC stats: %p", net_hw->mac_stats);
+	PMD_INIT_LOG(DEBUG, "Ctrl bar: %p.", hw->ctrl_bar);
+	PMD_INIT_LOG(DEBUG, "MAC stats: %p.", net_hw->mac_stats);
 
 	err = nfp_net_common_init(pf_dev, net_hw);
 	if (err != 0)
@@ -1051,13 +1065,13 @@ nfp_net_init(struct rte_eth_dev *eth_dev,
 
 	err = nfp_net_tlv_caps_parse(eth_dev);
 	if (err != 0) {
-		PMD_INIT_LOG(ERR, "Failed to parser TLV caps");
+		PMD_INIT_LOG(ERR, "Failed to parser TLV caps.");
 		return err;
 	}
 
 	err = nfp_ipsec_init(eth_dev);
 	if (err != 0) {
-		PMD_INIT_LOG(ERR, "Failed to init IPsec module");
+		PMD_INIT_LOG(ERR, "Failed to init IPsec module.");
 		return err;
 	}
 
@@ -1066,7 +1080,7 @@ nfp_net_init(struct rte_eth_dev *eth_dev,
 	net_hw->eth_xstats_base = rte_malloc("rte_eth_xstat", sizeof(struct rte_eth_xstat) *
 			nfp_net_xstats_size(eth_dev), 0);
 	if (net_hw->eth_xstats_base == NULL) {
-		PMD_INIT_LOG(ERR, "no memory for xstats base values on device %s!",
+		PMD_INIT_LOG(ERR, "No memory for xstats base values on device %s!",
 				pci_dev->device.name);
 		err = -ENOMEM;
 		goto ipsec_exit;
@@ -1079,7 +1093,7 @@ nfp_net_init(struct rte_eth_dev *eth_dev,
 	net_hw->tx_bar = pf_dev->qc_bar + tx_base * NFP_QCP_QUEUE_ADDR_SZ;
 	net_hw->rx_bar = pf_dev->qc_bar + rx_base * NFP_QCP_QUEUE_ADDR_SZ;
 
-	PMD_INIT_LOG(DEBUG, "ctrl_bar: %p, tx_bar: %p, rx_bar: %p",
+	PMD_INIT_LOG(DEBUG, "The ctrl_bar: %p, tx_bar: %p, rx_bar: %p.",
 			hw->ctrl_bar, net_hw->tx_bar, net_hw->rx_bar);
 
 	nfp_net_cfg_queue_setup(net_hw);
@@ -1097,7 +1111,7 @@ nfp_net_init(struct rte_eth_dev *eth_dev,
 	if ((port == 0 || pf_dev->multi_pf.enabled)) {
 		err = nfp_net_vf_config_app_init(net_hw, pf_dev);
 		if (err != 0) {
-			PMD_INIT_LOG(ERR, "Failed to init sriov module");
+			PMD_INIT_LOG(ERR, "Failed to init sriov module.");
 			goto xstats_free;
 		}
 	}
@@ -1105,7 +1119,7 @@ nfp_net_init(struct rte_eth_dev *eth_dev,
 	/* Allocating memory for mac addr */
 	eth_dev->data->mac_addrs = rte_zmalloc("mac_addr", RTE_ETHER_ADDR_LEN, 0);
 	if (eth_dev->data->mac_addrs == NULL) {
-		PMD_INIT_LOG(ERR, "Failed to space for MAC address");
+		PMD_INIT_LOG(ERR, "Failed to space for MAC address.");
 		err = -ENOMEM;
 		goto xstats_free;
 	}
@@ -1120,7 +1134,7 @@ nfp_net_init(struct rte_eth_dev *eth_dev,
 	nfp_write_mac(hw, &hw->mac_addr.addr_bytes[0]);
 
 	if (rte_is_valid_assigned_ether_addr(&hw->mac_addr) == 0) {
-		PMD_INIT_LOG(INFO, "Using random mac address for port %d", port);
+		PMD_INIT_LOG(INFO, "Using random mac address for port %d.", port);
 		/* Using random mac addresses for VFs */
 		rte_eth_random_addr(&hw->mac_addr.addr_bytes[0]);
 		nfp_write_mac(hw, &hw->mac_addr.addr_bytes[0]);
@@ -1134,7 +1148,7 @@ nfp_net_init(struct rte_eth_dev *eth_dev,
 
 	eth_dev->data->dev_flags |= RTE_ETH_DEV_AUTOFILL_QUEUE_XSTATS;
 
-	PMD_INIT_LOG(INFO, "port %d VendorID=%#x DeviceID=%#x "
+	PMD_INIT_LOG(INFO, "Port %d VendorID=%#x DeviceID=%#x "
 			"mac=" RTE_ETHER_ADDR_PRT_FMT,
 			eth_dev->data->port_id, pci_dev->id.vendor_id,
 			pci_dev->id.device_id,
@@ -1153,7 +1167,7 @@ nfp_net_init(struct rte_eth_dev *eth_dev,
 	if ((hw->cap_ext & NFP_NET_CFG_CTRL_FLOW_STEER) != 0) {
 		err = nfp_net_flow_priv_init(pf_dev, port);
 		if (err != 0) {
-			PMD_INIT_LOG(ERR, "Init net flow priv failed");
+			PMD_INIT_LOG(ERR, "Init net flow priv failed.");
 			goto txrwb_free;
 		}
 	}
@@ -1182,7 +1196,7 @@ nfp_net_device_activate(struct nfp_pf_dev *pf_dev)
 	if (multi_pf->enabled && multi_pf->function_id != 0) {
 		nsp = nfp_nsp_open(pf_dev->cpp);
 		if (nsp == NULL) {
-			PMD_DRV_LOG(ERR, "NFP error when obtaining NSP handle");
+			PMD_DRV_LOG(ERR, "NFP error when obtaining NSP handle.");
 			return -EIO;
 		}
 
@@ -1224,7 +1238,7 @@ nfp_fw_get_name(struct nfp_pf_dev *pf_dev,
 			cpp_serial[4], cpp_serial[5], interface >> 8, interface & 0xff);
 	snprintf(fw_name, fw_size, "%s/%s.nffw", DEFAULT_FW_PATH, serial);
 
-	PMD_DRV_LOG(DEBUG, "Trying with fw file: %s", fw_name);
+	PMD_DRV_LOG(DEBUG, "Trying with fw file: %s.", fw_name);
 	if (access(fw_name, F_OK) == 0)
 		return 0;
 
@@ -1232,7 +1246,7 @@ nfp_fw_get_name(struct nfp_pf_dev *pf_dev,
 	snprintf(fw_name, fw_size, "%s/pci-%s.nffw", DEFAULT_FW_PATH,
 			pf_dev->pci_dev->name);
 
-	PMD_DRV_LOG(DEBUG, "Trying with fw file: %s", fw_name);
+	PMD_DRV_LOG(DEBUG, "Trying with fw file: %s.", fw_name);
 	if (access(fw_name, F_OK) == 0)
 		return 0;
 
@@ -1240,7 +1254,7 @@ nfp_fw_get_name(struct nfp_pf_dev *pf_dev,
 	if (nfp_fw_model == NULL) {
 		nfp_fw_model = nfp_hwinfo_lookup(pf_dev->hwinfo, "assembly.partno");
 		if (nfp_fw_model == NULL) {
-			PMD_DRV_LOG(ERR, "firmware model NOT found");
+			PMD_DRV_LOG(ERR, "Firmware model NOT found.");
 			return -EIO;
 		}
 	}
@@ -1248,7 +1262,7 @@ nfp_fw_get_name(struct nfp_pf_dev *pf_dev,
 	/* And then try the model name */
 	snprintf(card_desc, sizeof(card_desc), "%s.nffw", nfp_fw_model);
 	snprintf(fw_name, fw_size, "%s/%s", DEFAULT_FW_PATH, card_desc);
-	PMD_DRV_LOG(DEBUG, "Trying with fw file: %s", fw_name);
+	PMD_DRV_LOG(DEBUG, "Trying with fw file: %s.", fw_name);
 	if (access(fw_name, F_OK) == 0)
 		return 0;
 
@@ -1257,7 +1271,7 @@ nfp_fw_get_name(struct nfp_pf_dev *pf_dev,
 			nfp_fw_model, pf_dev->nfp_eth_table->count,
 			pf_dev->nfp_eth_table->ports[0].speed / 1000);
 	snprintf(fw_name, fw_size, "%s/%s", DEFAULT_FW_PATH, card_desc);
-	PMD_DRV_LOG(DEBUG, "Trying with fw file: %s", fw_name);
+	PMD_DRV_LOG(DEBUG, "Trying with fw file: %s.", fw_name);
 	if (access(fw_name, F_OK) == 0)
 		return 0;
 
@@ -1274,11 +1288,11 @@ nfp_fw_upload(struct nfp_nsp *nsp,
 
 	err = rte_firmware_read(fw_name, &fw_buf, &fsize);
 	if (err != 0) {
-		PMD_DRV_LOG(ERR, "firmware %s not found!", fw_name);
+		PMD_DRV_LOG(ERR, "Firmware %s not found!", fw_name);
 		return -ENOENT;
 	}
 
-	PMD_DRV_LOG(INFO, "Firmware file found at %s with size: %zu",
+	PMD_DRV_LOG(INFO, "Firmware file found at %s with size: %zu.",
 			fw_name, fsize);
 	PMD_DRV_LOG(INFO, "Uploading the firmware ...");
 	if (nfp_nsp_load_fw(nsp, fw_buf, fsize) < 0) {
@@ -1287,7 +1301,7 @@ nfp_fw_upload(struct nfp_nsp *nsp,
 		return -EIO;
 	}
 
-	PMD_DRV_LOG(INFO, "Done");
+	PMD_DRV_LOG(INFO, "Done.");
 
 	free(fw_buf);
 
@@ -1327,11 +1341,11 @@ nfp_fw_check_change(struct nfp_cpp *cpp,
 	nfp_net_get_fw_version(cpp, &old_version);
 
 	if (new_version != old_version) {
-		PMD_DRV_LOG(INFO, "FW version is changed, new %u, old %u",
+		PMD_DRV_LOG(INFO, "FW version is changed, new %u, old %u.",
 				new_version, old_version);
 		*fw_changed = true;
 	} else {
-		PMD_DRV_LOG(INFO, "FW version is not changed and is %u", new_version);
+		PMD_DRV_LOG(INFO, "FW version is not changed and is %u.", new_version);
 		*fw_changed = false;
 	}
 
@@ -1380,7 +1394,7 @@ nfp_fw_reload(struct nfp_nsp *nsp,
 	if (reset_flag) {
 		err = nfp_nsp_device_soft_reset(nsp);
 		if (err != 0) {
-			PMD_DRV_LOG(ERR, "NFP firmware soft reset failed");
+			PMD_DRV_LOG(ERR, "NFP firmware soft reset failed.");
 			return err;
 		}
 	}
@@ -1395,7 +1409,7 @@ nfp_fw_reload(struct nfp_nsp *nsp,
 
 	err = nfp_fw_upload(nsp, fw_name);
 	if (err != 0) {
-		PMD_DRV_LOG(ERR, "NFP firmware load failed");
+		PMD_DRV_LOG(ERR, "NFP firmware load failed.");
 		return err;
 	}
 
@@ -1447,7 +1461,7 @@ nfp_fw_skip_load(const struct nfp_dev_info *dev_info,
 				beat[port_num] = 0;
 				if (*reload_fw) {
 					*reload_fw = false;
-					PMD_DRV_LOG(ERR, "The param %s does not work",
+					PMD_DRV_LOG(ERR, "The param %s does not work.",
 							NFP_PF_FORCE_RELOAD_FW);
 				}
 			}
@@ -1581,13 +1595,13 @@ nfp_fw_reload_for_multi_pf(struct nfp_nsp *nsp,
 
 	err = nfp_net_keepalive_init(pf_dev->cpp, multi_pf);
 	if (err != 0) {
-		PMD_DRV_LOG(ERR, "NFP init beat failed");
+		PMD_DRV_LOG(ERR, "NFP init beat failed.");
 		return err;
 	}
 
 	err = nfp_net_keepalive_start(multi_pf);
 	if (err != 0) {
-		PMD_DRV_LOG(ERR, "NFP write beat failed");
+		PMD_DRV_LOG(ERR, "NFP write beat failed.");
 		goto keepalive_uninit;
 	}
 
@@ -1660,7 +1674,7 @@ nfp_fw_policy_value_get(struct nfp_nsp *nsp,
 
 	ret = nfp_strtol(buf, 0, &val);
 	if (ret != 0 || val < 0 || val > max_val) {
-		PMD_DRV_LOG(WARNING, "Invalid value '%s' from '%s', ignoring",
+		PMD_DRV_LOG(WARNING, "Invalid value '%s' from '%s', ignoring.",
 				buf, key);
 		/* Fall back to the default value */
 		ret = nfp_strtol(default_val, 0, &val);
@@ -1685,7 +1699,7 @@ nfp_fw_setup(struct nfp_pf_dev *pf_dev,
 
 	nsp = nfp_nsp_open(pf_dev->cpp);
 	if (nsp == NULL) {
-		PMD_DRV_LOG(ERR, "NFP error when obtaining NSP handle");
+		PMD_DRV_LOG(ERR, "NFP error when obtaining NSP handle.");
 		return -EIO;
 	}
 
@@ -1709,7 +1723,7 @@ nfp_fw_setup(struct nfp_pf_dev *pf_dev,
 	if (policy != NFP_NSP_APP_FW_LOAD_FLASH) {
 		err = nfp_fw_get_name(pf_dev, fw_name, sizeof(fw_name));
 		if (err != 0) {
-			PMD_DRV_LOG(ERR, "Can't find suitable firmware.");
+			PMD_DRV_LOG(ERR, "Can not find suitable firmware.");
 			goto close_nsp;
 		}
 	}
@@ -1744,7 +1758,7 @@ nfp_check_multi_pf_from_nsp(struct rte_pci_device *pci_dev,
 
 	nsp = nfp_nsp_open(cpp);
 	if (nsp == NULL) {
-		PMD_DRV_LOG(ERR, "NFP error when obtaining NSP handle");
+		PMD_DRV_LOG(ERR, "NFP error when obtaining NSP handle.");
 		return false;
 	}
 
@@ -1776,7 +1790,7 @@ nfp_enable_multi_pf(struct nfp_pf_dev *pf_dev)
 	ctrl_bar = nfp_rtsym_map(pf_dev->sym_tbl, name, pf_dev->ctrl_bar_size,
 			&area);
 	if (ctrl_bar == NULL) {
-		PMD_INIT_LOG(ERR, "Failed to find data vNIC memory symbol");
+		PMD_INIT_LOG(ERR, "Failed to find data vNIC memory symbol.");
 		return -ENODEV;
 	}
 
@@ -1798,7 +1812,7 @@ nfp_enable_multi_pf(struct nfp_pf_dev *pf_dev)
 
 	cap_extend = nn_cfg_readl(hw, NFP_NET_CFG_CAP_WORD1);
 	if ((cap_extend & NFP_NET_CFG_CTRL_MULTI_PF) == 0) {
-		PMD_INIT_LOG(ERR, "Loaded firmware doesn't support multiple PF");
+		PMD_INIT_LOG(ERR, "Loaded firmware does not support multiple PF.");
 		err = -EINVAL;
 		goto end;
 	}
@@ -1807,7 +1821,13 @@ nfp_enable_multi_pf(struct nfp_pf_dev *pf_dev)
 	net_hw.tx_bar = pf_dev->qc_bar + tx_base * NFP_QCP_QUEUE_ADDR_SZ;
 	nfp_net_cfg_queue_setup(&net_hw);
 	rte_spinlock_init(&hw->reconfig_lock);
-	nfp_ext_reconfig(&net_hw.super, NFP_NET_CFG_CTRL_MULTI_PF, NFP_NET_CFG_UPDATE_GEN);
+	err = nfp_ext_reconfig(&net_hw.super, NFP_NET_CFG_CTRL_MULTI_PF,
+			NFP_NET_CFG_UPDATE_GEN);
+	if (err != 0) {
+		PMD_INIT_LOG(ERR, "Configure multiple PF failed.");
+		goto end;
+	}
+
 end:
 	nfp_cpp_area_release_free(area);
 	return err;
@@ -1822,7 +1842,7 @@ nfp_app_fw_nic_total_phyports_check(struct nfp_pf_dev *pf_dev)
 
 	if (pf_dev->multi_pf.enabled) {
 		if (!nfp_check_multi_pf_from_fw(total_phyports)) {
-			PMD_INIT_LOG(ERR, "NSP report multipf, but FW report not multipf");
+			PMD_INIT_LOG(ERR, "NSP report multipf, but FW report not multipf.");
 			return false;
 		}
 	} else {
@@ -1831,7 +1851,7 @@ nfp_app_fw_nic_total_phyports_check(struct nfp_pf_dev *pf_dev)
 		 * number of physical ports.
 		 */
 		if (total_phyports != pf_dev->nfp_eth_table->count) {
-			PMD_INIT_LOG(ERR, "Total physical ports do not match number of vNICs");
+			PMD_INIT_LOG(ERR, "Total physical ports do not match number of vNICs.");
 			return false;
 		}
 	}
@@ -1869,7 +1889,7 @@ nfp_init_app_fw_nic(struct nfp_net_hw_priv *hw_priv)
 	};
 
 	nfp_eth_table = pf_dev->nfp_eth_table;
-	PMD_INIT_LOG(INFO, "Total physical ports: %d", nfp_eth_table->count);
+	PMD_INIT_LOG(INFO, "Total physical ports: %d.", nfp_eth_table->count);
 	id = nfp_function_id_get(pf_dev, 0);
 
 	/* Allocate memory for the CoreNIC app */
@@ -1896,12 +1916,12 @@ nfp_init_app_fw_nic(struct nfp_net_hw_priv *hw_priv)
 			pf_dev->total_phyports * pf_dev->ctrl_bar_size,
 			&pf_dev->ctrl_area);
 	if (pf_dev->ctrl_bar == NULL) {
-		PMD_INIT_LOG(ERR, "nfp_rtsym_map fails for %s", bar_name);
+		PMD_INIT_LOG(ERR, "The nfp_rtsym_map fails for %s.", bar_name);
 		ret = -EIO;
 		goto app_cleanup;
 	}
 
-	PMD_INIT_LOG(DEBUG, "ctrl bar: %p", pf_dev->ctrl_bar);
+	PMD_INIT_LOG(DEBUG, "Ctrl bar: %p.", pf_dev->ctrl_bar);
 
 	/* Loop through all physical ports on PF */
 	for (i = 0; i < pf_dev->total_phyports; i++) {
@@ -2070,7 +2090,7 @@ nfp_net_speed_cap_get_one(struct nfp_pf_dev *pf_dev,
 
 	nsp = nfp_nsp_open(pf_dev->cpp);
 	if (nsp == NULL) {
-		PMD_DRV_LOG(ERR, "Couldn't get NSP.");
+		PMD_DRV_LOG(ERR, "Could not get NSP.");
 		return -EIO;
 	}
 
@@ -2141,7 +2161,7 @@ nfp_fw_app_primary_init(struct nfp_net_hw_priv *hw_priv)
 
 	switch (pf_dev->app_fw_id) {
 	case NFP_APP_FW_CORE_NIC:
-		PMD_INIT_LOG(INFO, "Initializing coreNIC");
+		PMD_INIT_LOG(INFO, "Initializing coreNIC.");
 		ret = nfp_init_app_fw_nic(hw_priv);
 		if (ret != 0) {
 			PMD_INIT_LOG(ERR, "Could not initialize coreNIC!");
@@ -2149,7 +2169,7 @@ nfp_fw_app_primary_init(struct nfp_net_hw_priv *hw_priv)
 		}
 		break;
 	case NFP_APP_FW_FLOWER_NIC:
-		PMD_INIT_LOG(INFO, "Initializing Flower");
+		PMD_INIT_LOG(INFO, "Initializing Flower.");
 		ret = nfp_init_app_fw_flower(hw_priv);
 		if (ret != 0) {
 			PMD_INIT_LOG(ERR, "Could not initialize Flower!");
@@ -2157,7 +2177,7 @@ nfp_fw_app_primary_init(struct nfp_net_hw_priv *hw_priv)
 		}
 		break;
 	default:
-		PMD_INIT_LOG(ERR, "Unsupported Firmware loaded");
+		PMD_INIT_LOG(ERR, "Unsupported Firmware loaded.");
 		ret = -EINVAL;
 		return ret;
 	}
@@ -2197,7 +2217,7 @@ nfp_pf_get_sriov_vf(struct nfp_pf_dev *pf_dev,
 
 	pos = rte_pci_find_ext_capability(pf_dev->pci_dev, RTE_PCI_EXT_CAP_ID_SRIOV);
 	if (pos == 0) {
-		PMD_INIT_LOG(ERR, "Can not get the pci sriov cap");
+		PMD_INIT_LOG(ERR, "Can not get the pci sriov cap.");
 		return -EIO;
 	}
 
@@ -2208,7 +2228,7 @@ nfp_pf_get_sriov_vf(struct nfp_pf_dev *pf_dev,
 	ret = rte_pci_read_config(pf_dev->pci_dev, &sriov_vf, sizeof(sriov_vf),
 			pos + RTE_PCI_SRIOV_TOTAL_VF);
 	if (ret < 0) {
-		PMD_INIT_LOG(ERR, "Can not read the sriov toatl VF");
+		PMD_INIT_LOG(ERR, "Can not read the sriov toatl VF.");
 		return -EIO;
 	}
 
@@ -2216,7 +2236,7 @@ nfp_pf_get_sriov_vf(struct nfp_pf_dev *pf_dev,
 	ret = rte_pci_read_config(pf_dev->pci_dev, &offset, sizeof(offset),
 			pos + RTE_PCI_SRIOV_VF_OFFSET);
 	if (ret < 0) {
-		PMD_INIT_LOG(ERR, "Can not get the VF offset");
+		PMD_INIT_LOG(ERR, "Can not get the VF offset.");
 		return -EIO;
 	}
 
@@ -2226,7 +2246,7 @@ nfp_pf_get_sriov_vf(struct nfp_pf_dev *pf_dev,
 
 	offset -= dev_info->pf_num_per_unit;
 	if (offset >= pf_dev->max_vfs || offset + sriov_vf > pf_dev->max_vfs) {
-		PMD_INIT_LOG(ERR, "The pci allocate VF is more than the MAX VF");
+		PMD_INIT_LOG(ERR, "The pci allocate VF is more than the MAX VF.");
 		return -ERANGE;
 	}
 
@@ -2245,11 +2265,11 @@ nfp_net_get_vf_info(struct nfp_pf_dev *pf_dev,
 	ret = nfp_pf_get_max_vf(pf_dev);
 	if (ret != 0) {
 		if (ret != -ENOENT) {
-			PMD_INIT_LOG(ERR, "Read max VFs failed");
+			PMD_INIT_LOG(ERR, "Read max VFs failed.");
 			return ret;
 		}
 
-		PMD_INIT_LOG(WARNING, "The firmware can not support read max VFs");
+		PMD_INIT_LOG(WARNING, "The firmware can not support read max VFs.");
 		return 0;
 	}
 
@@ -2335,13 +2355,13 @@ nfp_pf_init(struct rte_pci_device *pci_dev)
 
 	dev_info = nfp_dev_info_get(pci_dev->id.device_id);
 	if (dev_info == NULL) {
-		PMD_INIT_LOG(ERR, "Not supported device ID");
+		PMD_INIT_LOG(ERR, "Not supported device ID.");
 		return -ENODEV;
 	}
 
 	hw_priv = rte_zmalloc(NULL, sizeof(*hw_priv), 0);
 	if (hw_priv == NULL) {
-		PMD_INIT_LOG(ERR, "Can not alloc memory for hw priv data");
+		PMD_INIT_LOG(ERR, "Can not alloc memory for hw priv data.");
 		return -ENOMEM;
 	}
 
@@ -2350,7 +2370,7 @@ nfp_pf_init(struct rte_pci_device *pci_dev)
 	snprintf(name, sizeof(name), "nfp_pf%u", function_id);
 	pf_dev = rte_zmalloc(name, sizeof(*pf_dev), 0);
 	if (pf_dev == NULL) {
-		PMD_INIT_LOG(ERR, "Can't allocate memory for the PF device");
+		PMD_INIT_LOG(ERR, "Can not allocate memory for the PF device.");
 		ret = -ENOMEM;
 		goto hw_priv_free;
 	}
@@ -2380,7 +2400,7 @@ nfp_pf_init(struct rte_pci_device *pci_dev)
 		cpp = nfp_cpp_from_nfp6000_pcie(pci_dev, dev_info, true);
 
 	if (cpp == NULL) {
-		PMD_INIT_LOG(ERR, "A CPP handle can not be obtained");
+		PMD_INIT_LOG(ERR, "A CPP handle can not be obtained.");
 		ret = -EIO;
 		goto sync_free;
 	}
@@ -2390,7 +2410,7 @@ nfp_pf_init(struct rte_pci_device *pci_dev)
 
 	hwinfo = nfp_hwinfo_read(cpp);
 	if (hwinfo == NULL) {
-		PMD_INIT_LOG(ERR, "Error reading hwinfo table");
+		PMD_INIT_LOG(ERR, "Error reading hwinfo table.");
 		ret = -EIO;
 		goto cpp_cleanup;
 	}
@@ -2400,13 +2420,13 @@ nfp_pf_init(struct rte_pci_device *pci_dev)
 	/* Read the number of physical ports from hardware */
 	nfp_eth_table = nfp_eth_read_ports(cpp);
 	if (nfp_eth_table == NULL) {
-		PMD_INIT_LOG(ERR, "Error reading NFP ethernet table");
+		PMD_INIT_LOG(ERR, "Error reading NFP ethernet table.");
 		ret = -EIO;
 		goto hwinfo_cleanup;
 	}
 
 	if (nfp_eth_table->count == 0 || nfp_eth_table->count > 8) {
-		PMD_INIT_LOG(ERR, "NFP ethernet table reports wrong ports: %u",
+		PMD_INIT_LOG(ERR, "NFP ethernet table reports wrong ports: %u.",
 				nfp_eth_table->count);
 		ret = -EIO;
 		goto eth_table_cleanup;
@@ -2419,28 +2439,28 @@ nfp_pf_init(struct rte_pci_device *pci_dev)
 
 	ret = nfp_net_force_port_down(pf_dev);
 	if (ret != 0) {
-		PMD_INIT_LOG(ERR, "Failed to force port down");
+		PMD_INIT_LOG(ERR, "Failed to force port down.");
 		ret = -EIO;
 		goto eth_table_cleanup;
 	}
 
 	ret = nfp_devargs_parse(&pf_dev->devargs, pci_dev->device.devargs);
 	if (ret != 0) {
-		PMD_INIT_LOG(ERR, "Error when parsing device args");
+		PMD_INIT_LOG(ERR, "Error when parsing device args.");
 		ret = -EINVAL;
 		goto eth_table_cleanup;
 	}
 
 	ret = nfp_net_device_activate(pf_dev);
 	if (ret != 0) {
-		PMD_INIT_LOG(ERR, "Failed to activate the NFP device");
+		PMD_INIT_LOG(ERR, "Failed to activate the NFP device.");
 		ret = -EIO;
 		goto eth_table_cleanup;
 	}
 
 	ret = nfp_fw_setup(pf_dev, dev_info);
 	if (ret != 0) {
-		PMD_INIT_LOG(ERR, "Error when uploading firmware");
+		PMD_INIT_LOG(ERR, "Error when uploading firmware.");
 		ret = -EIO;
 		goto eth_table_cleanup;
 	}
@@ -2448,7 +2468,7 @@ nfp_pf_init(struct rte_pci_device *pci_dev)
 	/* Now the symbol table should be there */
 	sym_tbl = nfp_rtsym_table_read(cpp);
 	if (sym_tbl == NULL) {
-		PMD_INIT_LOG(ERR, "Something is wrong with the firmware symbol table");
+		PMD_INIT_LOG(ERR, "Something is wrong with the firmware symbol table.");
 		ret = -EIO;
 		goto fw_cleanup;
 	}
@@ -2459,7 +2479,7 @@ nfp_pf_init(struct rte_pci_device *pci_dev)
 	snprintf(app_name, sizeof(app_name), "_pf%u_net_app_id", function_id);
 	app_fw_id = nfp_rtsym_read_le(sym_tbl, app_name, &ret);
 	if (ret != 0) {
-		PMD_INIT_LOG(ERR, "Couldn't read %s from firmware", app_name);
+		PMD_INIT_LOG(ERR, "Could not read %s from firmware.", app_name);
 		ret = -EIO;
 		goto sym_tbl_cleanup;
 	}
@@ -2496,18 +2516,18 @@ nfp_pf_init(struct rte_pci_device *pci_dev)
 	pf_dev->qc_bar = nfp_cpp_map_area(pf_dev->cpp, cpp_id,
 			addr, dev_info->qc_area_sz, &pf_dev->qc_area);
 	if (pf_dev->qc_bar == NULL) {
-		PMD_INIT_LOG(ERR, "nfp_rtsym_map fails for net.qc");
+		PMD_INIT_LOG(ERR, "The nfp_rtsym_map fails for net.qc.");
 		ret = -EIO;
 		goto sym_tbl_cleanup;
 	}
 
-	PMD_INIT_LOG(DEBUG, "qc_bar address: %p", pf_dev->qc_bar);
+	PMD_INIT_LOG(DEBUG, "The qc_bar address: %p.", pf_dev->qc_bar);
 
 	pf_dev->mac_stats_bar = nfp_rtsym_map(sym_tbl, "_mac_stats",
 			NFP_MAC_STATS_SIZE * nfp_eth_table->max_index,
 			&pf_dev->mac_stats_area);
 	if (pf_dev->mac_stats_bar == NULL) {
-		PMD_INIT_LOG(ERR, "nfp_rtsym_map fails for _mac_stats");
+		PMD_INIT_LOG(ERR, "The nfp_rtsym_map fails for _mac_stats.");
 		goto hwqueues_cleanup;
 	}
 
@@ -2522,6 +2542,12 @@ nfp_pf_init(struct rte_pci_device *pci_dev)
 	}
 
 	hw_priv->is_pf = true;
+
+	if (!nfp_net_recv_pkt_meta_check_register(hw_priv)) {
+		PMD_INIT_LOG(ERR, "PF register meta check function failed.");
+		ret = -EIO;
+		goto hw_priv_free;
+	}
 
 	/*
 	 * PF initialization has been done at this point. Call app specific
@@ -2603,11 +2629,11 @@ nfp_secondary_init_app_fw_nic(struct nfp_net_hw_priv *hw_priv)
 	for (i = 0; i < total_vnics; i++) {
 		nfp_port_name_generate(port_name, sizeof(port_name), i, pf_dev);
 
-		PMD_INIT_LOG(DEBUG, "Secondary attaching to port %s", port_name);
+		PMD_INIT_LOG(DEBUG, "Secondary attaching to port %s.", port_name);
 		ret = rte_eth_dev_create(&pf_dev->pci_dev->device, port_name, 0,
 				NULL, NULL, nfp_secondary_net_init, hw_priv);
 		if (ret != 0) {
-			PMD_INIT_LOG(ERR, "Secondary process attach to port %s failed", port_name);
+			PMD_INIT_LOG(ERR, "Secondary process attach to port %s failed.", port_name);
 			goto port_cleanup;
 		}
 	}
@@ -2635,7 +2661,7 @@ nfp_fw_app_secondary_init(struct nfp_net_hw_priv *hw_priv)
 
 	switch (pf_dev->app_fw_id) {
 	case NFP_APP_FW_CORE_NIC:
-		PMD_INIT_LOG(INFO, "Initializing coreNIC");
+		PMD_INIT_LOG(INFO, "Initializing coreNIC.");
 		ret = nfp_secondary_init_app_fw_nic(hw_priv);
 		if (ret != 0) {
 			PMD_INIT_LOG(ERR, "Could not initialize coreNIC!");
@@ -2643,7 +2669,7 @@ nfp_fw_app_secondary_init(struct nfp_net_hw_priv *hw_priv)
 		}
 		break;
 	case NFP_APP_FW_FLOWER_NIC:
-		PMD_INIT_LOG(INFO, "Initializing Flower");
+		PMD_INIT_LOG(INFO, "Initializing Flower.");
 		ret = nfp_secondary_init_app_fw_flower(hw_priv);
 		if (ret != 0) {
 			PMD_INIT_LOG(ERR, "Could not initialize Flower!");
@@ -2651,7 +2677,7 @@ nfp_fw_app_secondary_init(struct nfp_net_hw_priv *hw_priv)
 		}
 		break;
 	default:
-		PMD_INIT_LOG(ERR, "Unsupported Firmware loaded");
+		PMD_INIT_LOG(ERR, "Unsupported Firmware loaded.");
 		ret = -EINVAL;
 		return ret;
 	}
@@ -2689,13 +2715,13 @@ nfp_pf_secondary_init(struct rte_pci_device *pci_dev)
 
 	dev_info = nfp_dev_info_get(pci_dev->id.device_id);
 	if (dev_info == NULL) {
-		PMD_INIT_LOG(ERR, "Not supported device ID");
+		PMD_INIT_LOG(ERR, "Not supported device ID.");
 		return -ENODEV;
 	}
 
 	hw_priv = rte_zmalloc(NULL, sizeof(*hw_priv), 0);
 	if (hw_priv == NULL) {
-		PMD_INIT_LOG(ERR, "Can not alloc memory for hw priv data");
+		PMD_INIT_LOG(ERR, "Can not alloc memory for hw priv data.");
 		return -ENOMEM;
 	}
 
@@ -2704,7 +2730,7 @@ nfp_pf_secondary_init(struct rte_pci_device *pci_dev)
 	snprintf(name, sizeof(name), "nfp_pf%d", 0);
 	pf_dev = rte_zmalloc(name, sizeof(*pf_dev), 0);
 	if (pf_dev == NULL) {
-		PMD_INIT_LOG(ERR, "Can't allocate memory for the PF device");
+		PMD_INIT_LOG(ERR, "Can not allocate memory for the PF device.");
 		ret = -ENOMEM;
 		goto hw_priv_free;
 	}
@@ -2734,7 +2760,7 @@ nfp_pf_secondary_init(struct rte_pci_device *pci_dev)
 		cpp = nfp_cpp_from_nfp6000_pcie(pci_dev, dev_info, true);
 
 	if (cpp == NULL) {
-		PMD_INIT_LOG(ERR, "A CPP handle can not be obtained");
+		PMD_INIT_LOG(ERR, "A CPP handle can not be obtained.");
 		ret = -EIO;
 		goto sync_free;
 	}
@@ -2748,7 +2774,7 @@ nfp_pf_secondary_init(struct rte_pci_device *pci_dev)
 	 */
 	sym_tbl = nfp_rtsym_table_read(cpp);
 	if (sym_tbl == NULL) {
-		PMD_INIT_LOG(ERR, "Something is wrong with the firmware symbol table");
+		PMD_INIT_LOG(ERR, "Something is wrong with the firmware symbol table.");
 		ret = -EIO;
 		goto cpp_cleanup;
 	}
@@ -2764,7 +2790,7 @@ nfp_pf_secondary_init(struct rte_pci_device *pci_dev)
 	snprintf(app_name, sizeof(app_name), "_pf%u_net_app_id", function_id);
 	app_fw_id = nfp_rtsym_read_le(sym_tbl, app_name, &ret);
 	if (ret != 0) {
-		PMD_INIT_LOG(ERR, "Couldn't read %s from fw", app_name);
+		PMD_INIT_LOG(ERR, "Could not read %s from fw.", app_name);
 		ret = -EIO;
 		goto sym_tbl_cleanup;
 	}

@@ -8,6 +8,7 @@
 #include <string.h>
 #include <unistd.h>
 
+#include <rte_bitops.h>
 #include <rte_common.h>
 #include <rte_ether.h>
 #include <ethdev_driver.h>
@@ -4046,10 +4047,19 @@ mlx5_flow_dv_validate_action_raw_encap_decap
 	const struct mlx5_priv *priv = dev->data->dev_private;
 	int ret;
 
-	if (encap && (!encap->size || !encap->data))
-		return rte_flow_error_set(error, EINVAL,
-					  RTE_FLOW_ERROR_TYPE_ACTION, NULL,
-					  "raw encap data cannot be empty");
+	if (encap) {
+		if (!mlx5_hws_active(dev)) {
+			if (!encap->size || !encap->data)
+				return rte_flow_error_set
+					(error, EINVAL,
+					 RTE_FLOW_ERROR_TYPE_ACTION, NULL, "raw encap data cannot be empty");
+		} else {
+			if (!encap->size)
+				return rte_flow_error_set
+					(error, EINVAL,
+					 RTE_FLOW_ERROR_TYPE_ACTION, NULL, "raw encap size cannot be 0");
+		}
+	}
 	if (decap && encap) {
 		if (decap->size <= MLX5_ENCAPSULATION_DECISION_SIZE &&
 		    encap->size > MLX5_ENCAPSULATION_DECISION_SIZE)
@@ -9068,7 +9078,7 @@ flow_dv_validate(struct rte_eth_dev *dev, const struct rte_flow_attr *attr,
 		    !(non_shared_age && count) &&
 		    (attr->group || (attr->transfer && priv->fdb_def_rule)) &&
 		    priv->sh->flow_hit_aso_en);
-	if (__builtin_popcountl(aso_mask) > 1)
+	if (rte_popcount64(aso_mask) > 1)
 		return rte_flow_error_set(error, ENOTSUP, RTE_FLOW_ERROR_TYPE_ACTION,
 					  NULL, "unsupported combining AGE, METER, CT ASO actions in a single rule");
 	/*
@@ -9829,22 +9839,23 @@ flow_dv_translate_item_gre(void *key, const struct rte_flow_item *item,
 	} gre_crks_rsvd0_ver_m, gre_crks_rsvd0_ver_v;
 	uint16_t protocol_m, protocol_v;
 
-	if (key_type & MLX5_SET_MATCHER_M)
+	if (key_type & MLX5_SET_MATCHER_M) {
 		MLX5_SET(fte_match_set_lyr_2_4, headers_v, ip_protocol, 0xff);
-	else
-		MLX5_SET(fte_match_set_lyr_2_4, headers_v, ip_protocol,
-			 IPPROTO_GRE);
-	if (!gre_v) {
-		gre_v = &empty_gre;
-		gre_m = &empty_gre;
-	} else {
 		if (!gre_m)
 			gre_m = &rte_flow_item_gre_mask;
-	}
-	if (key_type & MLX5_SET_MATCHER_M)
 		gre_v = gre_m;
-	else if (key_type == MLX5_SET_MATCHER_HS_V)
-		gre_m = gre_v;
+	} else {
+		MLX5_SET(fte_match_set_lyr_2_4, headers_v, ip_protocol,
+			 IPPROTO_GRE);
+		if (!gre_v) {
+			gre_v = &empty_gre;
+			gre_m = &empty_gre;
+		} else if (!gre_m) {
+			gre_m = &rte_flow_item_gre_mask;
+		}
+		if (key_type == MLX5_SET_MATCHER_HS_V)
+			gre_m = gre_v;
+	}
 	gre_crks_rsvd0_ver_m.value = rte_be_to_cpu_16(gre_m->c_rsvd0_ver);
 	gre_crks_rsvd0_ver_v.value = rte_be_to_cpu_16(gre_v->c_rsvd0_ver);
 	MLX5_SET(fte_match_set_misc, misc_v, gre_c_present,

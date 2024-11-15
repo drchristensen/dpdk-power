@@ -24,6 +24,7 @@
 #include <unistd.h>
 
 #include <rte_alarm.h>
+#include <rte_bitops.h>
 #include <rte_bpf.h>
 #include <rte_config.h>
 #include <rte_debug.h>
@@ -95,7 +96,6 @@ struct interface {
 	struct rte_bpf_prm *bpf_prm;
 	char name[RTE_ETH_NAME_MAX_LEN];
 
-	struct rte_rxtx_callback *rx_cb[RTE_MAX_QUEUES_PER_PORT];
 	const char *ifname;
 	const char *ifdescr;
 };
@@ -677,7 +677,7 @@ static struct rte_ring *create_ring(void)
 
 	/* Find next power of 2 >= size. */
 	size = ring_size;
-	log2 = sizeof(size) * 8 - __builtin_clzl(size - 1);
+	log2 = sizeof(size) * 8 - rte_clz64(size - 1);
 	size = 1u << log2;
 
 	if (size != ring_size) {
@@ -800,9 +800,10 @@ static dumpcap_out_t create_output(void)
 		free(os);
 
 		TAILQ_FOREACH(intf, &interfaces, next) {
-			rte_pcapng_add_interface(ret.pcapng, intf->port,
-						 intf->ifname, intf->ifdescr,
-						 intf->opts.filter);
+			if (rte_pcapng_add_interface(ret.pcapng, intf->port, intf->ifname,
+						     intf->ifdescr, intf->opts.filter) < 0)
+				rte_exit(EXIT_FAILURE, "rte_pcapng_add_interface %u failed\n",
+					intf->port);
 		}
 	} else {
 		pcap_t *pcap;

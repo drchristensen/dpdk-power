@@ -54,6 +54,8 @@ struct mbox_msghdr {
 #define MBOX_MSG_MASK	 0xFFFF
 #define MBOX_MSG_INVALID 0xFFFE
 #define MBOX_MSG_MAX	 0xFFFF
+#define MBOX_MSG_GENERIC_MAX_ID 0x1FF
+#define MBOX_MSG_REQ_SIZE_MAX	(16 * 1024)
 
 #define MBOX_MESSAGES                                                          \
 	/* Generic mbox IDs (range 0x000 - 0x1FF) */                           \
@@ -147,6 +149,11 @@ struct mbox_msghdr {
 	  msg_rsp)                                                             \
 	M(SSO_GRP_STASH_CONFIG, 0x614, sso_grp_stash_config,                   \
 	  sso_grp_stash_cfg, msg_rsp)                                          \
+	M(SSO_AGGR_SET_CONFIG, 0x615, sso_aggr_setconfig, sso_aggr_setconfig,  \
+	  msg_rsp)                                                             \
+	M(SSO_AGGR_GET_STATS, 0x616, sso_aggr_get_stats, sso_info_req,         \
+	  sso_aggr_stats)                                                      \
+	M(SSO_GET_HW_INFO, 0x617, sso_get_hw_info, msg_req, sso_hw_info)       \
 	/* TIM mbox IDs (range 0x800 - 0x9FF) */                               \
 	M(TIM_LF_ALLOC, 0x800, tim_lf_alloc, tim_lf_alloc_req,                 \
 	  tim_lf_alloc_rsp)                                                    \
@@ -159,6 +166,9 @@ struct mbox_msghdr {
 	  tim_intvl_rsp)                                                       \
 	M(TIM_CAPTURE_COUNTERS, 0x806, tim_capture_counters, msg_req,          \
 	  tim_capture_rsp)                                                     \
+	M(TIM_CONFIG_HWWQE,    0x807, tim_config_hwwqe, tim_cfg_hwwqe_req,     \
+	  msg_rsp)                                                             \
+	M(TIM_GET_HW_INFO,     0x808, tim_get_hw_info, msg_req, tim_hw_info)   \
 	/* CPT mbox IDs (range 0xA00 - 0xBFF) */                               \
 	M(CPT_LF_ALLOC, 0xA00, cpt_lf_alloc, cpt_lf_alloc_req_msg, msg_rsp)    \
 	M(CPT_LF_FREE, 0xA01, cpt_lf_free, msg_req, msg_rsp)                   \
@@ -361,9 +371,7 @@ struct mbox_msghdr {
 
 #define MBOX_UP_MCS_MESSAGES M(MCS_INTR_NOTIFY, 0xE00, mcs_intr_notify, mcs_intr_info, msg_rsp)
 
-#define MBOX_UP_REP_MESSAGES						       \
-M(REP_REPTE_NOTIFY, 0xEF1, rep_repte_notify, rep_repte_req, msg_rsp)           \
-M(REP_SET_MTU, 0xEF2, rep_set_mtu, rep_mtu, msg_rsp)
+#define MBOX_UP_REP_MESSAGES M(REP_EVENT_UP_NOTIFY, 0xEF0, rep_event_up_notify, rep_event, msg_rsp)
 
 enum {
 #define M(_name, _id, _1, _2, _3) MBOX_MSG_##_name = _id,
@@ -2119,6 +2127,33 @@ struct ssow_chng_mship {
 	uint16_t __io hwgrps[MAX_RVU_BLKLF_CNT]; /* Array of hwgrps. */
 };
 
+struct sso_feat_info {
+	uint8_t __io hw_flr : 1;
+	uint8_t __io hw_prefetch : 1;
+	uint8_t __io sw_prefetch : 1;
+	uint8_t __io lsw : 1;
+	uint8_t __io fwd_grp : 1;
+	uint8_t __io eva_present : 1;
+	uint8_t __io no_nsched : 1;
+	uint8_t __io tag_cfg : 1;
+	uint8_t __io gwc_per_core;
+	uint16_t __io hws;
+	uint16_t __io hwgrps;
+	uint16_t __io hwgrps_per_pf;
+	uint16_t __io iue;
+	uint16_t __io taq_lines;
+	uint16_t __io taq_ent_per_line;
+	uint16_t __io xaq_buf_size;
+	uint16_t __io xaq_wq_entries;
+	uint32_t __io eva_ctx_per_hwgrp;
+	uint64_t __io rsvd[2];
+};
+
+struct sso_hw_info {
+	struct mbox_msghdr hdr;
+	struct sso_feat_info feat;
+};
+
 struct sso_hw_setconfig {
 	struct mbox_msghdr hdr;
 	uint32_t __io npa_aura_id;
@@ -2163,6 +2198,13 @@ struct sso_grp_stash_cfg {
 	uint8_t __io num_linesm1 : 4;
 };
 
+struct sso_aggr_setconfig {
+	struct mbox_msghdr hdr;
+	uint16_t __io npa_pf_func;
+	uint16_t __io hwgrp;
+	uint64_t __io rsvd[2];
+};
+
 struct sso_grp_stats {
 	struct mbox_msghdr hdr;
 	uint16_t __io grp;
@@ -2180,6 +2222,16 @@ struct sso_hws_stats {
 	struct mbox_msghdr hdr;
 	uint16_t __io hws;
 	uint64_t __io arbitration;
+};
+
+struct sso_aggr_stats {
+	struct mbox_msghdr hdr;
+	uint16_t __io grp;
+	uint64_t __io flushed;
+	uint64_t __io completed;
+	uint64_t __io npa_fail;
+	uint64_t __io timeout;
+	uint64_t __io rsvd[4];
 };
 
 /* CPT mailbox error codes
@@ -2754,6 +2806,7 @@ enum tim_af_status {
 	TIM_AF_INVALID_ENABLE_DONTFREE = -815,
 	TIM_AF_ENA_DONTFRE_NSET_PERIODIC = -816,
 	TIM_AF_RING_ALREADY_DISABLED = -817,
+	TIM_AF_LF_START_SYNC_FAIL = -818,
 };
 
 enum tim_clk_srcs {
@@ -2846,11 +2899,41 @@ struct tim_config_req {
 	uint8_t __io enabledontfreebuffer;
 	uint32_t __io bucketsize;
 	uint32_t __io chunksize;
-	uint32_t __io interval;
+	uint32_t __io interval_lo;
 	uint8_t __io gpioedge;
-	uint8_t __io rsvd[7];
+	uint8_t __io rsvd[3];
+	uint32_t __io interval_hi;
 	uint64_t __io intervalns;
 	uint64_t __io clockfreq;
+};
+
+struct tim_cfg_hwwqe_req {
+	struct mbox_msghdr hdr;
+	uint16_t __io ring;
+	uint8_t __io grp_ena;
+	uint8_t __io hwwqe_ena;
+	uint8_t __io ins_min_gap;
+	uint8_t __io flw_ctrl_ena;
+	uint8_t __io wqe_rd_clr_ena;
+	uint16_t __io grp_tmo_cntr;
+	uint16_t __io npa_tmo_cntr;
+	uint16_t __io result_offset;
+	uint16_t __io event_count_offset;
+	uint64_t __io rsvd[2];
+};
+
+struct tim_feat_info {
+	uint16_t __io rings;
+	uint8_t __io engines;
+	uint8_t __io hwwqe : 1;
+	uint8_t __io intvl_ext : 1;
+	uint8_t __io rsvd8[4];
+	uint64_t __io rsvd[2];
+};
+
+struct tim_hw_info {
+	struct mbox_msghdr hdr;
+	struct tim_feat_info feat;
 };
 
 struct tim_lf_alloc_rsp {
@@ -2919,16 +3002,24 @@ struct nix_spi_to_sa_delete_req {
 	uint8_t __io way;
 };
 
-struct rep_repte_req {
-	struct mbox_msghdr hdr;
-	uint16_t __io repte_pcifunc;
-	bool __io enable;
+struct rep_evt_data {
+	uint8_t __io port_state;
+	uint8_t __io vf_state;
+	uint16_t __io rx_mode;
+	uint16_t __io rx_flags;
+	uint16_t __io mtu;
+	uint64_t __io rsvd[5];
 };
 
-struct rep_mtu {
+struct rep_event {
 	struct mbox_msghdr hdr;
-	uint16_t __io rep_pcifunc;
-	uint16_t __io rep_id;
-	uint16_t __io mtu;
+	uint16_t __io pcifunc;
+#define RVU_EVENT_PORT_STATE	 BIT_ULL(0)
+#define RVU_EVENT_PFVF_STATE	 BIT_ULL(1)
+#define RVU_EVENT_MTU_CHANGE	 BIT_ULL(2)
+#define RVU_EVENT_RX_MODE_CHANGE BIT_ULL(3)
+	uint16_t __io event;
+	struct rep_evt_data evt_data;
 };
+
 #endif /* __ROC_MBOX_H__ */

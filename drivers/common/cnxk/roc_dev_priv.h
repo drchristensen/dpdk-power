@@ -46,11 +46,17 @@ typedef void (*link_status_get_t)(void *roc_nix,
 /* Representee notification callback */
 typedef int (*repte_notify_t)(void *roc_nix, void *notify_msg);
 
+/* RVU Message process callback */
+typedef int (*msg_process_cb_t)(uint16_t vf, uint16_t msg_id,
+				void *req, uint16_t req_len,
+				void **rsp, uint16_t *rsp_len);
+
 struct dev_ops {
 	link_info_t link_status_update;
 	ptp_info_t ptp_info_update;
 	link_status_get_t link_status_get;
 	q_err_cb_t q_err_cb;
+	msg_process_cb_t msg_process_cb;
 	repte_notify_t repte_notify;
 };
 
@@ -141,6 +147,7 @@ struct dev {
 	void *roc_cpt;
 	void *roc_tim;
 	void *roc_ml;
+	void *roc_rvu_lf;
 	bool disable_shared_lmt; /* false(default): shared lmt mode enabled */
 	const struct plt_memzone *lmt_mz;
 	struct mbox_sync sync;

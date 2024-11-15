@@ -1612,9 +1612,11 @@ err_secondary:
 	priv->ctrl_flows = 0;
 	rte_spinlock_init(&priv->flow_list_lock);
 	TAILQ_INIT(&priv->flow_meters);
-	priv->mtr_profile_tbl = mlx5_l3t_create(MLX5_L3T_TYPE_PTR);
-	if (!priv->mtr_profile_tbl)
-		goto error;
+	if (priv->mtr_en) {
+		priv->mtr_profile_tbl = mlx5_l3t_create(MLX5_L3T_TYPE_PTR);
+		if (!priv->mtr_profile_tbl)
+			goto error;
+	}
 	/* Bring Ethernet device up. */
 	DRV_LOG(DEBUG, "port %u forcing Ethernet interface up",
 		eth_dev->data->port_id);
@@ -1701,6 +1703,9 @@ err_secondary:
 		    (sh->config.dv_flow_en == 1 && mlx5_flow_discover_ipv6_tc_support(eth_dev)))
 			sh->phdev->config.ipv6_tc_fallback = MLX5_IPV6_TC_FALLBACK;
 	}
+	rte_spinlock_init(&priv->hw_ctrl_lock);
+	LIST_INIT(&priv->hw_ctrl_flows);
+	LIST_INIT(&priv->hw_ext_ctrl_flows);
 	if (priv->sh->config.dv_flow_en == 2) {
 #ifdef HAVE_MLX5_HWS_SUPPORT
 		if (priv->sh->config.dv_esw_en) {
@@ -2548,13 +2553,6 @@ mlx5_os_pci_probe_pf(struct mlx5_common_device *cdev,
 			if (!ret && (list[ns].info.representor ^
 				     list[ns].info.master))
 				ns++;
-		}
-		if (!ns) {
-			DRV_LOG(ERR,
-				"Unable to recognize master/representors on the IB device with multiple ports.");
-			rte_errno = ENOENT;
-			ret = -rte_errno;
-			goto exit;
 		}
 	} else {
 		/*

@@ -29,6 +29,7 @@ subdirs = [
         'event',          # depends on common, bus, mempool and net.
         'baseband',       # depends on common and bus.
         'gpu',            # depends on common and bus.
+        'power',
 ]
 
 if meson.is_cross_build()
@@ -59,9 +60,12 @@ default_cflags = machine_args
 default_cflags += ['-DALLOW_EXPERIMENTAL_API']
 default_cflags += ['-DALLOW_INTERNAL_API']
 
-if cc.has_argument('-Wno-format-truncation')
-    default_cflags += '-Wno-format-truncation'
-endif
+warning_disable_cflags = ['-Wno-format-truncation', '-Wno-address-of-packed-member']
+foreach cflag:warning_disable_cflags
+    if cc.has_argument(cflag)
+        default_cflags += cflag
+    endif
+endforeach
 
 dpdk_drivers_build_dir = meson.current_build_dir()
 

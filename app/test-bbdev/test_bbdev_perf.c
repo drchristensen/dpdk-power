@@ -111,6 +111,8 @@ static uint32_t ldpc_cap_flags;
 /* FFT window width predefined on device and on vector. */
 static int fft_window_width_dev;
 
+bool dump_ops = true;
+
 /* Represents tested active devices */
 static struct active_device {
 	const char *driver_name;
@@ -3109,6 +3111,20 @@ run_test_case_on_device(test_case_function *test_case_func, uint8_t dev_id,
 	/* Run test case function */
 	t_ret = test_case_func(ad, op_params);
 
+	if (dump_ops) {
+		/* Dump queue information in local file. */
+		static FILE *fd;
+		fd = fopen("./dump_bbdev_queue_ops.txt", "w");
+		if (fd == NULL) {
+			printf("Open dump file error.\n");
+			return -1;
+		}
+		rte_bbdev_queue_ops_dump(ad->dev_id, ad->queue_ids[i], fd);
+		fclose(fd);
+		/* Run it once only. */
+		dump_ops = false;
+	}
+
 	/* Free active device resources and return */
 	free_buffers(ad, op_params);
 	return t_ret;
@@ -3519,6 +3535,10 @@ throughput_intr_lcore_ldpc_dec(void *arg)
 			rte_atomic_store_explicit(&tp->nb_dequeued, 0, rte_memory_order_relaxed);
 	}
 
+	TEST_ASSERT_SUCCESS(rte_bbdev_queue_intr_disable(tp->dev_id, queue_id),
+			"Failed to disable interrupts for dev: %u, queue_id: %u",
+			tp->dev_id, queue_id);
+
 	return TEST_SUCCESS;
 }
 
@@ -3613,6 +3633,10 @@ throughput_intr_lcore_dec(void *arg)
 			rte_atomic_store_explicit(&tp->nb_dequeued, 0, rte_memory_order_relaxed);
 	}
 
+	TEST_ASSERT_SUCCESS(rte_bbdev_queue_intr_disable(tp->dev_id, queue_id),
+			"Failed to disable interrupts for dev: %u, queue_id: %u",
+			tp->dev_id, queue_id);
+
 	return TEST_SUCCESS;
 }
 
@@ -3701,6 +3725,10 @@ throughput_intr_lcore_enc(void *arg)
 		if (j != TEST_REPETITIONS - 1)
 			rte_atomic_store_explicit(&tp->nb_dequeued, 0, rte_memory_order_relaxed);
 	}
+
+	TEST_ASSERT_SUCCESS(rte_bbdev_queue_intr_disable(tp->dev_id, queue_id),
+			"Failed to disable interrupts for dev: %u, queue_id: %u",
+			tp->dev_id, queue_id);
 
 	return TEST_SUCCESS;
 }
@@ -3794,6 +3822,10 @@ throughput_intr_lcore_ldpc_enc(void *arg)
 			rte_atomic_store_explicit(&tp->nb_dequeued, 0, rte_memory_order_relaxed);
 	}
 
+	TEST_ASSERT_SUCCESS(rte_bbdev_queue_intr_disable(tp->dev_id, queue_id),
+			"Failed to disable interrupts for dev: %u, queue_id: %u",
+			tp->dev_id, queue_id);
+
 	return TEST_SUCCESS;
 }
 
@@ -3885,6 +3917,10 @@ throughput_intr_lcore_fft(void *arg)
 			rte_atomic_store_explicit(&tp->nb_dequeued, 0, rte_memory_order_relaxed);
 	}
 
+	TEST_ASSERT_SUCCESS(rte_bbdev_queue_intr_disable(tp->dev_id, queue_id),
+			"Failed to disable interrupts for dev: %u, queue_id: %u",
+			tp->dev_id, queue_id);
+
 	return TEST_SUCCESS;
 }
 
@@ -3969,6 +4005,10 @@ throughput_intr_lcore_mldts(void *arg)
 		if (j != TEST_REPETITIONS - 1)
 			rte_atomic_store_explicit(&tp->nb_dequeued, 0, rte_memory_order_relaxed);
 	}
+
+	TEST_ASSERT_SUCCESS(rte_bbdev_queue_intr_disable(tp->dev_id, queue_id),
+			"Failed to disable interrupts for dev: %u, queue_id: %u",
+			tp->dev_id, queue_id);
 
 	return TEST_SUCCESS;
 }

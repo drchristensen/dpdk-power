@@ -24,6 +24,20 @@
 #define CTRL_VNIC_NB_DESC 512
 
 int
+nfp_flower_pf_stop(struct rte_eth_dev *dev)
+{
+	struct nfp_net_hw_priv *hw_priv;
+	struct nfp_flower_representor *repr;
+
+	repr = dev->data->dev_private;
+	hw_priv = dev->process_private;
+	nfp_flower_cmsg_port_mod(repr->app_fw_flower, repr->port_id, false);
+	(void)nfp_eth_set_configured(hw_priv->pf_dev->cpp, repr->nfp_idx, 0);
+
+	return nfp_net_stop(dev);
+}
+
+int
 nfp_flower_pf_start(struct rte_eth_dev *dev)
 {
 	int ret;
@@ -34,6 +48,7 @@ nfp_flower_pf_start(struct rte_eth_dev *dev)
 	struct nfp_net_hw *net_hw;
 	struct rte_eth_conf *dev_conf;
 	struct rte_eth_rxmode *rxmode;
+	struct nfp_net_hw_priv *hw_priv;
 	struct nfp_flower_representor *repr;
 
 	repr = dev->data->dev_private;
@@ -71,7 +86,7 @@ nfp_flower_pf_start(struct rte_eth_dev *dev)
 	/* If an error when reconfig we avoid to change hw state */
 	ret = nfp_reconfig(hw, new_ctrl, update);
 	if (ret != 0) {
-		PMD_INIT_LOG(ERR, "Failed to reconfig PF vnic");
+		PMD_INIT_LOG(ERR, "Failed to reconfig PF vnic.");
 		return -EIO;
 	}
 
@@ -80,8 +95,14 @@ nfp_flower_pf_start(struct rte_eth_dev *dev)
 	/* Setup the freelist ring */
 	ret = nfp_net_rx_freelist_setup(dev);
 	if (ret != 0) {
-		PMD_INIT_LOG(ERR, "Error with flower PF vNIC freelist setup");
+		PMD_INIT_LOG(ERR, "Error with flower PF vNIC freelist setup.");
 		return -EIO;
+	}
+
+	hw_priv = dev->process_private;
+	if (hw_priv->pf_dev->multi_pf.enabled) {
+		(void)nfp_eth_set_configured(hw_priv->pf_dev->cpp, repr->nfp_idx, 1);
+		nfp_flower_cmsg_port_mod(repr->app_fw_flower, repr->port_id, true);
 	}
 
 	for (i = 0; i < dev->data->nb_rx_queues; i++)
@@ -134,12 +155,12 @@ nfp_flower_pf_dispatch_pkts(struct nfp_net_rxq *rxq,
 
 	repr = nfp_flower_get_repr(rxq->hw_priv, port_id);
 	if (repr == NULL) {
-		PMD_RX_LOG(ERR, "Can not get repr for port %u", port_id);
+		PMD_RX_LOG(ERR, "Can not get repr for port %u.", port_id);
 		return false;
 	}
 
 	if (repr->ring == NULL || repr->ring[rxq->qidx] == NULL) {
-		PMD_RX_LOG(ERR, "No ring available for repr_port %s", repr->name);
+		PMD_RX_LOG(ERR, "No ring available for repr_port %s.", repr->name);
 		return false;
 	}
 
@@ -194,6 +215,76 @@ nfp_flower_pf_xmit_pkts(void *tx_queue,
 	return app_fw_flower->nfd_func.pf_xmit_t(tx_queue, tx_pkts, nb_pkts);
 }
 
+uint16_t
+nfp_flower_multiple_pf_recv_pkts(void *rx_queue,
+		struct rte_mbuf **rx_pkts,
+		uint16_t nb_pkts)
+{
+	int i;
+	uint16_t recv;
+	uint32_t data_len;
+	struct nfp_net_rxq *rxq;
+	struct rte_eth_dev *repr_dev;
+	struct nfp_flower_representor *repr;
+
+	recv = nfp_net_recv_pkts(rx_queue, rx_pkts, nb_pkts);
+	if (recv != 0) {
+		/* Grab a handle to the representor struct */
+		rxq = rx_queue;
+		repr_dev = &rte_eth_devices[rxq->port_id];
+		repr = repr_dev->data->dev_private;
+
+		data_len = 0;
+		for (i = 0; i < recv; i++)
+			data_len += rx_pkts[i]->data_len;
+
+		repr->repr_stats.ipackets += recv;
+		repr->repr_stats.q_ipackets[rxq->qidx] += recv;
+		repr->repr_stats.q_ibytes[rxq->qidx] += data_len;
+	}
+
+	return recv;
+}
+
+uint16_t
+nfp_flower_multiple_pf_xmit_pkts(void *tx_queue,
+		struct rte_mbuf **tx_pkts,
+		uint16_t nb_pkts)
+{
+	int i;
+	uint16_t sent;
+	uint32_t data_len;
+	struct nfp_net_txq *txq;
+	struct rte_eth_dev *repr_dev;
+	struct nfp_flower_representor *repr;
+
+	txq = tx_queue;
+	if (unlikely(txq == NULL)) {
+		PMD_TX_LOG(ERR, "TX Bad queue.");
+		return 0;
+	}
+
+	/* Grab a handle to the representor struct */
+	repr_dev = &rte_eth_devices[txq->port_id];
+	repr = repr_dev->data->dev_private;
+	for (i = 0; i < nb_pkts; i++)
+		nfp_flower_pkt_add_metadata(repr->app_fw_flower,
+				tx_pkts[i], repr->port_id);
+
+	sent = nfp_flower_pf_xmit_pkts(tx_queue, tx_pkts, nb_pkts);
+	if (sent != 0) {
+		data_len = 0;
+		for (i = 0; i < sent; i++)
+			data_len += tx_pkts[i]->data_len;
+
+		repr->repr_stats.opackets += sent;
+		repr->repr_stats.q_opackets[txq->qidx] += sent;
+		repr->repr_stats.q_obytes[txq->qidx] += data_len;
+	}
+
+	return sent;
+}
+
 static int
 nfp_flower_init_vnic_common(struct nfp_net_hw_priv *hw_priv,
 		struct nfp_net_hw *hw,
@@ -207,7 +298,7 @@ nfp_flower_init_vnic_common(struct nfp_net_hw_priv *hw_priv,
 
 	pf_dev = hw_priv->pf_dev;
 
-	PMD_INIT_LOG(DEBUG, "%s vNIC ctrl bar: %p", vnic_type, hw->super.ctrl_bar);
+	PMD_INIT_LOG(DEBUG, "%s vNIC ctrl bar: %p.", vnic_type, hw->super.ctrl_bar);
 
 	err = nfp_net_common_init(pf_dev, hw);
 	if (err != 0)
@@ -264,7 +355,7 @@ nfp_flower_init_ctrl_vnic(struct nfp_app_fw_flower *app_fw_flower,
 
 	ret = nfp_flower_init_vnic_common(hw_priv, hw, "ctrl_vnic");
 	if (ret != 0) {
-		PMD_INIT_LOG(ERR, "Could not init pf vnic");
+		PMD_INIT_LOG(ERR, "Could not init pf vnic.");
 		return -EINVAL;
 	}
 
@@ -272,7 +363,7 @@ nfp_flower_init_ctrl_vnic(struct nfp_app_fw_flower *app_fw_flower,
 	app_fw_flower->ctrl_ethdev = rte_zmalloc("nfp_ctrl_vnic",
 			sizeof(struct rte_eth_dev), RTE_CACHE_LINE_SIZE);
 	if (app_fw_flower->ctrl_ethdev == NULL) {
-		PMD_INIT_LOG(ERR, "Could not allocate ctrl vnic");
+		PMD_INIT_LOG(ERR, "Could not allocate ctrl vnic.");
 		return -ENOMEM;
 	}
 
@@ -283,7 +374,7 @@ nfp_flower_init_ctrl_vnic(struct nfp_app_fw_flower *app_fw_flower,
 	eth_dev->data = rte_zmalloc("nfp_ctrl_vnic_data",
 			sizeof(struct rte_eth_dev_data), RTE_CACHE_LINE_SIZE);
 	if (eth_dev->data == NULL) {
-		PMD_INIT_LOG(ERR, "Could not allocate ctrl vnic data");
+		PMD_INIT_LOG(ERR, "Could not allocate ctrl vnic data.");
 		ret = -ENOMEM;
 		goto eth_dev_cleanup;
 	}
@@ -298,7 +389,7 @@ nfp_flower_init_ctrl_vnic(struct nfp_app_fw_flower *app_fw_flower,
 			rte_pktmbuf_pool_create(ctrl_pktmbuf_pool_name,
 			4 * CTRL_VNIC_NB_DESC, 64, 0, 9216, numa_node);
 	if (app_fw_flower->ctrl_pktmbuf_pool == NULL) {
-		PMD_INIT_LOG(ERR, "Create mbuf pool for ctrl vnic failed");
+		PMD_INIT_LOG(ERR, "Create mbuf pool for ctrl vnic failed.");
 		ret = -ENOMEM;
 		goto dev_data_cleanup;
 	}
@@ -312,7 +403,7 @@ nfp_flower_init_ctrl_vnic(struct nfp_app_fw_flower *app_fw_flower,
 			sizeof(eth_dev->data->rx_queues[0]) * n_rxq,
 			RTE_CACHE_LINE_SIZE);
 	if (eth_dev->data->rx_queues == NULL) {
-		PMD_INIT_LOG(ERR, "rte_zmalloc failed for ctrl vNIC rx queues");
+		PMD_INIT_LOG(ERR, "The rte_zmalloc failed for ctrl vNIC rx queues.");
 		ret = -ENOMEM;
 		goto mempool_cleanup;
 	}
@@ -321,7 +412,7 @@ nfp_flower_init_ctrl_vnic(struct nfp_app_fw_flower *app_fw_flower,
 			sizeof(eth_dev->data->tx_queues[0]) * n_txq,
 			RTE_CACHE_LINE_SIZE);
 	if (eth_dev->data->tx_queues == NULL) {
-		PMD_INIT_LOG(ERR, "rte_zmalloc failed for ctrl vNIC tx queues");
+		PMD_INIT_LOG(ERR, "The rte_zmalloc failed for ctrl vNIC tx queues.");
 		ret = -ENOMEM;
 		goto rx_queue_free;
 	}
@@ -339,7 +430,7 @@ nfp_flower_init_ctrl_vnic(struct nfp_app_fw_flower *app_fw_flower,
 				sizeof(struct nfp_net_rxq), RTE_CACHE_LINE_SIZE,
 				numa_node);
 		if (rxq == NULL) {
-			PMD_DRV_LOG(ERR, "Error allocating rxq");
+			PMD_DRV_LOG(ERR, "Error allocating rxq.");
 			ret = -ENOMEM;
 			goto rx_queue_setup_cleanup;
 		}
@@ -373,7 +464,7 @@ nfp_flower_init_ctrl_vnic(struct nfp_app_fw_flower *app_fw_flower,
 				hw_priv->dev_info->max_qc_size,
 				NFP_MEMZONE_ALIGN, numa_node);
 		if (tz == NULL) {
-			PMD_DRV_LOG(ERR, "Error allocating rx dma");
+			PMD_DRV_LOG(ERR, "Error allocating rx dma.");
 			rte_free(rxq);
 			ret = -ENOMEM;
 			goto rx_queue_setup_cleanup;
@@ -414,7 +505,7 @@ nfp_flower_init_ctrl_vnic(struct nfp_app_fw_flower *app_fw_flower,
 				sizeof(struct nfp_net_txq), RTE_CACHE_LINE_SIZE,
 				numa_node);
 		if (txq == NULL) {
-			PMD_DRV_LOG(ERR, "Error allocating txq");
+			PMD_DRV_LOG(ERR, "Error allocating txq.");
 			ret = -ENOMEM;
 			goto tx_queue_setup_cleanup;
 		}
@@ -431,7 +522,7 @@ nfp_flower_init_ctrl_vnic(struct nfp_app_fw_flower *app_fw_flower,
 				hw_priv->dev_info->max_qc_size,
 				NFP_MEMZONE_ALIGN, numa_node);
 		if (tz == NULL) {
-			PMD_DRV_LOG(ERR, "Error allocating tx dma");
+			PMD_DRV_LOG(ERR, "Error allocating tx dma.");
 			rte_free(txq);
 			ret = -ENOMEM;
 			goto tx_queue_setup_cleanup;
@@ -476,7 +567,7 @@ nfp_flower_init_ctrl_vnic(struct nfp_app_fw_flower *app_fw_flower,
 	/* Alloc sync memory zone */
 	ret = nfp_flower_service_sync_alloc(hw_priv);
 	if (ret != 0) {
-		PMD_INIT_LOG(ERR, "Alloc sync memory zone failed");
+		PMD_INIT_LOG(ERR, "Alloc sync memory zone failed.");
 		goto tx_queue_setup_cleanup;
 	}
 
@@ -593,7 +684,7 @@ nfp_flower_start_ctrl_vnic(struct nfp_app_fw_flower *app_fw_flower)
 	/* If an error when reconfig we avoid to change hw state */
 	ret = nfp_reconfig(hw, new_ctrl, update);
 	if (ret != 0) {
-		PMD_INIT_LOG(ERR, "Failed to reconfig ctrl vnic");
+		PMD_INIT_LOG(ERR, "Failed to reconfig ctrl vnic.");
 		return -EIO;
 	}
 
@@ -602,7 +693,7 @@ nfp_flower_start_ctrl_vnic(struct nfp_app_fw_flower *app_fw_flower)
 	/* Setup the freelist ring */
 	ret = nfp_net_rx_freelist_setup(dev);
 	if (ret != 0) {
-		PMD_INIT_LOG(ERR, "Error with flower ctrl vNIC freelist setup");
+		PMD_INIT_LOG(ERR, "Error with flower ctrl vNIC freelist setup.");
 		return -EIO;
 	}
 
@@ -662,7 +753,7 @@ nfp_init_app_fw_flower(struct nfp_net_hw_priv *hw_priv)
 	app_fw_flower = rte_zmalloc_socket("nfp_app_fw_flower", sizeof(*app_fw_flower),
 			RTE_CACHE_LINE_SIZE, numa_node);
 	if (app_fw_flower == NULL) {
-		PMD_INIT_LOG(ERR, "Could not malloc app fw flower");
+		PMD_INIT_LOG(ERR, "Could not malloc app fw flower.");
 		return -ENOMEM;
 	}
 
@@ -670,13 +761,13 @@ nfp_init_app_fw_flower(struct nfp_net_hw_priv *hw_priv)
 
 	ret = nfp_flow_priv_init(pf_dev);
 	if (ret != 0) {
-		PMD_INIT_LOG(ERR, "init flow priv failed");
+		PMD_INIT_LOG(ERR, "Init flow priv failed.");
 		goto app_cleanup;
 	}
 
 	ret = nfp_mtr_priv_init(pf_dev);
 	if (ret != 0) {
-		PMD_INIT_LOG(ERR, "Error initializing metering private data");
+		PMD_INIT_LOG(ERR, "Error initializing metering private data.");
 		goto flow_priv_cleanup;
 	}
 
@@ -684,7 +775,7 @@ nfp_init_app_fw_flower(struct nfp_net_hw_priv *hw_priv)
 	pf_hw = rte_zmalloc_socket("nfp_pf_vnic", 2 * sizeof(struct nfp_net_hw),
 			RTE_CACHE_LINE_SIZE, numa_node);
 	if (pf_hw == NULL) {
-		PMD_INIT_LOG(ERR, "Could not malloc nfp pf vnic");
+		PMD_INIT_LOG(ERR, "Could not malloc nfp pf vnic.");
 		ret = -ENOMEM;
 		goto mtr_priv_cleanup;
 	}
@@ -694,7 +785,7 @@ nfp_init_app_fw_flower(struct nfp_net_hw_priv *hw_priv)
 	pf_dev->ctrl_bar = nfp_rtsym_map(pf_dev->sym_tbl, bar_name,
 			pf_dev->ctrl_bar_size, &pf_dev->ctrl_area);
 	if (pf_dev->ctrl_bar == NULL) {
-		PMD_INIT_LOG(ERR, "Cloud not map the PF vNIC ctrl bar");
+		PMD_INIT_LOG(ERR, "Could not map the PF vNIC ctrl bar.");
 		ret = -ENODEV;
 		goto vnic_cleanup;
 	}
@@ -703,7 +794,7 @@ nfp_init_app_fw_flower(struct nfp_net_hw_priv *hw_priv)
 	ext_features = nfp_rtsym_read_le(pf_dev->sym_tbl, "_abi_flower_extra_features",
 			&err);
 	if (err != 0) {
-		PMD_INIT_LOG(ERR, "Couldn't read extra features from fw");
+		PMD_INIT_LOG(ERR, "Could not read extra features from fw.");
 		ret = -EIO;
 		goto pf_cpp_area_cleanup;
 	}
@@ -718,13 +809,13 @@ nfp_init_app_fw_flower(struct nfp_net_hw_priv *hw_priv)
 
 	ret = nfp_flower_init_vnic_common(hw_priv, pf_hw, "pf_vnic");
 	if (ret != 0) {
-		PMD_INIT_LOG(ERR, "Could not initialize flower PF vNIC");
+		PMD_INIT_LOG(ERR, "Could not initialize flower PF vNIC.");
 		goto pf_cpp_area_cleanup;
 	}
 
 	ret = nfp_net_vf_config_app_init(pf_hw, pf_dev);
 	if (ret != 0) {
-		PMD_INIT_LOG(ERR, "Failed to init sriov module");
+		PMD_INIT_LOG(ERR, "Failed to init sriov module.");
 		goto pf_cpp_area_cleanup;
 	}
 
@@ -739,35 +830,35 @@ nfp_init_app_fw_flower(struct nfp_net_hw_priv *hw_priv)
 	ctrl_hw->super.ctrl_bar = nfp_rtsym_map(pf_dev->sym_tbl, ctrl_name,
 			pf_dev->ctrl_bar_size, &ctrl_hw->ctrl_area);
 	if (ctrl_hw->super.ctrl_bar == NULL) {
-		PMD_INIT_LOG(ERR, "Cloud not map the ctrl vNIC ctrl bar");
+		PMD_INIT_LOG(ERR, "Could not map the ctrl vNIC ctrl bar.");
 		ret = -ENODEV;
 		goto pf_cpp_area_cleanup;
 	}
 
 	ret = nfp_flower_init_ctrl_vnic(app_fw_flower, hw_priv);
 	if (ret != 0) {
-		PMD_INIT_LOG(ERR, "Could not initialize flower ctrl vNIC");
+		PMD_INIT_LOG(ERR, "Could not initialize flower ctrl vNIC.");
 		goto ctrl_cpp_area_cleanup;
 	}
 
 	/* Start the ctrl vNIC */
 	ret = nfp_flower_start_ctrl_vnic(app_fw_flower);
 	if (ret != 0) {
-		PMD_INIT_LOG(ERR, "Could not start flower ctrl vNIC");
+		PMD_INIT_LOG(ERR, "Could not start flower ctrl vNIC.");
 		goto ctrl_vnic_cleanup;
 	}
 
 	/* Start up flower services */
 	ret = nfp_flower_service_start(hw_priv);
 	if (ret != 0) {
-		PMD_INIT_LOG(ERR, "Could not enable flower services");
+		PMD_INIT_LOG(ERR, "Could not enable flower services.");
 		ret = -ESRCH;
 		goto ctrl_vnic_cleanup;
 	}
 
 	ret = nfp_flower_repr_create(app_fw_flower, hw_priv);
 	if (ret != 0) {
-		PMD_INIT_LOG(ERR, "Could not create representor ports");
+		PMD_INIT_LOG(ERR, "Could not create representor ports.");
 		goto ctrl_vnic_service_stop;
 	}
 
@@ -807,7 +898,7 @@ nfp_uninit_app_fw_flower(struct nfp_net_hw_priv *hw_priv)
 	nfp_mtr_priv_uninit(pf_dev);
 	nfp_flow_priv_uninit(pf_dev);
 	if (rte_eth_switch_domain_free(app_fw_flower->switch_domain_id) != 0)
-		PMD_DRV_LOG(WARNING, "Failed to free switch domain for device");
+		PMD_DRV_LOG(WARNING, "Failed to free switch domain for device.");
 	rte_free(app_fw_flower);
 }
 
@@ -833,12 +924,12 @@ nfp_secondary_init_app_fw_flower(struct nfp_net_hw_priv *hw_priv)
 	pci_name = strchr(hw_priv->pf_dev->pci_dev->name, ':') + 1;
 	snprintf(port_name, RTE_ETH_NAME_MAX_LEN, "%s_repr_pf", pci_name);
 
-	PMD_INIT_LOG(DEBUG, "Secondary attaching to port %s", port_name);
+	PMD_INIT_LOG(DEBUG, "Secondary attaching to port %s.", port_name);
 
 	ret = rte_eth_dev_create(&hw_priv->pf_dev->pci_dev->device, port_name, 0, NULL,
 			NULL, nfp_secondary_flower_init, hw_priv);
 	if (ret != 0) {
-		PMD_INIT_LOG(ERR, "Secondary process attach to port %s failed", port_name);
+		PMD_INIT_LOG(ERR, "Secondary process attach to port %s failed.", port_name);
 		return -ENODEV;
 	}
 

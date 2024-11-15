@@ -108,6 +108,19 @@ union rte_thash_tuple {
 	struct rte_ipv6_tuple	v6;
 };
 
+/** @internal
+ *  @brief Generates a random polynomial
+ *
+ * @param poly_degree
+ *   degree of the polynomial
+ *
+ * @return
+ *   random polynomial
+ */
+__rte_internal
+uint32_t
+thash_get_rand_poly(uint32_t poly_degree);
+
 /**
  * Prepare special converted key to use with rte_softrss_be()
  * @param orig
@@ -446,6 +459,35 @@ rte_thash_adjust_tuple(struct rte_thash_ctx *ctx,
 	uint8_t *tuple, unsigned int tuple_len,
 	uint32_t desired_value, unsigned int attempts,
 	rte_thash_check_tuple_t fn, void *userdata);
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice.
+ *
+ * Modify RSS hash key such that subtuple bits corresponding to `entropy_sz`
+ * bits starting from `entropy_start` will have the most even distribution with
+ * this key with a given ReTa size.
+ *
+ * @param key
+ *  Pointer to the RSS hash key.
+ * @param key_len
+ *  Length of the key.
+ * @param reta_sz_log
+ *  Log2 of the size of RSS redirection table,
+ *  i.e. number of bits of the RSS hash value used to identify RSS ReTa entry.
+ * @param entropy_start
+ *  Bit offset from the beginning of the tuple
+ *  where user expects best distribution of the subtuple values.
+ * @param entropy_sz
+ *  Size in bits of the part of subtuple.
+ *
+ * @return
+ *  0 on success negative otherwise
+ */
+__rte_experimental
+int
+rte_thash_gen_key(uint8_t *key, size_t key_len, size_t reta_sz_log,
+	uint32_t entropy_start, size_t entropy_sz);
 
 #ifdef __cplusplus
 }

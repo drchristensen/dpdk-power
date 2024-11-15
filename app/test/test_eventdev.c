@@ -1450,7 +1450,7 @@ static struct unit_test_suite eventdev_common_testsuite  = {
 			test_eventdev_start_stop),
 		TEST_CASE_ST(eventdev_configure_setup, eventdev_stop_device,
 			test_eventdev_profile_switch),
-		TEST_CASE_ST(eventdev_configure_setup, NULL,
+		TEST_CASE_ST(eventdev_configure_setup, eventdev_stop_device,
 			test_eventdev_preschedule_configure),
 		TEST_CASE_ST(eventdev_configure_setup, eventdev_stop_device,
 			test_eventdev_preschedule_modify),
@@ -1521,6 +1521,12 @@ test_eventdev_selftest_cn10k(void)
 	return test_eventdev_selftest_impl("event_cn10k", "");
 }
 
+static int
+test_eventdev_selftest_cn20k(void)
+{
+	return test_eventdev_selftest_impl("event_cn20k", "");
+}
+
 #endif /* !RTE_EXEC_ENV_WINDOWS */
 
 REGISTER_FAST_TEST(eventdev_common_autotest, true, true, test_eventdev_common);
@@ -1532,5 +1538,6 @@ REGISTER_DRIVER_TEST(eventdev_selftest_dpaa2, test_eventdev_selftest_dpaa2);
 REGISTER_DRIVER_TEST(eventdev_selftest_dlb2, test_eventdev_selftest_dlb2);
 REGISTER_DRIVER_TEST(eventdev_selftest_cn9k, test_eventdev_selftest_cn9k);
 REGISTER_DRIVER_TEST(eventdev_selftest_cn10k, test_eventdev_selftest_cn10k);
+REGISTER_DRIVER_TEST(eventdev_selftest_cn20k, test_eventdev_selftest_cn20k);
 
 #endif /* !RTE_EXEC_ENV_WINDOWS */

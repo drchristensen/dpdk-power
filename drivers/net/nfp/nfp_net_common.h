@@ -169,6 +169,9 @@ struct nfp_pf_dev {
 
 	/** Record the speed uptade */
 	bool speed_updated;
+
+	/** Function pointer used to check the metadata of recv pkts. */
+	bool (*recv_pkt_meta_check_t)(struct nfp_net_meta_parsed *meta);
 };
 
 #define NFP_NET_ETH_FLOW_LIMIT    8
@@ -345,7 +348,10 @@ void nfp_net_stop_rx_queue(struct rte_eth_dev *dev);
 void nfp_net_close_rx_queue(struct rte_eth_dev *dev);
 void nfp_net_stop_tx_queue(struct rte_eth_dev *dev);
 void nfp_net_close_tx_queue(struct rte_eth_dev *dev);
-int nfp_net_set_vxlan_port(struct nfp_net_hw *hw, size_t idx, uint16_t port);
+int nfp_net_set_vxlan_port(struct nfp_net_hw *hw,
+		size_t idx,
+		uint16_t port,
+		uint32_t ctrl);
 void nfp_net_rx_desc_limits(struct nfp_net_hw_priv *hw_priv,
 		uint16_t *min_rx_desc,
 		uint16_t *max_rx_desc);
@@ -386,6 +392,15 @@ bool nfp_net_version_check(struct nfp_hw *hw,
 void nfp_net_ctrl_bar_size_set(struct nfp_pf_dev *pf_dev);
 void nfp_net_notify_port_speed(struct nfp_net_hw *hw,
 		struct rte_eth_link *link);
+bool nfp_net_recv_pkt_meta_check_register(struct nfp_net_hw_priv *hw_priv);
+
+int nfp_net_get_eeprom_len(struct rte_eth_dev *dev);
+int nfp_net_get_eeprom(struct rte_eth_dev *dev, struct rte_dev_eeprom_info *eeprom);
+int nfp_net_set_eeprom(struct rte_eth_dev *dev, struct rte_dev_eeprom_info *eeprom);
+int nfp_net_get_module_info(struct rte_eth_dev *dev, struct rte_eth_dev_module_info *info);
+int nfp_net_get_module_eeprom(struct rte_eth_dev *dev, struct rte_dev_eeprom_info *info);
+int nfp_net_led_on(struct rte_eth_dev *dev);
+int nfp_net_led_off(struct rte_eth_dev *dev);
 
 #define NFP_PRIV_TO_APP_FW_NIC(app_fw_priv)\
 	((struct nfp_app_fw_nic *)app_fw_priv)

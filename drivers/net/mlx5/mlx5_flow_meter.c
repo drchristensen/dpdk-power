@@ -378,8 +378,8 @@ mlx5_flow_meter_profile_find(struct mlx5_priv *priv, uint32_t meter_profile_id)
 
 	if (priv->mtr_profile_arr)
 		return &priv->mtr_profile_arr[meter_profile_id];
-	if (mlx5_l3t_get_entry(priv->mtr_profile_tbl,
-			       meter_profile_id, &data) || !data.ptr)
+	if (!priv->mtr_profile_tbl ||
+	    mlx5_l3t_get_entry(priv->mtr_profile_tbl, meter_profile_id, &data) || !data.ptr)
 		return NULL;
 	fmp = data.ptr;
 	/* Remove reference taken by the mlx5_l3t_get_entry. */
@@ -745,6 +745,10 @@ mlx5_flow_mtr_cap_get(struct rte_eth_dev *dev,
 	struct mlx5_priv *priv = dev->data->dev_private;
 	struct mlx5_hca_qos_attr *qattr = &priv->sh->cdev->config.hca_attr.qos;
 
+	if (mlx5_hws_active(dev) && !mlx5_hw_ctx_validate(dev, NULL))
+		return -rte_mtr_error_set(error, EINVAL,
+					  RTE_MTR_ERROR_TYPE_UNSPECIFIED, NULL,
+					  "non-template flow engine was not configured");
 	if (!priv->mtr_en)
 		return -rte_mtr_error_set(error, ENOTSUP,
 					  RTE_MTR_ERROR_TYPE_UNSPECIFIED, NULL,
@@ -903,6 +907,12 @@ mlx5_flow_meter_profile_get(struct rte_eth_dev *dev,
 {
 	struct mlx5_priv *priv = dev->data->dev_private;
 
+	if (mlx5_hws_active(dev) && !mlx5_hw_ctx_validate(dev, NULL)) {
+		rte_mtr_error_set(error, EINVAL,
+				  RTE_MTR_ERROR_TYPE_UNSPECIFIED, NULL,
+				  "non-template flow engine was not configured");
+		return NULL;
+	}
 	if (!priv->mtr_en) {
 		rte_mtr_error_set(error, ENOTSUP,
 				  RTE_MTR_ERROR_TYPE_UNSPECIFIED, NULL,
@@ -939,6 +949,10 @@ mlx5_flow_meter_profile_hws_add(struct rte_eth_dev *dev,
 	struct mlx5_flow_meter_profile *fmp;
 	int ret;
 
+	if (mlx5_hws_active(dev) && !mlx5_hw_ctx_validate(dev, NULL))
+		return -rte_mtr_error_set(error, EINVAL,
+					  RTE_MTR_ERROR_TYPE_UNSPECIFIED, NULL,
+					  "non-template flow engine was not configured");
 	if (priv->shared_host)
 		return -rte_mtr_error_set(error, ENOTSUP, RTE_MTR_ERROR_TYPE_UNSPECIFIED, NULL,
 					  "Meter profiles cannot be created on guest port");
@@ -1167,6 +1181,10 @@ mlx5_flow_meter_policy_hws_validate(struct rte_eth_dev *dev,
 	int ret;
 	int i;
 
+	if (mlx5_hws_active(dev) && !mlx5_hw_ctx_validate(dev, NULL))
+		return -rte_mtr_error_set(error, EINVAL,
+					  RTE_MTR_ERROR_TYPE_UNSPECIFIED, NULL,
+					  "non-template flow engine was not configured");
 	if (!priv->mtr_en || !priv->sh->meter_aso_en)
 		return -rte_mtr_error_set(error, ENOTSUP,
 				RTE_MTR_ERROR_TYPE_METER_POLICY,
@@ -1496,6 +1514,12 @@ mlx5_flow_meter_policy_get(struct rte_eth_dev *dev,
 	struct mlx5_priv *priv = dev->data->dev_private;
 	uint32_t policy_idx;
 
+	if (mlx5_hws_active(dev) && !mlx5_hw_ctx_validate(dev, NULL)) {
+		rte_mtr_error_set(error, EINVAL,
+				  RTE_MTR_ERROR_TYPE_UNSPECIFIED, NULL,
+				  "non-template flow engine was not configured");
+		return NULL;
+	}
 	if (!priv->mtr_en) {
 		rte_mtr_error_set(error, ENOTSUP,
 				  RTE_MTR_ERROR_TYPE_UNSPECIFIED, NULL,
@@ -1645,6 +1669,10 @@ mlx5_flow_meter_policy_hws_add(struct rte_eth_dev *dev,
 		[1] = { .type = RTE_FLOW_ITEM_TYPE_END }
 	};
 
+	if (mlx5_hws_active(dev) && !mlx5_hw_ctx_validate(dev, NULL))
+		return -rte_mtr_error_set(error, EINVAL,
+					  RTE_MTR_ERROR_TYPE_UNSPECIFIED, NULL,
+					  "non-template flow engine was not configured");
 	if (!priv->mtr_policy_arr)
 		return mlx5_flow_meter_policy_add(dev, policy_id, policy, error);
 	mtr_policy = mlx5_flow_meter_policy_find(dev, policy_id, NULL);
@@ -1914,6 +1942,7 @@ mlx5_flow_meter_action_modify(struct mlx5_priv *priv,
 	if (sh->meter_aso_en) {
 		fm->is_enable = !!is_enable;
 		aso_mtr = container_of(fm, struct mlx5_aso_mtr, fm);
+		aso_mtr->state = ASO_METER_WAIT;
 		ret = mlx5_aso_meter_update_by_wqe(priv, MLX5_HW_INV_QUEUE,
 						   aso_mtr, &priv->mtr_bulk,
 						   NULL, true);
@@ -2165,6 +2194,7 @@ mlx5_flow_meter_create(struct rte_eth_dev *dev, uint32_t meter_id,
 	/* If ASO meter supported, update ASO flow meter by wqe. */
 	if (priv->sh->meter_aso_en) {
 		aso_mtr = container_of(fm, struct mlx5_aso_mtr, fm);
+		aso_mtr->state = ASO_METER_WAIT;
 		ret = mlx5_aso_meter_update_by_wqe(priv, MLX5_HW_INV_QUEUE,
 						   aso_mtr, &priv->mtr_bulk, NULL, true);
 		if (ret)
@@ -2230,6 +2260,10 @@ mlx5_flow_meter_hws_create(struct rte_eth_dev *dev, uint32_t meter_id,
 	struct mlx5_hw_q_job *job;
 	int ret;
 
+	if (mlx5_hws_active(dev) && !mlx5_hw_ctx_validate(dev, NULL))
+		return -rte_mtr_error_set(error, EINVAL,
+					  RTE_MTR_ERROR_TYPE_UNSPECIFIED, NULL,
+					  "non-template flow engine was not configured");
 	if (!priv->mtr_profile_arr ||
 	    !priv->mtr_policy_arr ||
 	    !priv->mtr_bulk.aso)
@@ -2520,6 +2554,10 @@ mlx5_flow_meter_enable(struct rte_eth_dev *dev,
 	struct mlx5_flow_meter_info *fm;
 	int ret;
 
+	if (mlx5_hws_active(dev) && !mlx5_hw_ctx_validate(dev, NULL))
+		return -rte_mtr_error_set(error, EINVAL,
+					  RTE_MTR_ERROR_TYPE_UNSPECIFIED, NULL,
+					  "non-template flow engine was not configured");
 	if (!priv->mtr_en)
 		return -rte_mtr_error_set(error, ENOTSUP,
 					  RTE_MTR_ERROR_TYPE_UNSPECIFIED, NULL,
@@ -2609,6 +2647,10 @@ mlx5_flow_meter_profile_update(struct rte_eth_dev *dev,
 			       MLX5_FLOW_METER_OBJ_MODIFY_FIELD_CIR;
 	int ret;
 
+	if (mlx5_hws_active(dev) && !mlx5_hw_ctx_validate(dev, NULL))
+		return -rte_mtr_error_set(error, EINVAL,
+					  RTE_MTR_ERROR_TYPE_UNSPECIFIED, NULL,
+					  "non-template flow engine was not configured");
 	if (!priv->mtr_en)
 		return -rte_mtr_error_set(error, ENOTSUP,
 					  RTE_MTR_ERROR_TYPE_UNSPECIFIED, NULL,

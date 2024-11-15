@@ -73,7 +73,7 @@
 
 #define IXGBE_MMW_SIZE_DEFAULT        0x4
 #define IXGBE_MMW_SIZE_JUMBO_FRAME    0x14
-#define IXGBE_MAX_RING_DESC           4096 /* replicate define from rxtx */
+#define IXGBE_MAX_RING_DESC           8192 /* replicate define from rxtx */
 
 /*
  *  Default values for RX/TX configuration
@@ -3385,7 +3385,8 @@ ixgbe_dev_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats)
 	stats->opackets = hw_stats->gptc;
 	stats->obytes = hw_stats->gotc;
 
-	for (i = 0; i < IXGBE_QUEUE_STAT_COUNTERS; i++) {
+	for (i = 0; i < RTE_MIN_T(IXGBE_QUEUE_STAT_COUNTERS,
+			RTE_ETHDEV_QUEUE_STAT_CNTRS, typeof(i)); i++) {
 		stats->q_ipackets[i] = hw_stats->qprc[i];
 		stats->q_opackets[i] = hw_stats->qptc[i];
 		stats->q_ibytes[i] = hw_stats->qbrc[i];
@@ -4313,11 +4314,6 @@ ixgbe_dev_link_update_share(struct rte_eth_dev *dev,
 	/* check if it needs to wait to complete, if lsc interrupt is enabled */
 	if (wait_to_complete == 0 || dev->data->dev_conf.intr_conf.lsc != 0)
 		wait = 0;
-
-/* BSD has no interrupt mechanism, so force NIC status synchronization. */
-#ifdef RTE_EXEC_ENV_FREEBSD
-	wait = 1;
-#endif
 
 	if (vf)
 		diag = ixgbevf_check_link(hw, &link_speed, &link_up, wait);
@@ -5978,7 +5974,8 @@ ixgbe_set_ivar_map(struct ixgbe_hw *hw, int8_t direction,
 			(hw->mac.type == ixgbe_mac_X540) ||
 			(hw->mac.type == ixgbe_mac_X550) ||
 			(hw->mac.type == ixgbe_mac_X550EM_a) ||
-			(hw->mac.type == ixgbe_mac_X550EM_x)) {
+			(hw->mac.type == ixgbe_mac_X550EM_x) ||
+			(hw->mac.type == ixgbe_mac_E610)) {
 		if (direction == -1) {
 			/* other causes */
 			idx = ((queue & 1) * 8);
@@ -6113,6 +6110,7 @@ ixgbe_configure_msix(struct rte_eth_dev *dev)
 		case ixgbe_mac_X540:
 		case ixgbe_mac_X550:
 		case ixgbe_mac_X550EM_x:
+		case ixgbe_mac_E610:
 			ixgbe_set_ivar_map(hw, -1, 1, IXGBE_MISC_VEC_ID);
 			break;
 		default:

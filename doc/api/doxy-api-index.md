@@ -57,12 +57,14 @@ The public API headers are grouped by topics:
   [mlx5](@ref rte_pmd_mlx5.h),
   [dpaa2_mempool](@ref rte_dpaa2_mempool.h),
   [dpaa2_cmdif](@ref rte_pmd_dpaa2_cmdif.h),
-  [dpaa2_qdma](@ref rte_pmd_dpaa2_qdma.h),
+  [dpaax_qdma](@ref rte_pmd_dpaax_qdma.h),
   [crypto_scheduler](@ref rte_cryptodev_scheduler.h),
   [dlb2](@ref rte_pmd_dlb2.h),
   [ifpga](@ref rte_pmd_ifpga.h)
 
 - **memory**:
+  [per-lcore](@ref rte_per_lcore.h),
+  [lcore variables](@ref rte_lcore_var.h),
   [memseg](@ref rte_memory.h),
   [memzone](@ref rte_memzone.h),
   [mempool](@ref rte_mempool.h),
@@ -99,10 +101,9 @@ The public API headers are grouped by topics:
   [interrupts](@ref rte_interrupts.h),
   [launch](@ref rte_launch.h),
   [lcore](@ref rte_lcore.h),
-  [per-lcore](@ref rte_per_lcore.h),
   [service cores](@ref rte_service.h),
   [keepalive](@ref rte_keepalive.h),
-  [power/freq](@ref rte_power.h),
+  [power/freq](@ref rte_power_cpufreq.h),
   [power/uncore](@ref rte_power_uncore.h),
   [PMD power](@ref rte_power_pmd_mgmt.h)
 

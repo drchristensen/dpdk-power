@@ -38,6 +38,9 @@
 #define ICE_ONE_PPS_OUT_ARG       "pps_out"
 #define ICE_RX_LOW_LATENCY_ARG    "rx_low_latency"
 #define ICE_MBUF_CHECK_ARG       "mbuf_check"
+#define ICE_DDP_FILENAME_ARG      "ddp_pkg_file"
+#define ICE_DDP_LOAD_SCHED_ARG    "ddp_load_sched_topo"
+#define ICE_TM_LEVELS_ARG         "tm_sched_levels"
 
 #define ICE_CYCLECOUNTER_MASK  0xffffffffffffffffULL
 
@@ -54,6 +57,9 @@ static const char * const ice_valid_args[] = {
 	ICE_RX_LOW_LATENCY_ARG,
 	ICE_DEFAULT_MAC_DISABLE,
 	ICE_MBUF_CHECK_ARG,
+	ICE_DDP_FILENAME_ARG,
+	ICE_DDP_LOAD_SCHED_ARG,
+	ICE_TM_LEVELS_ARG,
 	NULL
 };
 
@@ -696,6 +702,18 @@ handle_field_name_arg(__rte_unused const char *key, const char *value,
 	return 0;
 }
 
+static int
+handle_ddp_filename_arg(__rte_unused const char *key, const char *value, void *name_args)
+{
+	const char **filename = name_args;
+	if (strlen(value) >= ICE_MAX_PKG_FILENAME_SIZE) {
+		PMD_DRV_LOG(ERR, "The DDP package filename is too long : '%s'", value);
+		return -1;
+	}
+	*filename = strdup(value);
+	return 0;
+}
+
 static void
 ice_check_proto_xtr_support(struct ice_hw *hw)
 {
@@ -901,7 +919,7 @@ ice_vsi_config_default_rss(struct ice_aqc_vsi_props *info)
 }
 
 static int
-ice_vsi_config_tc_queue_mapping(struct ice_vsi *vsi,
+ice_vsi_config_tc_queue_mapping(struct ice_hw *hw, struct ice_vsi *vsi,
 				struct ice_aqc_vsi_props *info,
 				uint8_t enabled_tcmap)
 {
@@ -917,12 +935,27 @@ ice_vsi_config_tc_queue_mapping(struct ice_vsi *vsi,
 	}
 
 	/* vector 0 is reserved and 1 vector for ctrl vsi */
-	if (vsi->adapter->hw.func_caps.common_cap.num_msix_vectors < 2)
+	if (vsi->adapter->hw.func_caps.common_cap.num_msix_vectors < 2) {
 		vsi->nb_qps = 0;
-	else
+	} else {
 		vsi->nb_qps = RTE_MIN
 			((uint16_t)vsi->adapter->hw.func_caps.common_cap.num_msix_vectors - 2,
 			RTE_MIN(vsi->nb_qps, ICE_MAX_Q_PER_TC));
+
+		/* cap max QPs to what the HW reports as num-children for each layer.
+		 * Multiply num_children for each layer from the entry_point layer to
+		 * the qgroup, or second-last layer.
+		 * Avoid any potential overflow by using uint32_t type and breaking loop
+		 * once we have a number greater than the already configured max.
+		 */
+		uint32_t max_sched_vsi_nodes = 1;
+		for (uint8_t i = hw->sw_entry_point_layer; i < hw->num_tx_sched_layers - 1; i++) {
+			max_sched_vsi_nodes *= hw->max_children[i];
+			if (max_sched_vsi_nodes >= vsi->nb_qps)
+				break;
+		}
+		vsi->nb_qps = RTE_MIN(vsi->nb_qps, max_sched_vsi_nodes);
+	}
 
 	/* nb_qps(hex)  -> fls */
 	/* 0000		-> 0 */
@@ -1695,7 +1728,7 @@ ice_setup_vsi(struct ice_pf *pf, enum ice_vsi_type type)
 			rte_cpu_to_le_16(hw->func_caps.fd_fltr_best_effort);
 
 		/* Enable VLAN/UP trip */
-		ret = ice_vsi_config_tc_queue_mapping(vsi,
+		ret = ice_vsi_config_tc_queue_mapping(hw, vsi,
 						      &vsi_ctx.info,
 						      ICE_DEFAULT_TCMAP);
 		if (ret) {
@@ -1719,7 +1752,7 @@ ice_setup_vsi(struct ice_pf *pf, enum ice_vsi_type type)
 		vsi_ctx.info.fd_options = rte_cpu_to_le_16(cfg);
 		vsi_ctx.info.sw_id = hw->port_info->sw_id;
 		vsi_ctx.info.sw_flags2 = ICE_AQ_VSI_SW_FLAG_LAN_ENA;
-		ret = ice_vsi_config_tc_queue_mapping(vsi,
+		ret = ice_vsi_config_tc_queue_mapping(hw, vsi,
 						      &vsi_ctx.info,
 						      ICE_DEFAULT_TCMAP);
 		if (ret) {
@@ -1823,6 +1856,7 @@ ice_send_driver_ver(struct ice_hw *hw)
 static int
 ice_pf_setup(struct ice_pf *pf)
 {
+	struct ice_adapter *ad = ICE_PF_TO_ADAPTER(pf);
 	struct ice_hw *hw = ICE_PF_TO_HW(pf);
 	struct ice_vsi *vsi;
 	uint16_t unused;
@@ -1845,6 +1879,28 @@ ice_pf_setup(struct ice_pf *pf)
 	if (!vsi) {
 		PMD_INIT_LOG(ERR, "Failed to add vsi for PF");
 		return -EINVAL;
+	}
+
+	/* set the number of hidden Tx scheduler layers. If no devargs parameter to
+	 * set the number of exposed levels, the default is to expose all levels,
+	 * except the TC layer.
+	 *
+	 * If the number of exposed levels is set, we check that it's not greater
+	 * than the HW can provide (in which case we do nothing except log a warning),
+	 * and then set the hidden layers to be the total number of levels minus the
+	 * requested visible number.
+	 */
+	pf->tm_conf.hidden_layers = hw->port_info->has_tc;
+	if (ad->devargs.tm_exposed_levels != 0) {
+		const uint8_t avail_layers = hw->num_tx_sched_layers - hw->port_info->has_tc;
+		const uint8_t req_layers = ad->devargs.tm_exposed_levels;
+		if (req_layers > avail_layers) {
+			PMD_INIT_LOG(WARNING, "The number of TM scheduler exposed levels exceeds the number of supported levels (%u)",
+					avail_layers);
+			PMD_INIT_LOG(WARNING, "Setting scheduler layers to %u", avail_layers);
+		} else {
+			pf->tm_conf.hidden_layers = hw->num_tx_sched_layers - req_layers;
+		}
 	}
 
 	pf->main_vsi = vsi;
@@ -1888,18 +1944,14 @@ static int ice_read_customized_path(char *pkg_file, uint16_t buff_len)
 	}
 
 	n = read(fp, pkg_file, buff_len - 1);
-	if (n == 0) {
-		close(fp);
-		return -EIO;
+	if (n > 0) {
+		if (pkg_file[n - 1] == '\n')
+			n--;
+		pkg_file[n] = '\0';
 	}
 
-	if (pkg_file[n - 1] == '\n')
-		n--;
-
-	pkg_file[n] = '\0';
-
 	close(fp);
-	return 0;
+	return n;
 }
 
 int ice_load_pkg(struct ice_adapter *adapter, bool use_dsn, uint64_t dsn)
@@ -1912,11 +1964,22 @@ int ice_load_pkg(struct ice_adapter *adapter, bool use_dsn, uint64_t dsn)
 	size_t bufsz;
 	int err;
 
+	/* first read any explicitly referenced DDP file*/
+	if (adapter->devargs.ddp_filename != NULL) {
+		strlcpy(pkg_file, adapter->devargs.ddp_filename, sizeof(pkg_file));
+		if (rte_firmware_read(pkg_file, &buf, &bufsz) == 0) {
+			goto load_fw;
+		} else {
+			PMD_INIT_LOG(ERR, "Cannot load DDP file: %s", pkg_file);
+			return -1;
+		}
+	}
+
 	memset(opt_ddp_filename, 0, ICE_MAX_PKG_FILENAME_SIZE);
 	snprintf(opt_ddp_filename, ICE_MAX_PKG_FILENAME_SIZE,
 		"ice-%016" PRIx64 ".pkg", dsn);
 
-	if (ice_read_customized_path(customized_path, ICE_MAX_PKG_FILENAME_SIZE) == 0) {
+	if (ice_read_customized_path(customized_path, ICE_MAX_PKG_FILENAME_SIZE) > 0) {
 		if (use_dsn) {
 			snprintf(pkg_file, RTE_DIM(pkg_file), "%s/%s",
 					customized_path, opt_ddp_filename);
@@ -1957,7 +2020,7 @@ no_dsn:
 load_fw:
 	PMD_INIT_LOG(DEBUG, "DDP package name: %s", pkg_file);
 
-	err = ice_copy_and_init_pkg(hw, buf, bufsz);
+	err = ice_copy_and_init_pkg(hw, buf, bufsz, adapter->devargs.ddp_load_sched);
 	if (!ice_is_init_pkg_successful(err)) {
 		PMD_INIT_LOG(ERR, "ice_copy_and_init_hw failed: %d", err);
 		free(buf);
@@ -1989,20 +2052,19 @@ ice_base_queue_get(struct ice_pf *pf)
 static int
 parse_bool(const char *key, const char *value, void *args)
 {
-	int *i = (int *)args;
-	char *end;
-	int num;
+	int *i = args;
 
-	num = strtoul(value, &end, 10);
-
-	if (num != 0 && num != 1) {
-		PMD_DRV_LOG(WARNING, "invalid value:\"%s\" for key:\"%s\", "
-			"value must be 0 or 1",
+	if (value == NULL || value[0] == '\0') {
+		PMD_DRV_LOG(WARNING, "key:\"%s\", requires a value, which must be 0 or 1", key);
+		return -1;
+	}
+	if (value[1] != '\0' || (value[0] != '0' && value[0] != '1')) {
+		PMD_DRV_LOG(WARNING, "invalid value:\"%s\" for key:\"%s\", value must be 0 or 1",
 			value, key);
 		return -1;
 	}
 
-	*i = num;
+	*i = (value[0] == '1');
 	return 0;
 }
 
@@ -2017,6 +2079,32 @@ parse_u64(const char *key, const char *value, void *args)
 	if (errno) {
 		PMD_DRV_LOG(WARNING, "%s: \"%s\" is not a valid u64",
 			    key, value);
+		return -1;
+	}
+
+	*num = tmp;
+
+	return 0;
+}
+
+static int
+parse_tx_sched_levels(const char *key, const char *value, void *args)
+{
+	uint8_t *num = args;
+	long tmp;
+	char *endptr;
+
+	errno = 0;
+	tmp = strtol(value, &endptr, 0);
+	/* the value needs two stage validation, since the actual number of available
+	 * levels is not known at this point. Initially just validate that it is in
+	 * the correct range, between 3 and 8. Later validation will check that the
+	 * available layers on a particular port is higher than the value specified here.
+	 */
+	if (errno || *endptr != '\0' ||
+			tmp < (ICE_VSI_LAYER_OFFSET - 1) || tmp >= ICE_TM_MAX_LAYERS) {
+		PMD_DRV_LOG(WARNING, "%s: Invalid value \"%s\", should be in range [%d, %d]",
+			    key, value, ICE_VSI_LAYER_OFFSET - 1, ICE_TM_MAX_LAYERS - 1);
 		return -1;
 	}
 
@@ -2259,6 +2347,23 @@ static int ice_parse_devargs(struct rte_eth_dev *dev)
 
 	ret = rte_kvargs_process(kvlist, ICE_RX_LOW_LATENCY_ARG,
 				 &parse_bool, &ad->devargs.rx_low_latency);
+	if (ret)
+		goto bail;
+
+	ret = rte_kvargs_process(kvlist, ICE_DDP_FILENAME_ARG,
+				 &handle_ddp_filename_arg, &ad->devargs.ddp_filename);
+	if (ret)
+		goto bail;
+
+	ret = rte_kvargs_process(kvlist, ICE_DDP_LOAD_SCHED_ARG,
+				 &parse_bool, &ad->devargs.ddp_load_sched);
+	if (ret)
+		goto bail;
+
+	ret = rte_kvargs_process(kvlist, ICE_TM_LEVELS_ARG,
+				 &parse_tx_sched_levels, &ad->devargs.tm_exposed_levels);
+	if (ret)
+		goto bail;
 
 bail:
 	rte_kvargs_free(kvlist);
@@ -2762,6 +2867,8 @@ ice_dev_close(struct rte_eth_dev *dev)
 	ice_free_hw_tbls(hw);
 	rte_free(hw->port_info);
 	hw->port_info = NULL;
+	free((void *)(uintptr_t)ad->devargs.ddp_filename);
+	ad->devargs.ddp_filename = NULL;
 	ice_shutdown_all_ctrlq(hw, true);
 	rte_free(pf->proto_xtr);
 	pf->proto_xtr = NULL;
@@ -3852,7 +3959,6 @@ ice_dev_start(struct rte_eth_dev *dev)
 	int mask, ret;
 	uint8_t timer = hw->func_caps.ts_func_info.tmr_index_owned;
 	uint32_t pin_idx = ad->devargs.pin_idx;
-	struct rte_tm_error tm_err;
 	ice_declare_bitmap(pmask, ICE_PROMISC_MAX);
 	ice_zero_bitmap(pmask, ICE_PROMISC_MAX);
 
@@ -3880,14 +3986,6 @@ ice_dev_start(struct rte_eth_dev *dev)
 		ret = ice_rx_queue_start(dev, nb_rxq);
 		if (ret) {
 			PMD_DRV_LOG(ERR, "fail to start Rx queue %u", nb_rxq);
-			goto rx_err;
-		}
-	}
-
-	if (pf->tm_conf.committed) {
-		ret = ice_do_hierarchy_commit(dev, pf->tm_conf.clear_on_fail, &tm_err);
-		if (ret) {
-			PMD_DRV_LOG(ERR, "fail to commit Tx scheduler");
 			goto rx_err;
 		}
 	}
@@ -4111,6 +4209,9 @@ ice_dev_info_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 			ICE_PHY_TYPE_SUPPORT_100G_HIGH(phy_type_high))
 		dev_info->speed_capa |= RTE_ETH_LINK_SPEED_100G;
 
+	if (ICE_PHY_TYPE_SUPPORT_200G_HIGH(phy_type_high))
+		dev_info->speed_capa |= RTE_ETH_LINK_SPEED_200G;
+
 	dev_info->nb_rx_queues = dev->data->nb_rx_queues;
 	dev_info->nb_tx_queues = dev->data->nb_tx_queues;
 
@@ -4236,6 +4337,9 @@ ice_link_update(struct rte_eth_dev *dev, int wait_to_complete)
 	case ICE_AQ_LINK_SPEED_100GB:
 		link.link_speed = RTE_ETH_SPEED_NUM_100G;
 		break;
+	case ICE_AQ_LINK_SPEED_200GB:
+		link.link_speed = RTE_ETH_SPEED_NUM_200G;
+		break;
 	case ICE_AQ_LINK_SPEED_UNKNOWN:
 		PMD_DRV_LOG(ERR, "Unknown link speed");
 		link.link_speed = RTE_ETH_SPEED_NUM_UNKNOWN;
@@ -4262,6 +4366,8 @@ ice_parse_link_speeds(uint16_t link_speeds)
 {
 	uint16_t link_speed = ICE_AQ_LINK_SPEED_UNKNOWN;
 
+	if (link_speeds & RTE_ETH_LINK_SPEED_200G)
+		link_speed |= ICE_AQ_LINK_SPEED_200GB;
 	if (link_speeds & RTE_ETH_LINK_SPEED_100G)
 		link_speed |= ICE_AQ_LINK_SPEED_100GB;
 	if (link_speeds & RTE_ETH_LINK_SPEED_50G)
@@ -4294,7 +4400,8 @@ ice_apply_link_speed(struct rte_eth_dev *dev)
 	struct rte_eth_conf *conf = &dev->data->dev_conf;
 
 	if (conf->link_speeds == RTE_ETH_LINK_SPEED_AUTONEG) {
-		conf->link_speeds = RTE_ETH_LINK_SPEED_100G |
+		conf->link_speeds = RTE_ETH_LINK_SPEED_200G |
+				    RTE_ETH_LINK_SPEED_100G |
 				    RTE_ETH_LINK_SPEED_50G  |
 				    RTE_ETH_LINK_SPEED_40G  |
 				    RTE_ETH_LINK_SPEED_25G  |
@@ -6597,9 +6704,26 @@ ice_timesync_read_tx_timestamp(struct rte_eth_dev *dev,
 	struct ice_hw *hw = ICE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 	struct ice_adapter *ad =
 			ICE_DEV_PRIVATE_TO_ADAPTER(dev->data->dev_private);
-	uint64_t ts_ns, tstamp;
+	uint64_t ts_ns, tstamp, tstamp_ready = 0;
+	uint64_t end_time;
 	const uint64_t mask = 0xFFFFFFFF;
 	int ret;
+
+	/* Set the end time with a delay of 10 microseconds */
+	end_time = rte_get_timer_cycles() + (rte_get_timer_hz() / 100000);
+
+	do {
+		ret = ice_get_phy_tx_tstamp_ready(hw, ad->ptp_tx_block, &tstamp_ready);
+		if (ret) {
+			PMD_DRV_LOG(ERR, "Failed to get phy ready for timestamp");
+			return -1;
+		}
+
+		if ((tstamp_ready & BIT_ULL(0)) == 0 && rte_get_timer_cycles() > end_time) {
+			PMD_DRV_LOG(ERR, "Timeout to get phy ready for timestamp");
+			return -1;
+		}
+	} while ((tstamp_ready & BIT_ULL(0)) == 0);
 
 	ret = ice_read_phy_tstamp(hw, ad->ptp_tx_block, ad->ptp_tx_index, &tstamp);
 	if (ret || tstamp == 0) {
@@ -7135,6 +7259,9 @@ RTE_PMD_REGISTER_PARAM_STRING(net_ice,
 			      ICE_PROTO_XTR_ARG "=[queue:]<vlan|ipv4|ipv6|ipv6_flow|tcp|ip_offset>"
 			      ICE_SAFE_MODE_SUPPORT_ARG "=<0|1>"
 			      ICE_DEFAULT_MAC_DISABLE "=<0|1>"
+			      ICE_DDP_FILENAME_ARG "=</path/to/file>"
+			      ICE_DDP_LOAD_SCHED_ARG "=<0|1>"
+			      ICE_TM_LEVELS_ARG "=<N>"
 			      ICE_RX_LOW_LATENCY_ARG "=<0|1>");
 
 RTE_LOG_REGISTER_SUFFIX(ice_logtype_init, init, NOTICE);

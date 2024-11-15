@@ -39,7 +39,7 @@ extern "C" {
 /**
  * IPv4 Header
  */
-struct rte_ipv4_hdr {
+struct __rte_aligned(2) rte_ipv4_hdr {
 	__extension__
 	union {
 		uint8_t version_ihl;    /**< version and header length */
@@ -161,6 +161,41 @@ rte_ipv4_cksum(const struct rte_ipv4_hdr *ipv4_hdr)
 	uint16_t cksum;
 	cksum = rte_raw_cksum(ipv4_hdr, rte_ipv4_hdr_len(ipv4_hdr));
 	return (uint16_t)~cksum;
+}
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice.
+ *
+ * Process the IPv4 checksum of an IPv4 header without any extensions.
+ *
+ * The checksum field does NOT have to be set by the caller, the field
+ * is skipped by the calculation.
+ *
+ * @param ipv4_hdr
+ *   The pointer to the contiguous IPv4 header.
+ * @return
+ *   The complemented checksum to set in the IP packet.
+ */
+__rte_experimental
+static inline uint16_t
+rte_ipv4_cksum_simple(const struct rte_ipv4_hdr *ipv4_hdr)
+{
+	const uint16_t *v16_h;
+	uint32_t ip_cksum;
+
+	/*
+	 * Compute the sum of successive 16-bit words of the IPv4 header,
+	 * skipping the checksum field of the header.
+	 */
+	v16_h = (const uint16_t *)ipv4_hdr;
+	ip_cksum = v16_h[0] + v16_h[1] + v16_h[2] + v16_h[3] +
+		v16_h[4] + v16_h[6] + v16_h[7] + v16_h[8] + v16_h[9];
+
+	/* reduce 32 bit checksum to 16 bits and complement it */
+	ip_cksum = (ip_cksum & 0xffff) + (ip_cksum >> 16);
+	ip_cksum = (ip_cksum & 0xffff) + (ip_cksum >> 16);
+	return (uint16_t)(~ip_cksum);
 }
 
 /**
