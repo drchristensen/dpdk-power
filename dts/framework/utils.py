@@ -14,21 +14,21 @@ Attributes:
     REGEX_FOR_PCI_ADDRESS: The regex representing a PCI address, e.g. ``0000:00:08.0``.
 """
 
-import atexit
+import fnmatch
 import json
 import os
 import random
-import subprocess
+import tarfile
 from enum import Enum, Flag
 from pathlib import Path
-from subprocess import SubprocessError
+from typing import Any, Callable
 
 from scapy.layers.inet import IP, TCP, UDP, Ether  # type: ignore[import-untyped]
 from scapy.packet import Packet  # type: ignore[import-untyped]
 
-from .exception import ConfigurationError, InternalError
+from .exception import InternalError
 
-REGEX_FOR_PCI_ADDRESS: str = "/[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}.[0-9]{1}/"
+REGEX_FOR_PCI_ADDRESS: str = r"[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}.[0-9]{1}"
 _REGEX_FOR_COLON_OR_HYPHEN_SEP_MAC: str = r"(?:[\da-fA-F]{2}[:-]){5}[\da-fA-F]{2}"
 _REGEX_FOR_DOT_SEP_MAC: str = r"(?:[\da-fA-F]{4}.){2}[\da-fA-F]{4}"
 REGEX_FOR_MAC_ADDRESS: str = rf"{_REGEX_FOR_COLON_OR_HYPHEN_SEP_MAC}|{_REGEX_FOR_DOT_SEP_MAC}"
@@ -77,31 +77,6 @@ def get_packet_summaries(packets: list[Packet]) -> str:
     return f"Packet contents: \n{packet_summaries}"
 
 
-def get_commit_id(rev_id: str) -> str:
-    """Given a Git revision ID, return the corresponding commit ID.
-
-    Args:
-        rev_id: The Git revision ID.
-
-    Raises:
-        ConfigurationError: The ``git rev-parse`` command failed, suggesting
-            an invalid or ambiguous revision ID was supplied.
-    """
-    result = subprocess.run(
-        ["git", "rev-parse", "--verify", rev_id],
-        text=True,
-        capture_output=True,
-    )
-    if result.returncode != 0:
-        raise ConfigurationError(
-            f"{rev_id} is not a valid git reference.\n"
-            f"Command: {result.args}\n"
-            f"Stdout: {result.stdout}\n"
-            f"Stderr: {result.stderr}"
-        )
-    return result.stdout.strip()
-
-
 class StrEnum(Enum):
     """Enum with members stored as strings."""
 
@@ -146,13 +121,17 @@ class MesonArgs:
         return " ".join(f"{self._default_library} {self._dpdk_args}".split())
 
 
-class _TarCompressionFormat(StrEnum):
+class TarCompressionFormat(StrEnum):
     """Compression formats that tar can use.
 
     Enum names are the shell compression commands
     and Enum values are the associated file extensions.
+
+    The 'none' member represents no compression, only archiving with tar.
+    Its value is set to 'tar' to indicate that the file is an uncompressed tar archive.
     """
 
+    none = "tar"
     gzip = "gz"
     compress = "Z"
     bzip2 = "bz2"
@@ -162,94 +141,81 @@ class _TarCompressionFormat(StrEnum):
     xz = "xz"
     zstd = "zst"
 
+    @property
+    def extension(self):
+        """Return the extension associated with the compression format.
 
-class DPDKGitTarball:
-    """Compressed tarball of DPDK from the repository.
+        If the compression format is 'none', the extension will be in the format 'tar'.
+        For other compression formats, the extension will be in the format
+        'tar.{compression format}'.
+        """
+        return f"{self.value}" if self == self.none else f"{self.none.value}.{self.value}"
 
-    The class supports the :class:`os.PathLike` protocol,
-    which is used to get the Path of the tarball::
 
-        from pathlib import Path
-        tarball = DPDKGitTarball("HEAD", "output")
-        tarball_path = Path(tarball)
+def convert_to_list_of_string(value: Any | list[Any]) -> list[str]:
+    """Convert the input to the list of strings."""
+    return list(map(str, value) if isinstance(value, list) else str(value))
+
+
+def create_tarball(
+    dir_path: Path,
+    compress_format: TarCompressionFormat = TarCompressionFormat.none,
+    exclude: Any | list[Any] | None = None,
+) -> Path:
+    """Create a tarball from the contents of the specified directory.
+
+    This method creates a tarball containing all files and directories within `dir_path`.
+    The tarball will be saved in the directory of `dir_path` and will be named based on `dir_path`.
+
+    Args:
+        dir_path: The directory path.
+        compress_format: The compression format to use. Defaults to no compression.
+        exclude: Patterns for files or directories to exclude from the tarball.
+                These patterns are used with `fnmatch.fnmatch` to filter out files.
+
+    Returns:
+        The path to the created tarball.
     """
 
-    _git_ref: str
-    _tar_compression_format: _TarCompressionFormat
-    _tarball_dir: Path
-    _tarball_name: str
-    _tarball_path: Path | None
-
-    def __init__(
-        self,
-        git_ref: str,
-        output_dir: str,
-        tar_compression_format: _TarCompressionFormat = _TarCompressionFormat.xz,
-    ):
-        """Create the tarball during initialization.
-
-        The DPDK version is specified with `git_ref`. The tarball will be compressed with
-        `tar_compression_format`, which must be supported by the DTS execution environment.
-        The resulting tarball will be put into `output_dir`.
+    def create_filter_function(exclude_patterns: str | list[str] | None) -> Callable | None:
+        """Create a filter function based on the provided exclude patterns.
 
         Args:
-            git_ref: A git commit ID, tag ID or tree ID.
-            output_dir: The directory where to put the resulting tarball.
-            tar_compression_format: The compression format to use.
+            exclude_patterns: Patterns for files or directories to exclude from the tarball.
+                These patterns are used with `fnmatch.fnmatch` to filter out files.
+
+        Returns:
+            The filter function that excludes files based on the patterns.
         """
-        self._git_ref = git_ref
-        self._tar_compression_format = tar_compression_format
+        if exclude_patterns:
+            exclude_patterns = convert_to_list_of_string(exclude_patterns)
 
-        self._tarball_dir = Path(output_dir, "tarball")
+            def filter_func(tarinfo: tarfile.TarInfo) -> tarfile.TarInfo | None:
+                file_name = os.path.basename(tarinfo.name)
+                if any(fnmatch.fnmatch(file_name, pattern) for pattern in exclude_patterns):
+                    return None
+                return tarinfo
 
-        self._create_tarball_dir()
-
-        self._tarball_name = (
-            f"dpdk-tarball-{self._git_ref}.tar.{self._tar_compression_format.value}"
-        )
-        self._tarball_path = self._check_tarball_path()
-        if not self._tarball_path:
-            self._create_tarball()
-
-    def _create_tarball_dir(self) -> None:
-        os.makedirs(self._tarball_dir, exist_ok=True)
-
-    def _check_tarball_path(self) -> Path | None:
-        if self._tarball_name in os.listdir(self._tarball_dir):
-            return Path(self._tarball_dir, self._tarball_name)
+            return filter_func
         return None
 
-    def _create_tarball(self) -> None:
-        self._tarball_path = Path(self._tarball_dir, self._tarball_name)
+    target_tarball_path = dir_path.with_suffix(f".{compress_format.extension}")
+    with tarfile.open(target_tarball_path, f"w:{compress_format.value}") as tar:
+        tar.add(dir_path, arcname=dir_path.name, filter=create_filter_function(exclude))
 
-        atexit.register(self._delete_tarball)
+    return target_tarball_path
 
-        result = subprocess.run(
-            'git -C "$(git rev-parse --show-toplevel)" archive '
-            f'{self._git_ref} --prefix="dpdk-tarball-{self._git_ref + os.sep}" | '
-            f"{self._tar_compression_format} > {Path(self._tarball_path.absolute())}",
-            shell=True,
-            text=True,
-            capture_output=True,
-        )
 
-        if result.returncode != 0:
-            raise SubprocessError(
-                f"Git archive creation failed with exit code {result.returncode}.\n"
-                f"Command: {result.args}\n"
-                f"Stdout: {result.stdout}\n"
-                f"Stderr: {result.stderr}"
-            )
+def extract_tarball(tar_path: str | Path):
+    """Extract the contents of a tarball.
 
-        atexit.unregister(self._delete_tarball)
+    The tarball will be extracted in the same path as `tar_path` parent path.
 
-    def _delete_tarball(self) -> None:
-        if self._tarball_path and os.path.exists(self._tarball_path):
-            os.remove(self._tarball_path)
-
-    def __fspath__(self) -> str:
-        """The os.PathLike protocol implementation."""
-        return str(self._tarball_path)
+    Args:
+        tar_path: The path to the tarball file to extract.
+    """
+    with tarfile.open(tar_path, "r") as tar:
+        tar.extractall(path=Path(tar_path).parent)
 
 
 class PacketProtocols(Flag):
@@ -337,3 +303,8 @@ class MultiInheritanceBaseClass:
     def __init__(self, *args, **kwargs) -> None:
         """Call the init method of :class:`object`."""
         super().__init__()
+
+
+def to_pascal_case(text: str) -> str:
+    """Convert `text` from snake_case to PascalCase."""
+    return "".join([seg.capitalize() for seg in text.split("_")])

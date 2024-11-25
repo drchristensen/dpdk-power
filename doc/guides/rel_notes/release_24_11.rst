@@ -204,6 +204,11 @@ New Features
   * Added ``rte_flow_async_create_by_index_with_pattern()`` support.
   * Added jump to flow table index support.
 
+* **Added Realtek r8169 net driver.**
+
+  Added a new network PMD which supports Realtek 2.5 and 5 Gigabit
+  Ethernet NICs.
+
 * **Added ZTE zxdh net driver [EXPERIMENTAL].**
 
   Added ethdev driver support for zxdh NX Series Ethernet Controller.
@@ -490,6 +495,9 @@ ABI Changes
   ``xstat_desc`` and ``xstat_count`` to ``rte_graph_cluster_node_stats``,
   added new structure ``rte_node_xstats`` to ``rte_node_register`` and
   added ``xstat_off`` to ``rte_node``.
+
+* graph: The members ``dispatch`` and ``xstat_off`` of the structure ``rte_node``
+  have been marked as ``RTE_CACHE_LINE_MIN_SIZE`` bytes aligned.
 
 
 Known Issues

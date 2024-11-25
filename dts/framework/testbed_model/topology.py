@@ -8,9 +8,10 @@ The link information then implies what type of topology is available.
 """
 
 from dataclasses import dataclass
+from os import environ
 from typing import TYPE_CHECKING, Iterable
 
-if TYPE_CHECKING:
+if TYPE_CHECKING or environ.get("DTS_DOC_BUILD"):
     from enum import Enum as NoAliasEnum
 else:
     from aenum import NoAliasEnum
@@ -99,7 +100,16 @@ class Topology:
                     port_links.append(PortLink(sut_port=sut_port, tg_port=tg_port))
 
         self.type = TopologyType.get_from_value(len(port_links))
-        dummy_port = Port(PortConfig("", "", "", "", "", ""))
+        dummy_port = Port(
+            "",
+            PortConfig(
+                pci="0000:00:00.0",
+                os_driver_for_dpdk="",
+                os_driver="",
+                peer_node="",
+                peer_pci="0000:00:00.0",
+            ),
+        )
         self.tg_port_egress = dummy_port
         self.sut_port_ingress = dummy_port
         self.sut_port_egress = dummy_port

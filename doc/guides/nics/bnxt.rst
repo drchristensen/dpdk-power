@@ -1026,22 +1026,22 @@ Refer to :ref:`rte_flow items availability in networking drivers`.
 Listed below are the rte_flow items supported:
 
 * ``any``
+* ``ecpri``
 * ``eth``
+* ``geneve``
 * ``gre``
 * ``icmp``
 * ``icmp6``
 * ``ipv4``
 * ``ipv6``
-* ``pf``
-* ``phy_port``
 * ``port_id``
 * ``port_representor``
 * ``represented_port``
 * ``tcp``
 * ``udp``
-* ``vf``
 * ``vlan``
 * ``vxlan``
+* ``vxlan_gpe``
 
 rte_flow Actions
 ~~~~~~~~~~~~~~~~
@@ -1053,6 +1053,9 @@ Listed below are the rte_flow actions supported:
 * ``count``
 * ``dec_ttl``
 * ``drop``
+* ``jump``
+* ``mark``
+* ``meter``
 * ``of_pop_vlan``
 * ``of_push_vlan``
 * ``of_set_vlan_pcp``
@@ -1063,10 +1066,14 @@ Listed below are the rte_flow actions supported:
 * ``port_representor``
 * ``represented_port``
 * ``rss``
+* ``sample``
 * ``set_ipv4_dst``
 * ``set_ipv4_src``
+* ``set_ipv6_dst``
+* ``set_ipv6_src``
 * ``set_tp_dst``
 * ``set_tp_src``
+* ``set_ttl``
 * ``vf``
 * ``vxlan_decap``
 * ``vxlan_encap``

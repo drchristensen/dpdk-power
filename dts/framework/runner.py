@@ -2,23 +2,22 @@
 # Copyright(c) 2010-2019 Intel Corporation
 # Copyright(c) 2022-2023 PANTHEON.tech s.r.o.
 # Copyright(c) 2022-2023 University of New Hampshire
+# Copyright(c) 2024 Arm Limited
 
 """Test suite runner module.
 
 The module is responsible for running DTS in a series of stages:
 
     #. Test run stage,
-    #. Build target stage,
+    #. DPDK build stage,
     #. Test suite stage,
     #. Test case stage.
 
-The test run and build target stages set up the environment before running test suites.
+The test run stage sets up the environment before running test suites.
 The test suite stage sets up steps common to all test cases
 and the test case stage runs test cases individually.
 """
 
-import importlib
-import inspect
 import os
 import random
 import sys
@@ -31,22 +30,18 @@ from framework.testbed_model.sut_node import SutNode
 from framework.testbed_model.tg_node import TGNode
 
 from .config import (
-    BuildTargetConfiguration,
     Configuration,
+    DPDKPrecompiledBuildConfiguration,
+    SutNodeConfiguration,
     TestRunConfiguration,
     TestSuiteConfig,
+    TGNodeConfiguration,
     load_config,
 )
-from .exception import (
-    BlockingTestSuiteError,
-    ConfigurationError,
-    SSHTimeoutError,
-    TestCaseVerifyError,
-)
+from .exception import BlockingTestSuiteError, SSHTimeoutError, TestCaseVerifyError
 from .logger import DTSLogger, DtsStage, get_dts_logger
 from .settings import SETTINGS
 from .test_result import (
-    BuildTargetResult,
     DTSResult,
     Result,
     TestCaseResult,
@@ -71,9 +66,9 @@ class DTSRunner:
     :class:`~.framework.exception.DTSError`\s.
 
     Example:
-        An error occurs in a build target setup. The current build target is aborted,
-        all test suites and their test cases are marked as blocked and the run continues
-        with the next build target. If the errored build target was the last one in the
+        An error occurs in a test suite setup. The current test suite is aborted,
+        all its test cases are marked as blocked and the run continues
+        with the next test suite. If the errored test suite was the last one in the
         given test run, the next test run begins.
     """
 
@@ -92,23 +87,23 @@ class DTSRunner:
         if not os.path.exists(SETTINGS.output_dir):
             os.makedirs(SETTINGS.output_dir)
         self._logger.add_dts_root_logger_handlers(SETTINGS.verbose, SETTINGS.output_dir)
-        self._result = DTSResult(self._logger)
+        self._result = DTSResult(SETTINGS.output_dir, self._logger)
         self._test_suite_class_prefix = "Test"
         self._test_suite_module_prefix = "tests.TestSuite_"
         self._func_test_case_regex = r"test_(?!perf_)"
         self._perf_test_case_regex = r"test_perf_"
 
     def run(self) -> None:
-        """Run all build targets in all test runs from the test run configuration.
+        """Run all test runs from the test run configuration.
 
-        Before running test suites, test runs and build targets are first set up.
-        The test runs and build targets defined in the test run configuration are iterated over.
-        The test runs define which tests to run and where to run them and build targets define
-        the DPDK build setup.
+        Before running test suites, test runs are first set up.
+        The test runs defined in the test run configuration are iterated over.
+        The test runs define which tests to run and where to run them.
 
-        The tests suites are set up for each test run/build target tuple and each discovered
+        The test suites are set up for each test run and each discovered
         test case within the test suite is set up, executed and torn down. After all test cases
-        have been executed, the test suite is torn down and the next build target will be tested.
+        have been executed, the test suite is torn down and the next test suite will be run. Once
+        all test suites have been run, the next test run will be tested.
 
         In order to properly mark test suites and test cases as blocked in case of a failure,
         we need to have discovered which test suites and test cases to run before any failures
@@ -118,17 +113,13 @@ class DTSRunner:
 
             #. Test run setup
 
-                #. Build target setup
+                #. Test suite setup
 
-                    #. Test suite setup
+                    #. Test case setup
+                    #. Test case logic
+                    #. Test case teardown
 
-                        #. Test case setup
-                        #. Test case logic
-                        #. Test case teardown
-
-                    #. Test suite teardown
-
-                #. Build target teardown
+                #. Test suite teardown
 
             #. Test run teardown
 
@@ -144,11 +135,10 @@ class DTSRunner:
             self._result.update_setup(Result.PASS)
 
             # for all test run sections
-            for test_run_config in self._configuration.test_runs:
+            for test_run_with_nodes_config in self._configuration.test_runs_with_nodes:
+                test_run_config, sut_node_config, tg_node_config = test_run_with_nodes_config
                 self._logger.set_stage(DtsStage.test_run_setup)
-                self._logger.info(
-                    f"Running test run with SUT '{test_run_config.system_under_test_node.name}'."
-                )
+                self._logger.info(f"Running test run with SUT '{sut_node_config.name}'.")
                 self._init_random_seed(test_run_config)
                 test_run_result = self._result.add_test_run(test_run_config)
                 # we don't want to modify the original config, so create a copy
@@ -156,7 +146,7 @@ class DTSRunner:
                     SETTINGS.test_suites if SETTINGS.test_suites else test_run_config.test_suites
                 )
                 if not test_run_config.skip_smoke_tests:
-                    test_run_test_suites[:0] = [TestSuiteConfig.from_dict("smoke_tests")]
+                    test_run_test_suites[:0] = [TestSuiteConfig(test_suite="smoke_tests")]
                 try:
                     test_suites_with_cases = self._get_test_suites_with_cases(
                         test_run_test_suites, test_run_config.func, test_run_config.perf
@@ -172,6 +162,8 @@ class DTSRunner:
                     self._connect_nodes_and_run_test_run(
                         sut_nodes,
                         tg_nodes,
+                        sut_node_config,
+                        tg_node_config,
                         test_run_config,
                         test_run_result,
                         test_suites_with_cases,
@@ -217,11 +209,10 @@ class DTSRunner:
         func: bool,
         perf: bool,
     ) -> list[TestSuiteWithCases]:
-        """Test suites with test cases discovery.
+        """Get test suites with selected cases.
 
-        The test suites with test cases defined in the user configuration are discovered
-        and stored for future use so that we don't import the modules twice and so that
-        the list of test suites with test cases is available for recording right away.
+        The test suites with test cases defined in the user configuration are selected
+        and the corresponding functions and classes are gathered.
 
         Args:
             test_suite_configs: Test suite configurations.
@@ -229,15 +220,15 @@ class DTSRunner:
             perf: Whether to include performance test cases in the final list.
 
         Returns:
-            The discovered test suites, each with test cases.
+            The test suites, each with test cases.
         """
         test_suites_with_cases = []
 
         for test_suite_config in test_suite_configs:
-            test_suite_class = self._get_test_suite_class(test_suite_config.test_suite)
+            test_suite_class = test_suite_config.test_suite_spec.class_obj
             test_cases: list[type[TestCase]] = []
-            func_test_cases, perf_test_cases = test_suite_class.get_test_cases(
-                test_suite_config.test_cases
+            func_test_cases, perf_test_cases = test_suite_class.filter_test_cases(
+                test_suite_config.test_cases_names
             )
             if func:
                 test_cases.extend(func_test_cases)
@@ -247,75 +238,14 @@ class DTSRunner:
             test_suites_with_cases.append(
                 TestSuiteWithCases(test_suite_class=test_suite_class, test_cases=test_cases)
             )
-
         return test_suites_with_cases
-
-    def _get_test_suite_class(self, module_name: str) -> type[TestSuite]:
-        """Find the :class:`TestSuite` class in `module_name`.
-
-        The full module name is `module_name` prefixed with `self._test_suite_module_prefix`.
-        The module name is a standard filename with words separated with underscores.
-        Search the `module_name` for a :class:`TestSuite` class which starts
-        with `self._test_suite_class_prefix`, continuing with CamelCase `module_name`.
-        The first matching class is returned.
-
-        The CamelCase convention applies to abbreviations, acronyms, initialisms and so on::
-
-            OS -> Os
-            TCP -> Tcp
-
-        Args:
-            module_name: The module name without prefix where to search for the test suite.
-
-        Returns:
-            The found test suite class.
-
-        Raises:
-            ConfigurationError: If the corresponding module is not found or
-                a valid :class:`TestSuite` is not found in the module.
-        """
-
-        def is_test_suite(object) -> bool:
-            """Check whether `object` is a :class:`TestSuite`.
-
-            The `object` is a subclass of :class:`TestSuite`, but not :class:`TestSuite` itself.
-
-            Args:
-                object: The object to be checked.
-
-            Returns:
-                :data:`True` if `object` is a subclass of `TestSuite`.
-            """
-            try:
-                if issubclass(object, TestSuite) and object is not TestSuite:
-                    return True
-            except TypeError:
-                return False
-            return False
-
-        testsuite_module_path = f"{self._test_suite_module_prefix}{module_name}"
-        try:
-            test_suite_module = importlib.import_module(testsuite_module_path)
-        except ModuleNotFoundError as e:
-            raise ConfigurationError(
-                f"Test suite module '{testsuite_module_path}' not found."
-            ) from e
-
-        camel_case_suite_name = "".join(
-            [suite_word.capitalize() for suite_word in module_name.split("_")]
-        )
-        full_suite_name_to_find = f"{self._test_suite_class_prefix}{camel_case_suite_name}"
-        for class_name, class_obj in inspect.getmembers(test_suite_module, is_test_suite):
-            if class_name == full_suite_name_to_find:
-                return class_obj
-        raise ConfigurationError(
-            f"Couldn't find any valid test suites in {test_suite_module.__name__}."
-        )
 
     def _connect_nodes_and_run_test_run(
         self,
         sut_nodes: dict[str, SutNode],
         tg_nodes: dict[str, TGNode],
+        sut_node_config: SutNodeConfiguration,
+        tg_node_config: TGNodeConfiguration,
         test_run_config: TestRunConfiguration,
         test_run_result: TestRunResult,
         test_suites_with_cases: Iterable[TestSuiteWithCases],
@@ -330,24 +260,26 @@ class DTSRunner:
         Args:
             sut_nodes: A dictionary storing connected/to be connected SUT nodes.
             tg_nodes: A dictionary storing connected/to be connected TG nodes.
+            sut_node_config: The test run's SUT node configuration.
+            tg_node_config: The test run's TG node configuration.
             test_run_config: A test run configuration.
             test_run_result: The test run's result.
             test_suites_with_cases: The test suites with test cases to run.
         """
-        sut_node = sut_nodes.get(test_run_config.system_under_test_node.name)
-        tg_node = tg_nodes.get(test_run_config.traffic_generator_node.name)
+        sut_node = sut_nodes.get(sut_node_config.name)
+        tg_node = tg_nodes.get(tg_node_config.name)
 
         try:
             if not sut_node:
-                sut_node = SutNode(test_run_config.system_under_test_node)
+                sut_node = SutNode(sut_node_config)
                 sut_nodes[sut_node.name] = sut_node
             if not tg_node:
-                tg_node = TGNode(test_run_config.traffic_generator_node)
+                tg_node = TGNode(tg_node_config)
                 tg_nodes[tg_node.name] = tg_node
         except Exception as e:
-            failed_node = test_run_config.system_under_test_node.name
+            failed_node = test_run_config.system_under_test_node.node_name
             if sut_node:
-                failed_node = test_run_config.traffic_generator_node.name
+                failed_node = test_run_config.traffic_generator_node
             self._logger.exception(f"The Creation of node {failed_node} failed.")
             test_run_result.update_setup(Result.FAIL, e)
 
@@ -366,7 +298,7 @@ class DTSRunner:
     ) -> None:
         """Run the given test run.
 
-        This involves running the test run setup as well as running all build targets
+        This involves running the test run setup as well as running all test suites
         in the given test run. After that, the test run teardown is run.
 
         Args:
@@ -375,29 +307,35 @@ class DTSRunner:
             test_run_config: A test run configuration.
             test_run_result: The test run's result.
             test_suites_with_cases: The test suites with test cases to run.
+
+        Raises:
+            ConfigurationError: If the DPDK sources or build is not set up from config or settings.
         """
         self._logger.info(
-            f"Running test run with SUT '{test_run_config.system_under_test_node.name}'."
+            f"Running test run with SUT '{test_run_config.system_under_test_node.node_name}'."
         )
-        test_run_result.add_sut_info(sut_node.node_info)
+        test_run_result.ports = sut_node.ports
+        test_run_result.sut_info = sut_node.node_info
         try:
-            sut_node.set_up_test_run(test_run_config)
-            tg_node.set_up_test_run(test_run_config)
+            dpdk_build_config = test_run_config.dpdk_config
+            if new_location := SETTINGS.dpdk_location:
+                dpdk_build_config = dpdk_build_config.model_copy(
+                    update={"dpdk_location": new_location}
+                )
+            if dir := SETTINGS.precompiled_build_dir:
+                dpdk_build_config = DPDKPrecompiledBuildConfiguration(
+                    dpdk_location=dpdk_build_config.dpdk_location, precompiled_build_dir=dir
+                )
+            sut_node.set_up_test_run(test_run_config, dpdk_build_config)
+            test_run_result.dpdk_build_info = sut_node.get_dpdk_build_info()
+            tg_node.set_up_test_run(test_run_config, dpdk_build_config)
             test_run_result.update_setup(Result.PASS)
         except Exception as e:
             self._logger.exception("Test run setup failed.")
             test_run_result.update_setup(Result.FAIL, e)
 
         else:
-            for build_target_config in test_run_config.build_targets:
-                build_target_result = test_run_result.add_build_target(build_target_config)
-                self._run_build_target(
-                    sut_node,
-                    tg_node,
-                    build_target_config,
-                    build_target_result,
-                    test_suites_with_cases,
-                )
+            self._run_test_suites(sut_node, tg_node, test_run_result, test_suites_with_cases)
 
         finally:
             try:
@@ -408,52 +346,6 @@ class DTSRunner:
             except Exception as e:
                 self._logger.exception("Test run teardown failed.")
                 test_run_result.update_teardown(Result.FAIL, e)
-
-    def _run_build_target(
-        self,
-        sut_node: SutNode,
-        tg_node: TGNode,
-        build_target_config: BuildTargetConfiguration,
-        build_target_result: BuildTargetResult,
-        test_suites_with_cases: Iterable[TestSuiteWithCases],
-    ) -> None:
-        """Run the given build target.
-
-        This involves running the build target setup as well as running all test suites
-        of the build target's test run.
-        After that, build target teardown is run.
-
-        Args:
-            sut_node: The test run's sut node.
-            tg_node: The test run's tg node.
-            build_target_config: A build target's test run configuration.
-            build_target_result: The build target level result object associated
-                with the current build target.
-            test_suites_with_cases: The test suites with test cases to run.
-        """
-        self._logger.set_stage(DtsStage.build_target_setup)
-        self._logger.info(f"Running build target '{build_target_config.name}'.")
-
-        try:
-            sut_node.set_up_build_target(build_target_config)
-            self._result.dpdk_version = sut_node.dpdk_version
-            build_target_result.add_build_target_info(sut_node.get_build_target_info())
-            build_target_result.update_setup(Result.PASS)
-        except Exception as e:
-            self._logger.exception("Build target setup failed.")
-            build_target_result.update_setup(Result.FAIL, e)
-
-        else:
-            self._run_test_suites(sut_node, tg_node, build_target_result, test_suites_with_cases)
-
-        finally:
-            try:
-                self._logger.set_stage(DtsStage.build_target_teardown)
-                sut_node.tear_down_build_target()
-                build_target_result.update_teardown(Result.PASS)
-            except Exception as e:
-                self._logger.exception("Build target teardown failed.")
-                build_target_result.update_teardown(Result.FAIL, e)
 
     def _get_supported_capabilities(
         self,
@@ -474,13 +366,12 @@ class DTSRunner:
         self,
         sut_node: SutNode,
         tg_node: TGNode,
-        build_target_result: BuildTargetResult,
+        test_run_result: TestRunResult,
         test_suites_with_cases: Iterable[TestSuiteWithCases],
     ) -> None:
-        """Run `test_suites_with_cases` with the current build target.
+        """Run `test_suites_with_cases` with the current test run.
 
-        The method assumes the build target we're testing has already been built on the SUT node.
-        The current build target thus corresponds to the current DPDK build present on the SUT node.
+        The method assumes the DPDK we're testing has already been built on the SUT node.
 
         Before running any suites, the method determines whether they should be skipped
         by inspecting any required capabilities the test suite needs and comparing those
@@ -489,23 +380,22 @@ class DTSRunner:
         is skipped (the setup and teardown is not run).
 
         If a blocking test suite (such as the smoke test suite) fails, the rest of the test suites
-        in the current build target won't be executed.
+        in the current test run won't be executed.
 
         Args:
             sut_node: The test run's SUT node.
             tg_node: The test run's TG node.
-            build_target_result: The build target level result object associated
-                with the current build target.
+            test_run_result: The test run's result.
             test_suites_with_cases: The test suites with test cases to run.
         """
-        end_build_target = False
+        end_dpdk_build = False
         topology = Topology(sut_node.ports, tg_node.ports)
         supported_capabilities = self._get_supported_capabilities(
             sut_node, topology, test_suites_with_cases
         )
         for test_suite_with_cases in test_suites_with_cases:
             test_suite_with_cases.mark_skip_unsupported(supported_capabilities)
-            test_suite_result = build_target_result.add_test_suite(test_suite_with_cases)
+            test_suite_result = test_run_result.add_test_suite(test_suite_with_cases)
             try:
                 if not test_suite_with_cases.skip:
                     self._run_test_suite(
@@ -525,12 +415,12 @@ class DTSRunner:
             except BlockingTestSuiteError as e:
                 self._logger.exception(
                     f"An error occurred within {test_suite_with_cases.test_suite_class.__name__}. "
-                    "Skipping build target..."
+                    "Skipping the rest of the test suites in this test run."
                 )
                 self._result.add_error(e)
-                end_build_target = True
+                end_dpdk_build = True
             # if a blocking test failed and we need to bail out of suite executions
-            if end_build_target:
+            if end_dpdk_build:
                 break
 
     def _run_test_suite(
@@ -543,8 +433,7 @@ class DTSRunner:
     ) -> None:
         """Set up, execute and tear down `test_suite_with_cases`.
 
-        The method assumes the build target we're testing has already been built on the SUT node.
-        The current build target thus corresponds to the current DPDK build present on the SUT node.
+        The method assumes the DPDK we're testing has already been built on the SUT node.
 
         Test suite execution consists of running the discovered test cases.
         A test case run consists of setup, execution and teardown of said test case.

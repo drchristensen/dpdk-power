@@ -20,7 +20,6 @@ documentation = "https://doc.dpdk.org/guides/tools/dts.html"
 
 [tool.poetry.dependencies]
 python = "^3.10"
-warlock = "^2.0.1"
 PyYAML = "^6.0"
 types-PyYAML = "^6.0.8"
 fabric = "^2.7.1"
@@ -28,6 +27,7 @@ scapy = "^2.5.0"
 pydocstyle = "6.1.1"
 typing-extensions = "^4.11.0"
 aenum = "^3.1.15"
+pydantic = "^2.9.2"
 
 [tool.poetry.group.dev.dependencies]
 mypy = "^1.10.0"
@@ -44,6 +44,7 @@ optional = true
 sphinx = "<=7"
 sphinx-rtd-theme = ">=1.2.2"
 pyelftools = "^0.31"
+autodoc-pydantic = "^2.2.0"
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]

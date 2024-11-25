@@ -11,6 +11,7 @@
 #include "bnxt_hwrm.h"
 #include "bnxt_ring.h"
 #include "hsi_struct_def_dpdk.h"
+#include "tfc_vf2pf_msg.h"
 
 void bnxt_wait_for_device_shutdown(struct bnxt *bp)
 {
@@ -44,51 +45,6 @@ void bnxt_wait_for_device_shutdown(struct bnxt *bp)
 		rte_delay_ms(100);
 		timeout -= 100;
 	} while (timeout);
-}
-
-static void
-bnxt_process_default_vnic_change(struct bnxt *bp,
-				 struct hwrm_async_event_cmpl *async_cmp)
-{
-	uint16_t vnic_state, vf_fid, vf_id;
-	struct bnxt_representor *vf_rep_bp;
-	struct rte_eth_dev *eth_dev;
-	bool vfr_found = false;
-	uint32_t event_data;
-
-	if (!BNXT_TRUFLOW_EN(bp))
-		return;
-
-	PMD_DRV_LOG_LINE(INFO, "Default vnic change async event received");
-	event_data = rte_le_to_cpu_32(async_cmp->event_data1);
-
-	vnic_state = (event_data & BNXT_DEFAULT_VNIC_STATE_MASK) >>
-			BNXT_DEFAULT_VNIC_STATE_SFT;
-	if (vnic_state != BNXT_DEFAULT_VNIC_ALLOC)
-		return;
-
-	if (!bp->rep_info)
-		return;
-
-	vf_fid = (event_data & BNXT_DEFAULT_VNIC_CHANGE_VF_ID_MASK) >>
-			BNXT_DEFAULT_VNIC_CHANGE_VF_ID_SFT;
-	PMD_DRV_LOG_LINE(INFO, "async event received vf_id 0x%x", vf_fid);
-
-	for (vf_id = 0; vf_id < BNXT_MAX_VF_REPS(bp); vf_id++) {
-		eth_dev = bp->rep_info[vf_id].vfr_eth_dev;
-		if (!eth_dev)
-			continue;
-		vf_rep_bp = eth_dev->data->dev_private;
-		if (vf_rep_bp &&
-		    vf_rep_bp->fw_fid == vf_fid) {
-			vfr_found = true;
-			break;
-		}
-	}
-	if (!vfr_found)
-		return;
-
-	bnxt_rep_dev_start_op(eth_dev);
 }
 
 static void bnxt_handle_event_error_report(struct bnxt *bp,
@@ -135,6 +91,7 @@ static void
 bnxt_process_vf_flr(struct bnxt *bp, uint32_t data1)
 {
 	uint16_t pfid, vfid;
+	int rc;
 
 	if (!BNXT_TRUFLOW_EN(bp))
 		return;
@@ -145,7 +102,11 @@ bnxt_process_vf_flr(struct bnxt *bp, uint32_t data1)
 		HWRM_ASYNC_EVENT_CMPL_VF_FLR_EVENT_DATA1_VF_ID_SFT;
 
 	PMD_DRV_LOG_LINE(INFO, "VF FLR async event received pfid: %u, vfid: %u",
-		    pfid, vfid);
+			 pfid, vfid);
+
+	rc = tfc_tbl_scope_func_reset(&bp->tfcp, vfid);
+	if (rc != 0)
+		PMD_DRV_LOG_LINE(ERR, "Failed to reset vf");
 }
 
 /*
@@ -272,9 +233,6 @@ void bnxt_handle_async_event(struct bnxt *bp,
 		PMD_DRV_LOG_LINE(INFO, "Port: %u DNC event: data1 %#x data2 %#x",
 			    port_id, data1, data2);
 		break;
-	case HWRM_ASYNC_EVENT_CMPL_EVENT_ID_DEFAULT_VNIC_CHANGE:
-		bnxt_process_default_vnic_change(bp, async_cmp);
-		break;
 	case HWRM_ASYNC_EVENT_CMPL_EVENT_ID_ECHO_REQUEST:
 		PMD_DRV_LOG_LINE(INFO,
 			    "Port %u: Received fw echo request: data1 %#x data2 %#x",
@@ -287,6 +245,12 @@ void bnxt_handle_async_event(struct bnxt *bp,
 		break;
 	case HWRM_ASYNC_EVENT_CMPL_EVENT_ID_VF_FLR:
 		bnxt_process_vf_flr(bp, data1);
+		break;
+	case HWRM_ASYNC_EVENT_CMPL_EVENT_ID_RSS_CHANGE:
+		/* RSS change notification, re-read QCAPS */
+		PMD_DRV_LOG_LINE(INFO, "Async event: RSS change event [%#x, %#x]",
+				 data1, data2);
+		bnxt_hwrm_vnic_qcaps(bp);
 		break;
 	default:
 		PMD_DRV_LOG_LINE(DEBUG, "handle_async_event id = 0x%x", event_id);
@@ -358,6 +322,60 @@ void bnxt_handle_fwd_req(struct bnxt *bp, struct cmpl_base *cmpl)
 				HWRM_CFA_L2_SET_RX_MASK_INPUT_MASK_VLANONLY |
 			    HWRM_CFA_L2_SET_RX_MASK_INPUT_MASK_VLAN_NONVLAN |
 			    HWRM_CFA_L2_SET_RX_MASK_INPUT_MASK_ANYVLAN_NONVLAN);
+		}
+
+		if (fwd_cmd->req_type == HWRM_OEM_CMD) {
+			struct hwrm_oem_cmd_input *oem_cmd = (void *)fwd_cmd;
+			struct hwrm_oem_cmd_output oem_out = { 0 };
+
+			if (oem_cmd->oem_id == 0x14e4 &&
+			    oem_cmd->naming_authority
+				== HWRM_OEM_CMD_INPUT_NAMING_AUTHORITY_PCI_SIG &&
+			    oem_cmd->message_family
+				== HWRM_OEM_CMD_INPUT_MESSAGE_FAMILY_TRUFLOW) {
+				uint32_t resp[18] = { 0 };
+				uint16_t oem_data_len = sizeof(oem_out.oem_data);
+				uint16_t resp_len = oem_data_len;
+
+				rc = tfc_oem_cmd_process(&bp->tfcp,
+							 oem_cmd->oem_data,
+							 resp,
+							 &resp_len);
+				if (rc) {
+					PMD_DRV_LOG_LINE(ERR,
+						"OEM cmd process error id 0x%x, name 0x%x, family 0x%x",
+						oem_cmd->oem_id,
+						oem_cmd->naming_authority,
+						oem_cmd->message_family);
+					goto reject;
+				}
+
+				oem_out.error_code = 0;
+				oem_out.req_type = oem_cmd->req_type;
+				oem_out.seq_id = oem_cmd->seq_id;
+				oem_out.resp_len = rte_cpu_to_le_16(sizeof(oem_out));
+				oem_out.oem_id = oem_cmd->oem_id;
+				oem_out.naming_authority = oem_cmd->naming_authority;
+				oem_out.message_family = oem_cmd->message_family;
+				memcpy(oem_out.oem_data, resp, resp_len);
+				oem_out.valid = 1;
+
+				rc = bnxt_hwrm_fwd_resp(bp, fw_vf_id, &oem_out, oem_out.resp_len,
+						oem_cmd->resp_addr, oem_cmd->cmpl_ring);
+				if (rc) {
+					PMD_DRV_LOG_LINE(ERR,
+							 "Failed to send HWRM_FWD_RESP VF 0x%x, type",
+							 fw_vf_id - bp->pf->first_vf_id);
+				}
+			} else {
+				PMD_DRV_LOG_LINE(ERR,
+						 "Unsupported OEM cmd id 0x%x, name 0x%x, family 0x%x",
+						 oem_cmd->oem_id, oem_cmd->naming_authority,
+						 oem_cmd->message_family);
+				goto reject;
+			}
+
+			return;
 		}
 
 		/* Forward */

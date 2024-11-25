@@ -3734,8 +3734,11 @@ flow_hw_actions_construct(struct rte_eth_dev *dev,
 		case RTE_FLOW_ACTION_TYPE_COUNT:
 			cnt_queue = mlx5_hws_cnt_get_queue(priv, &queue);
 			ret = mlx5_hws_cnt_pool_get(priv->hws_cpool, cnt_queue, &cnt_id, age_idx);
-			if (ret != 0)
+			if (ret != 0) {
+				rte_flow_error_set(error, -ret, RTE_FLOW_ERROR_TYPE_ACTION,
+						action, "Failed to allocate flow counter");
 				goto error;
+			}
 			ret = mlx5_hws_cnt_pool_get_action_offset
 				(priv->hws_cpool,
 				 cnt_id,
@@ -3978,10 +3981,9 @@ flow_hw_async_flow_create_generic(struct rte_eth_dev *dev,
 		.burst = attr->postpone,
 	};
 	struct mlx5dr_rule_action *rule_acts;
-	struct mlx5_flow_hw_action_params ap;
-	struct mlx5_flow_hw_pattern_params pp;
 	struct rte_flow_hw *flow = NULL;
 	const struct rte_flow_item *rule_items;
+	struct rte_flow_error sub_error = { 0 };
 	uint32_t flow_idx = 0;
 	uint32_t res_idx = 0;
 	int ret;
@@ -4035,14 +4037,14 @@ flow_hw_async_flow_create_generic(struct rte_eth_dev *dev,
 	 * No need to copy and contrust a new "actions" list based on the
 	 * user's input, in order to save the cost.
 	 */
-	if (flow_hw_actions_construct(dev, flow, &ap,
+	if (flow_hw_actions_construct(dev, flow, &priv->hw_q[queue].ap,
 				      &table->ats[action_template_index],
 				      table->its[pattern_template_index]->item_flags,
 				      flow->table, actions,
-				      rule_acts, queue, error))
+				      rule_acts, queue, &sub_error))
 		goto error;
 	rule_items = flow_hw_get_rule_items(dev, table, items,
-					    pattern_template_index, &pp);
+					    pattern_template_index, &priv->hw_q[queue].pp);
 	if (!rule_items)
 		goto error;
 	if (likely(!rte_flow_template_table_resizable(dev->data->port_id, &table->cfg.attr))) {
@@ -4076,9 +4078,12 @@ error:
 		mlx5_ipool_free(table->resource, res_idx);
 	if (flow_idx)
 		mlx5_ipool_free(table->flow, flow_idx);
-	rte_flow_error_set(error, rte_errno,
-			   RTE_FLOW_ERROR_TYPE_UNSPECIFIED, NULL,
-			   "fail to create rte flow");
+	if (sub_error.cause != RTE_FLOW_ERROR_TYPE_NONE && error != NULL)
+		*error = sub_error;
+	else
+		rte_flow_error_set(error, rte_errno,
+				   RTE_FLOW_ERROR_TYPE_UNSPECIFIED, NULL,
+				   "fail to create rte flow");
 	return NULL;
 }
 
@@ -4185,7 +4190,6 @@ flow_hw_async_flow_update(struct rte_eth_dev *dev,
 		.burst = attr->postpone,
 	};
 	struct mlx5dr_rule_action *rule_acts;
-	struct mlx5_flow_hw_action_params ap;
 	struct rte_flow_hw *of = (struct rte_flow_hw *)flow;
 	struct rte_flow_hw *nf;
 	struct rte_flow_hw_aux *aux;
@@ -4236,7 +4240,7 @@ flow_hw_async_flow_update(struct rte_eth_dev *dev,
 	 * No need to copy and contrust a new "actions" list based on the
 	 * user's input, in order to save the cost.
 	 */
-	if (flow_hw_actions_construct(dev, nf, &ap,
+	if (flow_hw_actions_construct(dev, nf, &priv->hw_q[queue].ap,
 				      &table->ats[action_template_index],
 				      table->its[nf->mt_idx]->item_flags,
 				      table, actions,
@@ -11825,6 +11829,9 @@ __flow_hw_configure(struct rte_eth_dev *dev,
 	}
 	dr_ctx_attr.pd = priv->sh->cdev->pd;
 	dr_ctx_attr.queues = nb_q_updated;
+	/* Assign initial value of STC numbers for representors. */
+	if (priv->representor)
+		dr_ctx_attr.initial_log_stc_memory = MLX5_REPR_STC_MEMORY_LOG;
 	/* Queue size should all be the same. Take the first one. */
 	dr_ctx_attr.queue_size = _queue_attr[0]->size;
 	if (port_attr->flags & RTE_FLOW_PORT_FLAG_SHARE_INDIRECT) {
@@ -16157,7 +16164,7 @@ mlx5_flow_hw_ctrl_flows(struct rte_eth_dev *dev, uint32_t flags)
 	struct mlx5_priv *priv = dev->data->dev_private;
 	struct mlx5_flow_hw_ctrl_rx *hw_ctrl_rx;
 	unsigned int i;
-	unsigned int j;
+	int j;
 	int ret = 0;
 
 	RTE_SET_USED(priv);

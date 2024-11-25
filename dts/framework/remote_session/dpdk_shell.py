@@ -56,8 +56,8 @@ def compute_eal_params(
         sut_node.dpdk_prefix_list.append(prefix)
     params.prefix = prefix
 
-    if params.ports is None:
-        params.ports = sut_node.ports
+    if params.allowed_ports is None:
+        params.allowed_ports = sut_node.ports
 
     return params
 
@@ -104,4 +104,4 @@ class DPDKShell(SingleActiveInteractiveShell, ABC):
 
         Adds the remote DPDK build directory to the path.
         """
-        super()._update_real_path(self._node.remote_dpdk_build_dir.joinpath(path))
+        super()._update_real_path(PurePath(self._node.remote_dpdk_build_dir).joinpath(path))

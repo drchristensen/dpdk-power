@@ -1623,16 +1623,12 @@ static int bnx2x_nic_unload_no_mcp(struct bnx2x_softc *sc)
 }
 
 /* request unload mode from the MCP: COMMON, PORT or FUNCTION */
-static uint32_t bnx2x_send_unload_req(struct bnx2x_softc *sc, int unload_mode)
+static uint32_t bnx2x_send_unload_req(struct bnx2x_softc *sc, int unload_mode __rte_unused)
 {
 	uint32_t reset_code = 0;
 
 	/* Select the UNLOAD request mode */
-	if (unload_mode == UNLOAD_NORMAL) {
-		reset_code = DRV_MSG_CODE_UNLOAD_REQ_WOL_DIS;
-	} else {
-		reset_code = DRV_MSG_CODE_UNLOAD_REQ_WOL_DIS;
-	}
+	reset_code = DRV_MSG_CODE_UNLOAD_REQ_WOL_DIS;
 
 	/* Send the request to the MCP */
 	if (!BNX2X_NOMCP(sc)) {
@@ -10331,12 +10327,13 @@ static int bnx2x_init_hw_common(struct bnx2x_softc *sc)
 	REG_WR(sc, PXP2_REG_RD_DISABLE_INPUTS, 0);
 
 	if (!CHIP_IS_E1x(sc)) {
-		int factor = 0;
+		int factor = CHIP_REV_IS_EMUL(sc) ? 1000 :
+				(CHIP_REV_IS_FPGA(sc) ? 400 : 0);
 
 		ecore_init_block(sc, BLOCK_PGLUE_B, PHASE_COMMON);
 		ecore_init_block(sc, BLOCK_ATC, PHASE_COMMON);
 
-/* let the HW do it's magic... */
+		/* let the HW do it's magic... */
 		do {
 			DELAY(200000);
 			val = REG_RD(sc, ATC_REG_ATC_INIT_DONE);
@@ -11189,11 +11186,9 @@ static int bnx2x_init_hw_func(struct bnx2x_softc *sc)
 /* Turn on a single ISR mode in IGU if driver is going to use
  * INT#x or MSI
  */
-		if ((sc->interrupt_mode != INTR_MODE_MSIX)
-		    || (sc->interrupt_mode != INTR_MODE_SINGLE_MSIX)) {
+		if (sc->interrupt_mode == INTR_MODE_INTX ||
+		    sc->interrupt_mode == INTR_MODE_MSI)
 			pf_conf |= IGU_PF_CONF_SINGLE_ISR_EN;
-		}
-
 /*
  * Timers workaround bug: function init part.
  * Need to wait 20msec after initializing ILT,

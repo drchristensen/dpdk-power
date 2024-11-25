@@ -19,9 +19,8 @@
 #include "bnxt_rxq.h"
 #include "hsi_struct_def_dpdk.h"
 #include "bnxt_hwrm.h"
-
-#include <bnxt_tf_common.h>
-#include <ulp_mark_mgr.h>
+#include "bnxt_tf_common.h"
+#include "ulp_mark_mgr.h"
 
 /*
  * RX Ring handling
@@ -85,7 +84,7 @@ static inline int bnxt_alloc_ag_data(struct bnxt_rx_queue *rxq,
 		return -EINVAL;
 	}
 
-	mbuf = __bnxt_alloc_rx_data(rxq->mb_pool);
+	mbuf = __bnxt_alloc_rx_data(rxq->agg_mb_pool);
 	if (!mbuf) {
 		rte_atomic_fetch_add_explicit(&rxq->rx_mbuf_alloc_fail, 1,
 				rte_memory_order_relaxed);
@@ -317,11 +316,8 @@ static int bnxt_prod_ag_mbuf(struct bnxt_rx_queue *rxq)
 
 	/* TODO batch allocation for better performance */
 	while (rte_bitmap_get(rxr->ag_bitmap, bmap_next)) {
-		if (unlikely(bnxt_alloc_ag_data(rxq, rxr, raw_next))) {
-			PMD_DRV_LOG_LINE(ERR, "agg mbuf alloc failed: prod=0x%x",
-				    raw_next);
+		if (unlikely(bnxt_alloc_ag_data(rxq, rxr, raw_next)))
 			break;
-		}
 		rte_bitmap_clear(rxr->ag_bitmap, bmap_next);
 		rxr->ag_raw_prod = raw_next;
 		raw_next = RING_NEXT(raw_next);
@@ -959,10 +955,6 @@ bnxt_set_ol_flags_crx(struct bnxt_rx_ring_info *rxr,
 		ol_flags |= RTE_MBUF_F_RX_RSS_HASH;
 	}
 
-#ifdef RTE_LIBRTE_IEEE1588
-	/* TODO: TIMESTAMP flags need to be parsed and set. */
-#endif
-
 	mbuf->ol_flags = ol_flags;
 }
 
@@ -1084,17 +1076,11 @@ static int bnxt_crx_pkt(struct rte_mbuf **rx_pkt,
 	mbuf->data_len = mbuf->pkt_len;
 	mbuf->port = rxq->port_id;
 
-#ifdef RTE_LIBRTE_IEEE1588
-	/* TODO: Add timestamp support. */
-#endif
-
 	bnxt_set_ol_flags_crx(rxr, rxcmp, mbuf);
 	mbuf->packet_type = bnxt_parse_pkt_type_crx(rxcmp);
 	bnxt_set_vlan_crx(rxcmp, mbuf);
 
 	if (bnxt_alloc_rx_data(rxq, rxr, raw_prod)) {
-		PMD_DRV_LOG_LINE(ERR, "mbuf alloc failed with prod=0x%x",
-			    raw_prod);
 		rc = -ENOMEM;
 		goto rx;
 	}
@@ -1272,8 +1258,6 @@ reuse_rx_mbuf:
 	 */
 	raw_prod = RING_NEXT(raw_prod);
 	if (bnxt_alloc_rx_data(rxq, rxr, raw_prod)) {
-		PMD_DRV_LOG_LINE(ERR, "mbuf alloc failed with prod=0x%x",
-			    raw_prod);
 		rc = -ENOMEM;
 		goto rx;
 	}
@@ -1672,13 +1656,16 @@ int bnxt_init_one_rx_ring(struct bnxt_rx_queue *rxq)
 	}
 	PMD_DRV_LOG_LINE(DEBUG, "AGG Done!");
 
+	if (bnxt_compressed_rx_cqe_mode_enabled(rxq->bp))
+		return 0;
+
 	if (rxr->tpa_info) {
 		unsigned int max_aggs = BNXT_TPA_MAX_AGGS(rxq->bp);
 
 		for (i = 0; i < max_aggs; i++) {
 			if (unlikely(!rxr->tpa_info[i].mbuf)) {
 				rxr->tpa_info[i].mbuf =
-					__bnxt_alloc_rx_data(rxq->mb_pool);
+					__bnxt_alloc_rx_data(rxq->agg_mb_pool);
 				if (!rxr->tpa_info[i].mbuf) {
 					rte_atomic_fetch_add_explicit(&rxq->rx_mbuf_alloc_fail, 1,
 							rte_memory_order_relaxed);

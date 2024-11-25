@@ -59,7 +59,20 @@ man_pages = [("testpmd_app_ug/run_app", "testpmd",
 
 # DTS API docs additional configuration
 if environ.get('DTS_DOC_BUILD'):
-    extensions = ['sphinx.ext.napoleon', 'sphinx.ext.autodoc', 'sphinx.ext.intersphinx']
+    extensions = ['sphinx.ext.napoleon', 'sphinx.ext.autodoc']
+
+    # Pydantic models require autodoc_pydantic for the right formatting
+    try:
+        import sphinxcontrib.autodoc_pydantic
+        extensions.append("sphinxcontrib.autodoc_pydantic")
+    except ImportError:
+        print(
+            "The DTS API doc dependencies are missing. "
+            "The generated output won't be as intended, "
+            "and autodoc may throw unexpected warnings.",
+            file=stderr,
+        )
+
     # Napoleon enables the Google format of Python doscstrings.
     napoleon_numpy_docstring = False
     napoleon_attr_annotations = True
@@ -75,9 +88,6 @@ if environ.get('DTS_DOC_BUILD'):
     autodoc_typehints = 'both'
     autodoc_typehints_format = 'short'
     autodoc_typehints_description_target = 'documented'
-
-    # Intersphinx allows linking to external projects, such as Python docs.
-    intersphinx_mapping = {'python': ('https://docs.python.org/3', None)}
 
     # DTS docstring options.
     add_module_names = False

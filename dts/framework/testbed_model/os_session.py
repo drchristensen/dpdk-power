@@ -24,11 +24,10 @@ Example:
 """
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
-from ipaddress import IPv4Interface, IPv6Interface
-from pathlib import PurePath
-from typing import Union
+from dataclasses import dataclass
+from pathlib import Path, PurePath, PurePosixPath
 
-from framework.config import Architecture, NodeConfiguration, NodeInfo
+from framework.config import Architecture, NodeConfiguration
 from framework.logger import DTSLogger
 from framework.remote_session import (
     InteractiveRemoteSession,
@@ -38,10 +37,28 @@ from framework.remote_session import (
 )
 from framework.remote_session.remote_session import CommandResult
 from framework.settings import SETTINGS
-from framework.utils import MesonArgs
+from framework.utils import MesonArgs, TarCompressionFormat
 
 from .cpu import LogicalCore
 from .port import Port
+
+
+@dataclass(slots=True, frozen=True)
+class OSSessionInfo:
+    """Supplemental OS session information.
+
+    Attributes:
+        os_name: The name of the running operating system of
+            the :class:`~framework.testbed_model.node.Node`.
+        os_version: The version of the running operating system of
+            the :class:`~framework.testbed_model.node.Node`.
+        kernel_version: The kernel version of the running operating system of
+            the :class:`~framework.testbed_model.node.Node`.
+    """
+
+    os_name: str
+    os_version: str
+    kernel_version: str
 
 
 class OSSession(ABC):
@@ -138,17 +155,6 @@ class OSSession(ABC):
         """
 
     @abstractmethod
-    def guess_dpdk_remote_dir(self, remote_dir: str | PurePath) -> PurePath:
-        """Try to find DPDK directory in `remote_dir`.
-
-        The directory is the one which is created after the extraction of the tarball. The files
-        are usually extracted into a directory starting with ``dpdk-``.
-
-        Returns:
-            The absolute path of the DPDK remote directory, empty path if not found.
-        """
-
-    @abstractmethod
     def get_remote_tmp_dir(self) -> PurePath:
         """Get the path of the temporary directory of the remote OS.
 
@@ -178,35 +184,129 @@ class OSSession(ABC):
         """
 
     @abstractmethod
-    def copy_from(
-        self,
-        source_file: str | PurePath,
-        destination_file: str | PurePath,
-    ) -> None:
-        """Copy a file from the remote node to the local filesystem.
-
-        Copy `source_file` from the remote node associated with this remote
-        session to `destination_file` on the local filesystem.
+    def remote_path_exists(self, remote_path: str | PurePath) -> bool:
+        """Check whether `remote_path` exists on the remote system.
 
         Args:
-            source_file: the file on the remote node.
-            destination_file: a file or directory path on the local filesystem.
+            remote_path: The path to check.
+
+        Returns:
+            :data:`True` if the path exists, :data:`False` otherwise.
         """
 
     @abstractmethod
-    def copy_to(
-        self,
-        source_file: str | PurePath,
-        destination_file: str | PurePath,
-    ) -> None:
+    def copy_from(self, source_file: str | PurePath, destination_dir: str | Path) -> None:
+        """Copy a file from the remote node to the local filesystem.
+
+        Copy `source_file` from the remote node associated with this remote
+        session to `destination_dir` on the local filesystem.
+
+        Args:
+            source_file: The file on the remote node.
+            destination_dir: The directory path on the local filesystem where the `source_file`
+                will be saved.
+        """
+
+    @abstractmethod
+    def copy_to(self, source_file: str | Path, destination_dir: str | PurePath) -> None:
         """Copy a file from local filesystem to the remote node.
 
-        Copy `source_file` from local filesystem to `destination_file`
+        Copy `source_file` from local filesystem to `destination_dir`
         on the remote node associated with this remote session.
 
         Args:
-            source_file: the file on the local filesystem.
-            destination_file: a file or directory path on the remote node.
+            source_file: The file on the local filesystem.
+            destination_dir: The directory path on the remote Node where the `source_file`
+                will be saved.
+        """
+
+    @abstractmethod
+    def copy_dir_from(
+        self,
+        source_dir: str | PurePath,
+        destination_dir: str | Path,
+        compress_format: TarCompressionFormat = TarCompressionFormat.none,
+        exclude: str | list[str] | None = None,
+    ) -> None:
+        """Copy a directory from the remote node to the local filesystem.
+
+        Copy `source_dir` from the remote node associated with this remote session to
+        `destination_dir` on the local filesystem. The new local directory will be created
+        at `destination_dir` path.
+
+        Example:
+            source_dir = '/remote/path/to/source'
+            destination_dir = '/local/path/to/destination'
+            compress_format = TarCompressionFormat.xz
+
+            The method will:
+                1. Create a tarball from `source_dir`, resulting in:
+                    '/remote/path/to/source.tar.xz',
+                2. Copy '/remote/path/to/source.tar.xz' to
+                    '/local/path/to/destination/source.tar.xz',
+                3. Extract the contents of the tarball, resulting in:
+                    '/local/path/to/destination/source/',
+                4. Remove the tarball after extraction
+                    ('/local/path/to/destination/source.tar.xz').
+
+            Final Path Structure:
+                '/local/path/to/destination/source/'
+
+        Args:
+            source_dir: The directory on the remote node.
+            destination_dir: The directory path on the local filesystem.
+            compress_format: The compression format to use. Defaults to no compression.
+            exclude: Patterns for files or directories to exclude from the tarball.
+                These patterns are used with `tar`'s `--exclude` option.
+        """
+
+    @abstractmethod
+    def copy_dir_to(
+        self,
+        source_dir: str | Path,
+        destination_dir: str | PurePath,
+        compress_format: TarCompressionFormat = TarCompressionFormat.none,
+        exclude: str | list[str] | None = None,
+    ) -> None:
+        """Copy a directory from the local filesystem to the remote node.
+
+        Copy `source_dir` from the local filesystem to `destination_dir` on the remote node
+        associated with this remote session. The new remote directory will be created at
+        `destination_dir` path.
+
+        Example:
+            source_dir = '/local/path/to/source'
+            destination_dir = '/remote/path/to/destination'
+            compress_format = TarCompressionFormat.xz
+
+            The method will:
+                1. Create a tarball from `source_dir`, resulting in:
+                    '/local/path/to/source.tar.xz',
+                2. Copy '/local/path/to/source.tar.xz' to
+                    '/remote/path/to/destination/source.tar.xz',
+                3. Extract the contents of the tarball, resulting in:
+                    '/remote/path/to/destination/source/',
+                4. Remove the tarball after extraction
+                    ('/remote/path/to/destination/source.tar.xz').
+
+            Final Path Structure:
+                '/remote/path/to/destination/source/'
+
+        Args:
+            source_dir: The directory on the local filesystem.
+            destination_dir: The directory path on the remote node.
+            compress_format: The compression format to use. Defaults to no compression.
+            exclude: Patterns for files or directories to exclude from the tarball.
+                These patterns are used with `fnmatch.fnmatch` to filter out files.
+        """
+
+    @abstractmethod
+    def remove_remote_file(self, remote_file_path: str | PurePath, force: bool = True) -> None:
+        """Remove remote file, by default remove forcefully.
+
+        Args:
+            remote_file_path: The file path to remove.
+            force: If :data:`True`, ignore all warnings and try to remove at all costs.
         """
 
     @abstractmethod
@@ -219,9 +319,32 @@ class OSSession(ABC):
         """Remove remote directory, by default remove recursively and forcefully.
 
         Args:
-            remote_dir_path: The path of the directory to remove.
+            remote_dir_path: The directory path to remove.
             recursive: If :data:`True`, also remove all contents inside the directory.
             force: If :data:`True`, ignore all warnings and try to remove at all costs.
+        """
+
+    @abstractmethod
+    def create_remote_tarball(
+        self,
+        remote_dir_path: str | PurePath,
+        compress_format: TarCompressionFormat = TarCompressionFormat.none,
+        exclude: str | list[str] | None = None,
+    ) -> PurePosixPath:
+        """Create a tarball from the contents of the specified remote directory.
+
+        This method creates a tarball containing all files and directories
+        within `remote_dir_path`. The tarball will be saved in the directory of
+        `remote_dir_path` and will be named based on `remote_dir_path`.
+
+        Args:
+            remote_dir_path: The directory path on the remote node.
+            compress_format: The compression format to use. Defaults to no compression.
+            exclude: Patterns for files or directories to exclude from the tarball.
+                These patterns are used with `tar`'s `--exclude` option.
+
+        Returns:
+            The path to the created tarball on the remote node.
         """
 
     @abstractmethod
@@ -233,9 +356,50 @@ class OSSession(ABC):
         """Extract remote tarball in its remote directory.
 
         Args:
-            remote_tarball_path: The path of the tarball on the remote node.
+            remote_tarball_path: The tarball path on the remote node.
             expected_dir: If non-empty, check whether `expected_dir` exists after extracting
                 the archive.
+        """
+
+    @abstractmethod
+    def is_remote_dir(self, remote_path: PurePath) -> bool:
+        """Check if the `remote_path` is a directory.
+
+        Args:
+            remote_tarball_path: The path to the remote tarball.
+
+        Returns:
+            If :data:`True` the `remote_path` is a directory, otherwise :data:`False`.
+        """
+
+    @abstractmethod
+    def is_remote_tarfile(self, remote_tarball_path: PurePath) -> bool:
+        """Check if the `remote_tarball_path` is a tar archive.
+
+        Args:
+            remote_tarball_path: The path to the remote tarball.
+
+        Returns:
+            If :data:`True` the `remote_tarball_path` is a tar archive, otherwise :data:`False`.
+        """
+
+    @abstractmethod
+    def get_tarball_top_dir(
+        self, remote_tarball_path: str | PurePath
+    ) -> str | PurePosixPath | None:
+        """Get the top directory of the remote tarball.
+
+        Examines the contents of a tarball located at the given `remote_tarball_path` and
+        determines the top-level directory. If all files and directories in the tarball share
+        the same top-level directory, that directory name is returned. If the tarball contains
+        multiple top-level directories or is empty, the method return None.
+
+        Args:
+            remote_tarball_path: The path to the remote tarball.
+
+        Returns:
+            The top directory of the tarball. If there are multiple top directories
+            or the tarball is empty, returns :data:`None`.
         """
 
     @abstractmethod
@@ -335,7 +499,7 @@ class OSSession(ABC):
         """
 
     @abstractmethod
-    def get_node_info(self) -> NodeInfo:
+    def get_node_info(self) -> OSSessionInfo:
         """Collect additional information about the node.
 
         Returns:
@@ -356,42 +520,10 @@ class OSSession(ABC):
         """
 
     @abstractmethod
-    def configure_port_state(self, port: Port, enable: bool) -> None:
-        """Enable/disable `port` in the operating system.
-
-        Args:
-            port: The port to configure.
-            enable: If :data:`True`, enable the port, otherwise shut it down.
-        """
-
-    @abstractmethod
-    def configure_port_ip_address(
-        self,
-        address: Union[IPv4Interface, IPv6Interface],
-        port: Port,
-        delete: bool,
-    ) -> None:
-        """Configure an IP address on `port` in the operating system.
-
-        Args:
-            address: The address to configure.
-            port: The port to configure.
-            delete: If :data:`True`, remove the IP address, otherwise configure it.
-        """
-
-    @abstractmethod
     def configure_port_mtu(self, mtu: int, port: Port) -> None:
         """Configure `mtu` on `port`.
 
         Args:
             mtu: Desired MTU value.
             port: Port to set `mtu` on.
-        """
-
-    @abstractmethod
-    def configure_ipv4_forwarding(self, enable: bool) -> None:
-        """Enable IPv4 forwarding in the operating system.
-
-        Args:
-            enable: If :data:`True`, enable the forwarding, otherwise disable it.
         """

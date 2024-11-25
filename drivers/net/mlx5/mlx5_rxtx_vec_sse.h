@@ -96,8 +96,7 @@ rxq_cq_decompress_v(struct mlx5_rxq_data *rxq, volatile struct mlx5_cqe *cq,
 			    -1, -1, -1, -1  /* skip packet_type */);
 	/* Restore the compressed count. Must be 16 bits. */
 	uint16_t mcqe_n = (rxq->cqe_comp_layout) ?
-		(MLX5_CQE_NUM_MINIS(cq->op_own) + 1) :
-		t_pkt->data_len + (rxq->crc_present * RTE_ETHER_CRC_LEN);
+		(MLX5_CQE_NUM_MINIS(cq->op_own) + 1U) : rte_be_to_cpu_32(cq->byte_cnt);
 	uint16_t pkts_n = mcqe_n;
 	const __m128i rearm =
 		_mm_loadu_si128((__m128i *)&t_pkt->rearm_data);
@@ -785,9 +784,9 @@ rxq_cq_process_v(struct mlx5_rxq_data *rxq, volatile struct mlx5_cqe *cq,
 		rxq_cq_to_ptype_oflags_v(rxq, cqes, opcode, &pkts[pos]);
 		if (unlikely(rxq->shared)) {
 			pkts[pos]->port = cq[pos].user_index_low;
-			pkts[pos + p1]->port = cq[pos + p1].user_index_low;
-			pkts[pos + p2]->port = cq[pos + p2].user_index_low;
-			pkts[pos + p3]->port = cq[pos + p3].user_index_low;
+			pkts[pos + 1]->port = cq[pos + p1].user_index_low;
+			pkts[pos + 2]->port = cq[pos + p2].user_index_low;
+			pkts[pos + 3]->port = cq[pos + p3].user_index_low;
 		}
 		if (unlikely(rxq->hw_timestamp)) {
 			int offset = rxq->timestamp_offset;

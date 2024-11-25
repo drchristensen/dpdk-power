@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # Copyright(c) 2010-2014 Intel Corporation
 # Copyright(c) 2023 PANTHEON.tech s.r.o.
+# Copyright(c) 2024 Arm Limited
 
 """Features common to all test suites.
 
@@ -16,13 +17,19 @@ needed by subclasses:
 import inspect
 from collections import Counter
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from enum import Enum, auto
+from functools import cached_property
+from importlib import import_module
 from ipaddress import IPv4Interface, IPv6Interface, ip_interface
+from pkgutil import iter_modules
+from types import ModuleType
 from typing import ClassVar, Protocol, TypeVar, Union, cast
 
 from scapy.layers.inet import IP  # type: ignore[import-untyped]
 from scapy.layers.l2 import Ether  # type: ignore[import-untyped]
 from scapy.packet import Packet, Padding, raw  # type: ignore[import-untyped]
+from typing_extensions import Self
 
 from framework.testbed_model.capability import TestProtocol
 from framework.testbed_model.port import Port
@@ -33,9 +40,9 @@ from framework.testbed_model.traffic_generator.capturing_traffic_generator impor
     PacketFilteringConfig,
 )
 
-from .exception import ConfigurationError, TestCaseVerifyError
+from .exception import ConfigurationError, InternalError, TestCaseVerifyError
 from .logger import DTSLogger, get_dts_logger
-from .utils import get_packet_summaries
+from .utils import get_packet_summaries, to_pascal_case
 
 
 class TestSuite(TestProtocol):
@@ -71,7 +78,7 @@ class TestSuite(TestProtocol):
     sut_node: SutNode
     tg_node: TGNode
     #: Whether the test suite is blocking. A failure of a blocking test suite
-    #: will block the execution of all subsequent test suites in the current build target.
+    #: will block the execution of all subsequent test suites in the current test run.
     is_blocking: ClassVar[bool] = False
     _logger: DTSLogger
     _sut_port_ingress: Port
@@ -112,10 +119,24 @@ class TestSuite(TestProtocol):
         self._tg_ip_address_ingress = ip_interface("192.168.101.3/24")
 
     @classmethod
-    def get_test_cases(
+    def get_test_cases(cls) -> list[type["TestCase"]]:
+        """A list of all the available test cases."""
+
+        def is_test_case(function: Callable) -> bool:
+            if inspect.isfunction(function):
+                # TestCase is not used at runtime, so we can't use isinstance() with `function`.
+                # But function.test_type exists.
+                if hasattr(function, "test_type"):
+                    return isinstance(function.test_type, TestCaseType)
+            return False
+
+        return [test_case for _, test_case in inspect.getmembers(cls, is_test_case)]
+
+    @classmethod
+    def filter_test_cases(
         cls, test_case_sublist: Sequence[str] | None = None
     ) -> tuple[set[type["TestCase"]], set[type["TestCase"]]]:
-        """Filter `test_case_subset` from this class.
+        """Filter `test_case_sublist` from this class.
 
         Test cases are regular (or bound) methods decorated with :func:`func_test`
         or :func:`perf_test`.
@@ -129,17 +150,8 @@ class TestSuite(TestProtocol):
             as methods are bound to instances and this method only has access to the class.
 
         Raises:
-            ConfigurationError: If a test case from `test_case_subset` is not found.
+            ConfigurationError: If a test case from `test_case_sublist` is not found.
         """
-
-        def is_test_case(function: Callable) -> bool:
-            if inspect.isfunction(function):
-                # TestCase is not used at runtime, so we can't use isinstance() with `function`.
-                # But function.test_type exists.
-                if hasattr(function, "test_type"):
-                    return isinstance(function.test_type, TestCaseType)
-            return False
-
         if test_case_sublist is None:
             test_case_sublist = []
 
@@ -149,22 +161,22 @@ class TestSuite(TestProtocol):
         func_test_cases = set()
         perf_test_cases = set()
 
-        for test_case_name, test_case_function in inspect.getmembers(cls, is_test_case):
-            if test_case_name in test_case_sublist_copy:
+        for test_case in cls.get_test_cases():
+            if test_case.name in test_case_sublist_copy:
                 # if test_case_sublist_copy is non-empty, remove the found test case
                 # so that we can look at the remainder at the end
-                test_case_sublist_copy.remove(test_case_name)
+                test_case_sublist_copy.remove(test_case.name)
             elif test_case_sublist:
                 # the original list not being empty means we're filtering test cases
-                # since we didn't remove test_case_name in the previous branch,
+                # since we didn't remove test_case.name in the previous branch,
                 # it doesn't match the filter and we don't want to remove it
                 continue
 
-            match test_case_function.test_type:
+            match test_case.test_type:
                 case TestCaseType.PERFORMANCE:
-                    perf_test_cases.add(test_case_function)
+                    perf_test_cases.add(test_case)
                 case TestCaseType.FUNCTIONAL:
-                    func_test_cases.add(test_case_function)
+                    func_test_cases.add(test_case)
 
         if test_case_sublist_copy:
             raise ConfigurationError(
@@ -196,42 +208,6 @@ class TestSuite(TestProtocol):
 
         This is done after *each* test case.
         """
-
-    def configure_testbed_ipv4(self, restore: bool = False) -> None:
-        """Configure IPv4 addresses on all testbed ports.
-
-        The configured ports are:
-
-        * SUT ingress port,
-        * SUT egress port,
-        * TG ingress port,
-        * TG egress port.
-
-        Args:
-            restore: If :data:`True`, will remove the configuration instead.
-        """
-        delete = True if restore else False
-        enable = False if restore else True
-        self._configure_ipv4_forwarding(enable)
-        self.sut_node.configure_port_ip_address(
-            self._sut_ip_address_egress, self._sut_port_egress, delete
-        )
-        self.sut_node.configure_port_state(self._sut_port_egress, enable)
-        self.sut_node.configure_port_ip_address(
-            self._sut_ip_address_ingress, self._sut_port_ingress, delete
-        )
-        self.sut_node.configure_port_state(self._sut_port_ingress, enable)
-        self.tg_node.configure_port_ip_address(
-            self._tg_ip_address_ingress, self._tg_port_ingress, delete
-        )
-        self.tg_node.configure_port_state(self._tg_port_ingress, enable)
-        self.tg_node.configure_port_ip_address(
-            self._tg_ip_address_egress, self._tg_port_egress, delete
-        )
-        self.tg_node.configure_port_state(self._tg_port_egress, enable)
-
-    def _configure_ipv4_forwarding(self, enable: bool) -> None:
-        self.sut_node.configure_ipv4_forwarding(enable)
 
     def send_packet_and_capture(
         self,
@@ -298,8 +274,23 @@ class TestSuite(TestProtocol):
         packets = self._adjust_addresses(packets)
         self.tg_node.send_packets(packets, self._tg_port_egress)
 
+    def get_expected_packets(self, packets: list[Packet]) -> list[Packet]:
+        """Inject the proper L2/L3 addresses into `packets`.
+
+        Inject the L2/L3 addresses expected at the receiving end of the traffic generator.
+
+        Args:
+            packets: The packets to modify.
+
+        Returns:
+            `packets` with injected L2/L3 addresses.
+        """
+        return self._adjust_addresses(packets, expected=True)
+
     def get_expected_packet(self, packet: Packet) -> Packet:
         """Inject the proper L2/L3 addresses into `packet`.
+
+        Inject the L2/L3 addresses expected at the receiving end of the traffic generator.
 
         Args:
             packet: The packet to modify.
@@ -307,13 +298,12 @@ class TestSuite(TestProtocol):
         Returns:
             `packet` with injected L2/L3 addresses.
         """
-        return self._adjust_addresses([packet], expected=True)[0]
+        return self.get_expected_packets([packet])[0]
 
     def _adjust_addresses(self, packets: list[Packet], expected: bool = False) -> list[Packet]:
         """L2 and L3 address additions in both directions.
 
-        Packets in `packets` will be directly modified in this method. The returned list of packets
-        however will be copies of the modified packets.
+        Copies of `packets` will be made, modified and returned in this method.
 
         Only missing addresses are added to packets, existing addresses will not be overridden. If
         any packet in `packets` has multiple IP layers (using GRE, for example) only the inner-most
@@ -331,7 +321,9 @@ class TestSuite(TestProtocol):
             A list containing copies of all packets in `packets` after modification.
         """
         ret_packets = []
-        for packet in packets:
+        for original_packet in packets:
+            packet = original_packet.copy()
+
             # update l2 addresses
             # If `expected` is :data:`True`, the packet enters the TG from SUT, otherwise the
             # packet leaves the TG towards the SUT.
@@ -537,6 +529,8 @@ class TestCase(TestProtocol, Protocol[TestSuiteMethodType]):
     """
 
     #:
+    name: ClassVar[str]
+    #:
     test_type: ClassVar[TestCaseType]
     #: necessary for mypy so that it can treat this class as the function it's shadowing
     __call__: TestSuiteMethodType
@@ -560,6 +554,7 @@ class TestCase(TestProtocol, Protocol[TestSuiteMethodType]):
 
         def _decorator(func: TestSuiteMethodType) -> type[TestCase]:
             test_case = cast(type[TestCase], func)
+            test_case.name = func.__name__
             test_case.skip = cls.skip
             test_case.skip_reason = cls.skip_reason
             test_case.required_capabilities = set()
@@ -575,3 +570,136 @@ class TestCase(TestProtocol, Protocol[TestSuiteMethodType]):
 func_test: Callable = TestCase.make_decorator(TestCaseType.FUNCTIONAL)
 #: The decorator for performance test cases.
 perf_test: Callable = TestCase.make_decorator(TestCaseType.PERFORMANCE)
+
+
+@dataclass
+class TestSuiteSpec:
+    """A class defining the specification of a test suite.
+
+    Apart from defining all the specs of a test suite, a helper function :meth:`discover_all` is
+    provided to automatically discover all the available test suites.
+
+    Attributes:
+        module_name: The name of the test suite's module.
+    """
+
+    #:
+    TEST_SUITES_PACKAGE_NAME = "tests"
+    #:
+    TEST_SUITE_MODULE_PREFIX = "TestSuite_"
+    #:
+    TEST_SUITE_CLASS_PREFIX = "Test"
+    #:
+    TEST_CASE_METHOD_PREFIX = "test_"
+    #:
+    FUNC_TEST_CASE_REGEX = r"test_(?!perf_)"
+    #:
+    PERF_TEST_CASE_REGEX = r"test_perf_"
+
+    module_name: str
+
+    @cached_property
+    def name(self) -> str:
+        """The name of the test suite's module."""
+        return self.module_name[len(self.TEST_SUITE_MODULE_PREFIX) :]
+
+    @cached_property
+    def module(self) -> ModuleType:
+        """A reference to the test suite's module."""
+        return import_module(f"{self.TEST_SUITES_PACKAGE_NAME}.{self.module_name}")
+
+    @cached_property
+    def class_name(self) -> str:
+        """The name of the test suite's class."""
+        return f"{self.TEST_SUITE_CLASS_PREFIX}{to_pascal_case(self.name)}"
+
+    @cached_property
+    def class_obj(self) -> type[TestSuite]:
+        """A reference to the test suite's class."""
+
+        def is_test_suite(obj) -> bool:
+            """Check whether `obj` is a :class:`TestSuite`.
+
+            The `obj` is a subclass of :class:`TestSuite`, but not :class:`TestSuite` itself.
+
+            Args:
+                obj: The object to be checked.
+
+            Returns:
+                :data:`True` if `obj` is a subclass of `TestSuite`.
+            """
+            try:
+                if issubclass(obj, TestSuite) and obj is not TestSuite:
+                    return True
+            except TypeError:
+                return False
+            return False
+
+        for class_name, class_obj in inspect.getmembers(self.module, is_test_suite):
+            if class_name == self.class_name:
+                return class_obj
+
+        raise InternalError(
+            f"Expected class {self.class_name} not found in module {self.module_name}."
+        )
+
+    @classmethod
+    def discover_all(
+        cls, package_name: str | None = None, module_prefix: str | None = None
+    ) -> list[Self]:
+        """Discover all the test suites.
+
+        The test suites are discovered in the provided `package_name`. The full module name,
+        expected under that package, is prefixed with `module_prefix`.
+        The module name is a standard filename with words separated with underscores.
+        For each module found, search for a :class:`TestSuite` class which starts
+        with :attr:`~TestSuiteSpec.TEST_SUITE_CLASS_PREFIX`, continuing with the module name in
+        PascalCase.
+
+        The PascalCase convention applies to abbreviations, acronyms, initialisms and so on::
+
+            OS -> Os
+            TCP -> Tcp
+
+        Args:
+            package_name: The name of the package where to find the test suites. If :data:`None`,
+                the :attr:`~TestSuiteSpec.TEST_SUITES_PACKAGE_NAME` is used.
+            module_prefix: The name prefix defining the test suite module. If :data:`None`, the
+                :attr:`~TestSuiteSpec.TEST_SUITE_MODULE_PREFIX` constant is used.
+
+        Returns:
+            A list containing all the discovered test suites.
+        """
+        if package_name is None:
+            package_name = cls.TEST_SUITES_PACKAGE_NAME
+        if module_prefix is None:
+            module_prefix = cls.TEST_SUITE_MODULE_PREFIX
+
+        test_suites = []
+
+        test_suites_pkg = import_module(package_name)
+        for _, module_name, is_pkg in iter_modules(test_suites_pkg.__path__):
+            if not module_name.startswith(module_prefix) or is_pkg:
+                continue
+
+            test_suite = cls(module_name)
+            try:
+                if test_suite.class_obj:
+                    test_suites.append(test_suite)
+            except InternalError as err:
+                get_dts_logger().warning(err)
+
+        return test_suites
+
+
+AVAILABLE_TEST_SUITES: list[TestSuiteSpec] = TestSuiteSpec.discover_all()
+"""Constant to store all the available, discovered and imported test suites.
+
+The test suites should be gathered from this list to avoid importing more than once.
+"""
+
+
+def find_by_name(name: str) -> TestSuiteSpec | None:
+    """Find a requested test suite by name from the available ones."""
+    test_suites = filter(lambda t: t.name == name, AVAILABLE_TEST_SUITES)
+    return next(test_suites, None)

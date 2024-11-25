@@ -1003,6 +1003,14 @@ F: drivers/net/qede/
 F: doc/guides/nics/qede.rst
 F: doc/guides/nics/features/qede*.ini
 
+Realtek r8169
+M: Howard Wang <howard_wang@realsil.com.cn>
+M: Chunhao Lin <hau@realtek.com>
+M: Xing Wang <xing_wang@realsil.com.cn>
+F: drivers/net/r8169/
+F: doc/guides/nics/r8169.rst
+F: doc/guides/nics/features/r8169.ini
+
 Solarflare sfc_efx
 M: Andrew Rybchenko <andrew.rybchenko@oktetlabs.ru>
 F: drivers/common/sfc_efx/
@@ -1552,6 +1560,11 @@ M: Gagandeep Singh <g.singh@nxp.com>
 F: drivers/raw/dpaa2_cmdif/
 F: doc/guides/rawdevs/dpaa2_cmdif.rst
 
+ZTE GDTC
+M: Yong Zhang <zhang.yong25@zte.com.cn>
+F: drivers/raw/gdtc/
+F: doc/guides/rawdevs/gdtc.rst
+
 
 Packet processing
 -----------------
@@ -1863,14 +1876,13 @@ F: app/test/commands.c
 F: app/test/packet_burst_generator.c
 F: app/test/packet_burst_generator.h
 F: app/test/process.h
-F: app/test/resource.*
 F: app/test/test.c
 F: app/test/test.h
 F: app/test/test_pmd_perf.c
-F: app/test/test_resource.c
 F: app/test/virtual_pmd.c
 F: app/test/virtual_pmd.h
 F: buildtools/has-hugepages.py
+F: buildtools/gen-header.py
 F: buildtools/get-test-suites.py
 
 Sample packet helper functions for unit test
