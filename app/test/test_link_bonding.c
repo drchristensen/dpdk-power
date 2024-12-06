@@ -792,7 +792,7 @@ test_set_primary_member(void)
 				&read_mac_addr),
 				"Failed to get mac address (port %d)",
 				test_params->bonding_port_id);
-		TEST_ASSERT_SUCCESS(memcmp(&read_mac_addr, &read_mac_addr,
+		TEST_ASSERT_SUCCESS(memcmp(expected_mac_addr, &read_mac_addr,
 				sizeof(read_mac_addr)),
 				"bonding port mac address not set to that of primary port\n");
 
@@ -2288,12 +2288,7 @@ test_activebackup_rx_burst(void)
 		}
 
 		/* free mbufs */
-		for (i = 0; i < MAX_PKT_BURST; i++) {
-			if (rx_pkt_burst[i] != NULL) {
-				rte_pktmbuf_free(rx_pkt_burst[i]);
-				rx_pkt_burst[i] = NULL;
-			}
-		}
+		rte_pktmbuf_free_bulk(rx_pkt_burst, burst_size);
 
 		/* reset bonding device stats */
 		rte_eth_stats_reset(test_params->bonding_port_id);

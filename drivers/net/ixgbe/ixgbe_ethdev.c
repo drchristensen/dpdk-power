@@ -35,6 +35,7 @@
 #ifdef RTE_LIB_SECURITY
 #include <rte_security_driver.h>
 #endif
+#include <rte_os_shim.h>
 
 #include "ixgbe_logs.h"
 #include "base/ixgbe_api.h"
@@ -474,6 +475,7 @@ static const struct rte_pci_id pci_id_ixgbevf_map[] = {
 	{ RTE_PCI_DEVICE(IXGBE_INTEL_VENDOR_ID, IXGBE_DEV_ID_X550EM_A_VF_HV) },
 	{ RTE_PCI_DEVICE(IXGBE_INTEL_VENDOR_ID, IXGBE_DEV_ID_X550EM_X_VF) },
 	{ RTE_PCI_DEVICE(IXGBE_INTEL_VENDOR_ID, IXGBE_DEV_ID_X550EM_X_VF_HV) },
+	{ RTE_PCI_DEVICE(IXGBE_INTEL_VENDOR_ID, IXGBE_DEV_ID_E610_VF) },
 	{ .vendor_id = 0, /* sentinel */ },
 };
 
@@ -4168,7 +4170,12 @@ ixgbevf_check_link(struct ixgbe_hw *hw, ixgbe_link_speed *speed,
 	/* if the read failed it could just be a mailbox collision, best wait
 	 * until we are called again and don't report an error
 	 */
-	if (mbx->ops[0].read(hw, &in_msg, 1, 0))
+
+	/*
+	 * on MinGW, the read op call is interpreted as call into read() macro,
+	 * so avoid calling it directly.
+	 */
+	if ((mbx->ops[0].read)(hw, &in_msg, 1, 0))
 		goto out;
 
 	if (!(in_msg & IXGBE_VT_MSGTYPE_CTS)) {
@@ -6741,6 +6748,7 @@ ixgbe_read_systime_cyclecounter(struct rte_eth_dev *dev)
 	case ixgbe_mac_X550:
 	case ixgbe_mac_X550EM_x:
 	case ixgbe_mac_X550EM_a:
+	case ixgbe_mac_E610:
 		/* SYSTIMEL stores ns and SYSTIMEH stores seconds. */
 		systime_cycles = (uint64_t)IXGBE_READ_REG(hw, IXGBE_SYSTIML);
 		systime_cycles += (uint64_t)IXGBE_READ_REG(hw, IXGBE_SYSTIMH)
@@ -6765,6 +6773,7 @@ ixgbe_read_rx_tstamp_cyclecounter(struct rte_eth_dev *dev)
 	case ixgbe_mac_X550:
 	case ixgbe_mac_X550EM_x:
 	case ixgbe_mac_X550EM_a:
+	case ixgbe_mac_E610:
 		/* RXSTMPL stores ns and RXSTMPH stores seconds. */
 		rx_tstamp_cycles = (uint64_t)IXGBE_READ_REG(hw, IXGBE_RXSTMPL);
 		rx_tstamp_cycles += (uint64_t)IXGBE_READ_REG(hw, IXGBE_RXSTMPH)
@@ -6790,6 +6799,7 @@ ixgbe_read_tx_tstamp_cyclecounter(struct rte_eth_dev *dev)
 	case ixgbe_mac_X550:
 	case ixgbe_mac_X550EM_x:
 	case ixgbe_mac_X550EM_a:
+	case ixgbe_mac_E610:
 		/* TXSTMPL stores ns and TXSTMPH stores seconds. */
 		tx_tstamp_cycles = (uint64_t)IXGBE_READ_REG(hw, IXGBE_TXSTMPL);
 		tx_tstamp_cycles += (uint64_t)IXGBE_READ_REG(hw, IXGBE_TXSTMPH)
@@ -6838,6 +6848,7 @@ ixgbe_start_timecounters(struct rte_eth_dev *dev)
 	case ixgbe_mac_X550:
 	case ixgbe_mac_X550EM_x:
 	case ixgbe_mac_X550EM_a:
+	case ixgbe_mac_E610:
 		/* Independent of link speed. */
 		incval = 1;
 		/* Cycles read will be interpreted as ns. */
@@ -6920,6 +6931,12 @@ ixgbe_timesync_enable(struct rte_eth_dev *dev)
 	struct ixgbe_hw *hw = IXGBE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 	uint32_t tsync_ctl;
 	uint32_t tsauxc;
+	struct timespec ts;
+
+	memset(&ts, 0, sizeof(struct timespec));
+
+	/* get current system time */
+	clock_gettime(CLOCK_REALTIME, &ts);
 
 	/* Stop the timesync system time. */
 	IXGBE_WRITE_REG(hw, IXGBE_TIMINCA, 0x0);
@@ -6951,6 +6968,9 @@ ixgbe_timesync_enable(struct rte_eth_dev *dev)
 	IXGBE_WRITE_REG(hw, IXGBE_TSYNCTXCTL, tsync_ctl);
 
 	IXGBE_WRITE_FLUSH(hw);
+
+	/* ixgbe uses zero-based timestamping so only adjust timecounter */
+	ixgbe_timesync_write_time(dev, &ts);
 
 	return 0;
 }
@@ -7238,10 +7258,12 @@ ixgbe_reta_size_get(enum ixgbe_mac_type mac_type) {
 	case ixgbe_mac_X550:
 	case ixgbe_mac_X550EM_x:
 	case ixgbe_mac_X550EM_a:
+	case ixgbe_mac_E610:
 		return RTE_ETH_RSS_RETA_SIZE_512;
 	case ixgbe_mac_X550_vf:
 	case ixgbe_mac_X550EM_x_vf:
 	case ixgbe_mac_X550EM_a_vf:
+	case ixgbe_mac_E610_vf:
 		return RTE_ETH_RSS_RETA_SIZE_64;
 	case ixgbe_mac_X540_vf:
 	case ixgbe_mac_82599_vf:
@@ -7257,6 +7279,7 @@ ixgbe_reta_reg_get(enum ixgbe_mac_type mac_type, uint16_t reta_idx) {
 	case ixgbe_mac_X550:
 	case ixgbe_mac_X550EM_x:
 	case ixgbe_mac_X550EM_a:
+	case ixgbe_mac_E610:
 		if (reta_idx < RTE_ETH_RSS_RETA_SIZE_128)
 			return IXGBE_RETA(reta_idx >> 2);
 		else
@@ -7264,6 +7287,7 @@ ixgbe_reta_reg_get(enum ixgbe_mac_type mac_type, uint16_t reta_idx) {
 	case ixgbe_mac_X550_vf:
 	case ixgbe_mac_X550EM_x_vf:
 	case ixgbe_mac_X550EM_a_vf:
+	case ixgbe_mac_E610_vf:
 		return IXGBE_VFRETA(reta_idx >> 2);
 	default:
 		return IXGBE_RETA(reta_idx >> 2);
