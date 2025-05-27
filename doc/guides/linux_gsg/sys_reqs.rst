@@ -35,13 +35,6 @@ Compilation of the DPDK
     * For Ubuntu/Debian systems these can be installed using ``apt install build-essential``
     * For Alpine Linux, ``apk add alpine-sdk bsd-compat-headers``
 
-.. note::
-
-   pkg-config 0.27, supplied with RHEL-7,
-   does not process the Libs.private section correctly,
-   resulting in statically linked applications not being linked properly.
-   Use an updated version of ``pkg-config`` or ``pkgconf`` instead when building applications
-
 *   Python 3.6 or later.
 
 *   Meson (version 0.57+) and ninja
@@ -71,8 +64,7 @@ Compilation of the DPDK
 
 **Optional Tools:**
 
-*   Intel\ |reg| C++ Compiler (icc). For installation, additional libraries may be required.
-    See the icc Installation Guide found in the Documentation directory under the compiler installation.
+*   Intel\ |reg| oneAPI DPC++/C++ Compiler.
 
 *   IBM\ |reg| Advance ToolChain for Powerlinux. This is a set of open source development tools and runtime libraries
     which allows users to take leading edge advantage of IBM's latest POWER hardware features on Linux. To install

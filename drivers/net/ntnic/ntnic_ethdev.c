@@ -27,6 +27,7 @@
 #include "ntnic_vfio.h"
 #include "ntnic_mod_reg.h"
 #include "nt_util.h"
+#include "flow_hsh_cfg.h"
 #include "profile_inline/flm_age_queue.h"
 #include "profile_inline/flm_evt_queue.h"
 #include "rte_pmd_ntnic.h"
@@ -75,10 +76,6 @@ const rte_thread_attr_t thread_attr = { .priority = RTE_THREAD_PRIORITY_NORMAL }
 
 uint64_t rte_tsc_freq;
 
-static void (*previous_handler)(int sig);
-static rte_thread_t shutdown_tid;
-
-int kill_pmd;
 
 #define ETH_DEV_NTNIC_HELP_ARG "help"
 #define ETH_DEV_NTHW_RXQUEUES_ARG "rxqs"
@@ -94,6 +91,7 @@ static const char *const valid_arguments[] = {
 
 static const struct rte_pci_id nthw_pci_id_map[] = {
 	{ RTE_PCI_DEVICE(NT_HW_PCI_VENDOR_ID, NT_HW_PCI_DEVICE_ID_NT200A02) },
+	{ RTE_PCI_DEVICE(NT_HW_PCI_VENDOR_ID, NT_HW_PCI_DEVICE_ID_NT400D13) },
 	{
 		.vendor_id = 0,
 	},	/* sentinel */
@@ -140,7 +138,7 @@ store_pdrv(struct drv_s *p_drv)
 
 static void clear_pdrv(struct drv_s *p_drv)
 {
-	if (p_drv->adapter_no > NUM_ADAPTER_MAX)
+	if (p_drv->adapter_no >= NUM_ADAPTER_MAX)
 		return;
 
 	rte_spinlock_lock(&hwlock);
@@ -479,9 +477,6 @@ static uint16_t eth_dev_rx_scg(void *queue, struct rte_mbuf **bufs, uint16_t nb_
 
 	struct nthw_received_packets hw_recv[MAX_RX_PACKETS];
 
-	if (kill_pmd)
-		return 0;
-
 	if (unlikely(nb_pkts == 0))
 		return 0;
 
@@ -692,9 +687,6 @@ static uint16_t eth_dev_tx_scg(void *queue, struct rte_mbuf **bufs, uint16_t nb_
 	int pkts_sent = 0;
 	uint16_t nb_segs_arr[MAX_TX_PACKETS];
 
-	if (kill_pmd)
-		return 0;
-
 	if (nb_pkts > MAX_TX_PACKETS)
 		nb_pkts = MAX_TX_PACKETS;
 
@@ -790,7 +782,7 @@ static int allocate_hw_virtio_queues(struct rte_eth_dev *eth_dev, int vf_num, st
 	NT_LOG(DBG, NTNIC, "***** Configure IOMMU for HW queues on VF %i *****", vf_num);
 
 	/* Just allocate 1MB to hold all combined descr rings */
-	uint64_t tot_alloc_size = 0x100000 + buf_size * num_descr;
+	uint64_t tot_alloc_size = 0x100000 + (uint64_t)buf_size * (uint64_t)num_descr;
 
 	void *virt =
 		rte_malloc_socket("VirtQDescr", tot_alloc_size, nt_util_align_size(tot_alloc_size),
@@ -1205,7 +1197,7 @@ eth_mac_addr_add(struct rte_eth_dev *eth_dev,
 {
 	struct rte_ether_addr *const eth_addrs = eth_dev->data->mac_addrs;
 
-	assert(index < NUM_MAC_ADDRS_PER_PORT);
+	RTE_ASSERT(index < NUM_MAC_ADDRS_PER_PORT);
 
 	if (index >= NUM_MAC_ADDRS_PER_PORT) {
 		const struct pmd_internals *const internals =
@@ -1374,8 +1366,8 @@ eth_dev_set_link_up(struct rte_eth_dev *eth_dev)
 	if (internals->type == PORT_TYPE_VIRTUAL || internals->type == PORT_TYPE_OVERRIDE)
 		return 0;
 
-	assert(port >= 0 && port < NUM_ADAPTER_PORTS_MAX);
-	assert(port == internals->n_intf_no);
+	RTE_ASSERT(port >= 0 && port < NUM_ADAPTER_PORTS_MAX);
+	RTE_ASSERT(port == internals->n_intf_no);
 
 	port_ops->set_adm_state(p_adapter_info, port, true);
 
@@ -1400,8 +1392,8 @@ eth_dev_set_link_down(struct rte_eth_dev *eth_dev)
 	if (internals->type == PORT_TYPE_VIRTUAL || internals->type == PORT_TYPE_OVERRIDE)
 		return 0;
 
-	assert(port >= 0 && port < NUM_ADAPTER_PORTS_MAX);
-	assert(port == internals->n_intf_no);
+	RTE_ASSERT(port >= 0 && port < NUM_ADAPTER_PORTS_MAX);
+	RTE_ASSERT(port == internals->n_intf_no);
 
 	port_ops->set_link_status(p_adapter_info, port, false);
 
@@ -1447,9 +1439,9 @@ drv_deinit(struct drv_s *p_drv)
 		profile_inline_ops->flm_free_queues();
 		THREAD_JOIN(p_nt_drv->port_event_thread);
 		/* Free all local flm event queues */
-		flm_inf_sta_queue_free_all(FLM_INFO_LOCAL);
+		nthw_flm_inf_sta_queue_free_all(FLM_INFO_LOCAL);
 		/* Free all remote flm event queues */
-		flm_inf_sta_queue_free_all(FLM_INFO_REMOTE);
+		nthw_flm_inf_sta_queue_free_all(FLM_INFO_REMOTE);
 		/* Free all aged flow event queues */
 		flm_age_queue_free_all();
 	}
@@ -1672,7 +1664,7 @@ static int eth_dev_rss_hash_update(struct rte_eth_dev *eth_dev, struct rte_eth_r
 	tmp_rss_conf.algorithm = rss_conf->algorithm;
 
 	tmp_rss_conf.rss_hf = rss_conf->rss_hf;
-	int res = flow_filter_ops->flow_nic_set_hasher_fields(ndev, hsh_idx, tmp_rss_conf);
+	int res = hsh_set(ndev, hsh_idx, tmp_rss_conf);
 
 	if (res == 0) {
 		flow_filter_ops->hw_mod_hsh_rcp_flush(&ndev->be, hsh_idx, 1);
@@ -1832,7 +1824,7 @@ THREAD_FUNC port_event_thread_fn(void *context)
 				/* Local FLM statistic events */
 				struct flm_info_event_s data;
 
-				if (flm_inf_queue_get(port_no, FLM_INFO_LOCAL, &data) == 0) {
+				if (nthw_flm_inf_queue_get(port_no, FLM_INFO_LOCAL, &data) == 0) {
 					if (eth_dev && eth_dev->data &&
 						eth_dev->data->dev_private) {
 						struct ntnic_flm_statistic_s event_data;
@@ -1938,7 +1930,7 @@ THREAD_FUNC adapter_stat_thread_fn(void *context)
 
 	NT_LOG_DBGX(DBG, NTNIC, "%s: begin", p_adapter_id_str);
 
-	assert(p_nthw_stat);
+	RTE_ASSERT(p_nthw_stat);
 
 	while (!p_drv->ntdrv.b_shutdown) {
 		nt_os_wait_usec(10 * 1000);
@@ -2037,8 +2029,6 @@ nthw_pci_dev_init(struct rte_pci_device *pci_dev)
 	uint32_t exception_path = 0;
 	struct flow_queue_id_s queue_ids[MAX_QUEUES];
 	int n_phy_ports;
-	struct port_link_speed pls_mbps[NUM_ADAPTER_PORTS_MAX] = { 0 };
-	int num_port_speeds = 0;
 	enum flow_eth_dev_profile profile = FLOW_ETH_DEV_PROFILE_INLINE;
 
 	NT_LOG_DBGX(DBG, NTNIC, "Dev %s PF #%i Init : %02x:%02x:%i", pci_dev->name,
@@ -2081,14 +2071,16 @@ nthw_pci_dev_init(struct rte_pci_device *pci_dev)
 		kvargs_count = rte_kvargs_count(kvlist, ETH_DEV_NTHW_RXQUEUES_ARG);
 
 		if (kvargs_count != 0) {
-			assert(kvargs_count == 1);
-			res = rte_kvargs_process(kvlist, ETH_DEV_NTHW_RXQUEUES_ARG, &string_to_u32,
+			RTE_ASSERT(kvargs_count == 1);
+			res = rte_kvargs_process(kvlist, ETH_DEV_NTHW_RXQUEUES_ARG,
+					&nthw_string_to_u32,
 					&nb_rx_queues);
 
 			if (res < 0) {
 				NT_LOG_DBGX(ERR, NTNIC,
 					"problem with command line arguments: res=%d",
 					res);
+				free(kvlist);
 				return -1;
 			}
 
@@ -2104,14 +2096,16 @@ nthw_pci_dev_init(struct rte_pci_device *pci_dev)
 		kvargs_count = rte_kvargs_count(kvlist, ETH_DEV_NTHW_TXQUEUES_ARG);
 
 		if (kvargs_count != 0) {
-			assert(kvargs_count == 1);
-			res = rte_kvargs_process(kvlist, ETH_DEV_NTHW_TXQUEUES_ARG, &string_to_u32,
+			RTE_ASSERT(kvargs_count == 1);
+			res = rte_kvargs_process(kvlist, ETH_DEV_NTHW_TXQUEUES_ARG,
+					&nthw_string_to_u32,
 					&nb_tx_queues);
 
 			if (res < 0) {
 				NT_LOG_DBGX(ERR, NTNIC,
 					"problem with command line arguments: res=%d",
 					res);
+				free(kvlist);
 				return -1;
 			}
 
@@ -2177,12 +2171,6 @@ nthw_pci_dev_init(struct rte_pci_device *pci_dev)
 
 	p_nt_drv->b_shutdown = false;
 	p_nt_drv->adapter_info.pb_shutdown = &p_nt_drv->b_shutdown;
-
-	for (int i = 0; i < num_port_speeds; ++i) {
-		struct adapter_info_s *p_adapter_info = &p_nt_drv->adapter_info;
-		nt_link_speed_t link_speed = convert_link_speed(pls_mbps[i].link_speed);
-		port_ops->set_link_speed(p_adapter_info, i, link_speed);
-	}
 
 	/* store context */
 	store_pdrv(p_drv);
@@ -2415,7 +2403,7 @@ nthw_pci_dev_init(struct rte_pci_device *pci_dev)
 		if (get_flow_filter_ops() != NULL) {
 			if (fpga_info->profile == FPGA_INFO_PROFILE_INLINE &&
 				internals->flw_dev->ndev->be.tpe.ver >= 2) {
-				assert(nthw_eth_dev_ops.mtu_set == dev_set_mtu_inline ||
+				RTE_ASSERT(nthw_eth_dev_ops.mtu_set == dev_set_mtu_inline ||
 					nthw_eth_dev_ops.mtu_set == NULL);
 				nthw_eth_dev_ops.mtu_set = dev_set_mtu_inline;
 				dev_set_mtu_inline(eth_dev, MTUINITVAL);
@@ -2487,48 +2475,6 @@ nthw_pci_dev_deinit(struct rte_eth_dev *eth_dev __rte_unused)
 	return 0;
 }
 
-static void signal_handler_func_int(int sig)
-{
-	if (sig != SIGINT) {
-		signal(sig, previous_handler);
-		raise(sig);
-		return;
-	}
-
-	kill_pmd = 1;
-}
-
-THREAD_FUNC shutdown_thread(void *arg __rte_unused)
-{
-	while (!kill_pmd)
-		nt_os_wait_usec(100 * 1000);
-
-	NT_LOG_DBGX(DBG, NTNIC, "Shutting down because of ctrl+C");
-
-	signal(SIGINT, previous_handler);
-	raise(SIGINT);
-
-	return THREAD_RETURN;
-}
-
-static int init_shutdown(void)
-{
-	NT_LOG(DBG, NTNIC, "Starting shutdown handler");
-	kill_pmd = 0;
-	previous_handler = signal(SIGINT, signal_handler_func_int);
-	THREAD_CREATE(&shutdown_tid, shutdown_thread, NULL);
-
-	/*
-	 * 1 time calculation of 1 sec stat update rtc cycles to prevent stat poll
-	 * flooding by OVS from multiple virtual port threads - no need to be precise
-	 */
-	uint64_t now_rtc = rte_get_tsc_cycles();
-	nt_os_wait_usec(10 * 1000);
-	rte_tsc_freq = 100 * (rte_get_tsc_cycles() - now_rtc);
-
-	return 0;
-}
-
 static int
 nthw_pci_probe(struct rte_pci_driver *pci_drv __rte_unused,
 	struct rte_pci_device *pci_dev)
@@ -2571,7 +2517,13 @@ nthw_pci_probe(struct rte_pci_driver *pci_drv __rte_unused,
 
 	ret = nthw_pci_dev_init(pci_dev);
 
-	init_shutdown();
+	/*
+	 * 1 time calculation of 1 sec stat update rtc cycles to prevent stat poll
+	 * flooding by OVS from multiple virtual port threads - no need to be precise
+	 */
+	uint64_t now_rtc = rte_get_tsc_cycles();
+	nt_os_wait_usec(10 * 1000);
+	rte_tsc_freq = 100 * (rte_get_tsc_cycles() - now_rtc);
 
 	NT_LOG_DBGX(DBG, NTNIC, "leave: ret=%d", ret);
 	return ret;

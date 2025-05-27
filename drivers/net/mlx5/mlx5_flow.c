@@ -9,6 +9,7 @@
 #include <stdbool.h>
 #include <sys/queue.h>
 
+#include <eal_export.h>
 #include <rte_common.h>
 #include <rte_ether.h>
 #include <ethdev_driver.h>
@@ -1479,8 +1480,8 @@ mlx5_flow_item_acceptable(const struct rte_eth_dev *dev,
 					  "mask/last without a spec is not"
 					  " supported");
 	if (item->spec && item->last && !range_accepted) {
-		uint8_t spec[size];
-		uint8_t last[size];
+		uint8_t *spec = alloca(size);
+		uint8_t *last = alloca(size);
 		unsigned int i;
 		int ret;
 
@@ -1648,13 +1649,13 @@ flow_rxq_mark_flag_set(struct rte_eth_dev *dev)
 			    opriv->domain_id != priv->domain_id ||
 			    opriv->mark_enabled)
 				continue;
-			LIST_FOREACH(rxq_ctrl, &opriv->sh->shared_rxqs, share_entry) {
+			LIST_FOREACH(rxq_ctrl, &opriv->rxqsctrl, next) {
 				rxq_ctrl->rxq.mark = 1;
 			}
 			opriv->mark_enabled = 1;
 		}
 	} else {
-		LIST_FOREACH(rxq_ctrl, &priv->sh->shared_rxqs, share_entry) {
+		LIST_FOREACH(rxq_ctrl, &priv->rxqsctrl, next) {
 			rxq_ctrl->rxq.mark = 1;
 		}
 		priv->mark_enabled = 1;
@@ -1944,7 +1945,7 @@ mlx5_flow_validate_action_flag(uint64_t action_flags,
  *   0 on success, a negative errno value otherwise and rte_errno is set.
  */
 int
-mlx5_flow_validate_action_mark(struct rte_eth_dev *dev,
+mlx5_flow_validate_action_mark(__rte_unused struct rte_eth_dev *dev,
 			       const struct rte_flow_action *action,
 			       uint64_t action_flags,
 			       const struct rte_flow_attr *attr,
@@ -1977,10 +1978,6 @@ mlx5_flow_validate_action_mark(struct rte_eth_dev *dev,
 					  RTE_FLOW_ERROR_TYPE_ATTR_EGRESS, NULL,
 					  "mark action not supported for "
 					  "egress");
-	if (attr->transfer && mlx5_hws_active(dev))
-		return rte_flow_error_set(error, ENOTSUP,
-					  RTE_FLOW_ERROR_TYPE_ATTR_EGRESS, NULL,
-					  "non-template mark action not supported for transfer");
 	return 0;
 }
 
@@ -3812,13 +3809,6 @@ mlx5_flow_validate_item_mpls(struct rte_eth_dev *dev __rte_unused,
 			return rte_flow_error_set(error, ENOTSUP,
 						  RTE_FLOW_ERROR_TYPE_ITEM, item,
 						  "multiple tunnel layers not supported");
-	} else {
-		/* Multi-tunnel isn't allowed but MPLS over GRE is an exception. */
-		if ((item_flags & MLX5_FLOW_LAYER_TUNNEL) &&
-		    !(item_flags & MLX5_FLOW_LAYER_MPLS))
-			return rte_flow_error_set(error, ENOTSUP,
-						  RTE_FLOW_ERROR_TYPE_ITEM, item,
-						  "multiple tunnel layers not supported");
 	}
 	if (!mask)
 		mask = nic_mask;
@@ -4031,6 +4021,20 @@ mlx5_flow_validate_item_nsh(struct rte_eth_dev *dev,
 	return 0;
 }
 
+static uintptr_t
+flow_null_list_create(struct rte_eth_dev *dev __rte_unused,
+		      enum mlx5_flow_type type __rte_unused,
+		      const struct rte_flow_attr *attr __rte_unused,
+		      const struct rte_flow_item items[] __rte_unused,
+		      const struct rte_flow_action actions[] __rte_unused,
+		      bool external __rte_unused,
+		      struct rte_flow_error *error)
+{
+	rte_flow_error_set(error, ENOTSUP,
+			   RTE_FLOW_ERROR_TYPE_UNSPECIFIED, NULL, NULL);
+	return 0;
+}
+
 static int
 flow_null_validate(struct rte_eth_dev *dev __rte_unused,
 		   const struct rte_flow_attr *attr __rte_unused,
@@ -4150,6 +4154,7 @@ flow_null_counter_query(struct rte_eth_dev *dev,
 
 /* Void driver to protect from null pointer reference. */
 const struct mlx5_flow_driver_ops mlx5_flow_null_drv_ops = {
+	.list_create = flow_null_list_create,
 	.validate = flow_null_validate,
 	.prepare = flow_null_prepare,
 	.translate = flow_null_translate,
@@ -7287,10 +7292,7 @@ flow_tunnel_from_rule(const struct mlx5_flow *flow)
 {
 	struct mlx5_flow_tunnel *tunnel;
 
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wcast-qual"
-	tunnel = (typeof(tunnel))flow->tunnel;
-#pragma GCC diagnostic pop
+	tunnel = RTE_PTR_UNQUAL(flow->tunnel);
 
 	return tunnel;
 }
@@ -7883,6 +7885,7 @@ err:
  * @return
  *   Negative value on error, positive on success.
  */
+RTE_EXPORT_EXPERIMENTAL_SYMBOL(rte_pmd_mlx5_flow_engine_set_mode, 23.03)
 int
 rte_pmd_mlx5_flow_engine_set_mode(enum rte_pmd_mlx5_flow_engine_mode mode, uint32_t flags)
 {
@@ -8121,7 +8124,6 @@ mlx5_flow_list_flush(struct rte_eth_dev *dev, enum mlx5_flow_type type,
 		priv->hws_rule_flushing = true;
 		flow_hw_q_flow_flush(dev, NULL);
 		priv->hws_rule_flushing = false;
-		return;
 	}
 #endif
 	MLX5_IPOOL_FOREACH(priv->flows[type], fidx, flow) {
@@ -8270,14 +8272,21 @@ flow_alloc_thread_workspace(void)
 {
 	size_t data_size = RTE_ALIGN(sizeof(struct mlx5_flow_workspace), sizeof(long));
 	size_t rss_queue_array_size = sizeof(uint16_t) * RTE_ETH_RSS_RETA_SIZE_512;
-	struct mlx5_flow_workspace *data = calloc(1, data_size +
-						     rss_queue_array_size);
+	size_t alloc_size = data_size + rss_queue_array_size;
+#ifdef HAVE_MLX5_HWS_SUPPORT
+	/* Dummy table size for the non-template API. */
+	alloc_size += sizeof(struct rte_flow_template_table);
+#endif
+	struct mlx5_flow_workspace *data = calloc(1, alloc_size);
 
 	if (!data) {
 		DRV_LOG(ERR, "Failed to allocate flow workspace memory.");
 		return NULL;
 	}
 	data->rss_desc.queue = RTE_PTR_ADD(data, data_size);
+#ifdef HAVE_MLX5_HWS_SUPPORT
+	data->table = RTE_PTR_ADD(data->rss_desc.queue, rss_queue_array_size);
+#endif
 	return data;
 }
 
@@ -8477,7 +8486,7 @@ mlx5_ctrl_flow_vlan(struct rte_eth_dev *dev,
 			.type = RTE_FLOW_ITEM_TYPE_END,
 		},
 	};
-	uint16_t queue[priv->reta_idx_n];
+	uint16_t *queue = alloca(sizeof(uint16_t) * priv->reta_idx_n);
 	struct rte_flow_action_rss action_rss = {
 		.func = RTE_ETH_HASH_FUNCTION_DEFAULT,
 		.level = 0,
@@ -10982,6 +10991,7 @@ error:
 	(MLX5DV_DR_DOMAIN_SYNC_FLAGS_SW | MLX5DV_DR_DOMAIN_SYNC_FLAGS_HW)
 #endif
 
+RTE_EXPORT_EXPERIMENTAL_SYMBOL(rte_pmd_mlx5_sync_flow, 20.11)
 int rte_pmd_mlx5_sync_flow(uint16_t port_id, uint32_t domains)
 {
 	struct rte_eth_dev *dev = &rte_eth_devices[port_id];
@@ -12258,6 +12268,7 @@ mlx5_flow_discover_ipv6_tc_support(struct rte_eth_dev *dev)
 	return 0;
 }
 
+RTE_EXPORT_EXPERIMENTAL_SYMBOL(rte_pmd_mlx5_create_geneve_tlv_parser, 24.03)
 void *
 rte_pmd_mlx5_create_geneve_tlv_parser(uint16_t port_id,
 				      const struct rte_pmd_mlx5_geneve_tlv tlv_list[],
@@ -12275,6 +12286,7 @@ rte_pmd_mlx5_create_geneve_tlv_parser(uint16_t port_id,
 #endif
 }
 
+RTE_EXPORT_EXPERIMENTAL_SYMBOL(rte_pmd_mlx5_destroy_geneve_tlv_parser, 24.03)
 int
 rte_pmd_mlx5_destroy_geneve_tlv_parser(void *handle)
 {

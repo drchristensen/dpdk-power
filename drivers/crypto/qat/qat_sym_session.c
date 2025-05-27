@@ -2473,7 +2473,8 @@ int qat_sym_cd_auth_set(struct qat_sym_session *cdesc,
 			qat_hash_get_block_size(cdesc->qat_hash_alg) >> 3;
 		auth_param->u2.inner_prefix_sz =
 			qat_hash_get_block_size(cdesc->qat_hash_alg);
-		auth_param->hash_state_sz = digestsize;
+		auth_param->hash_state_sz = (hash_cd_ctrl->outer_prefix_sz +
+			auth_param->u2.inner_prefix_sz) >> 3;
 		if (qat_dev_gen == QAT_GEN4 || qat_dev_gen == QAT_GEN5 ||
 				qat_dev_gen == QAT_VQAT) {
 			ICP_QAT_FW_HASH_FLAG_MODE2_SET(
@@ -3174,6 +3175,14 @@ qat_sec_session_set_docsis_parameters(struct rte_cryptodev *dev,
 		ret = qat_sym_session_configure_crc(dev, xform, session);
 		if (ret < 0)
 			return ret;
+	} else {
+		/* Initialize CRC algorithm */
+		session->crc = rte_net_crc_set_alg(RTE_NET_CRC_AVX512,
+			RTE_NET_CRC32_ETH);
+		if (session->crc == NULL) {
+			QAT_LOG(ERR, "Cannot initialize CRC context");
+			return -1;
+		}
 	}
 	qat_sym_session_finalize(session);
 

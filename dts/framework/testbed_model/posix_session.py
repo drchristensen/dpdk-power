@@ -15,7 +15,6 @@ import re
 from collections.abc import Iterable
 from pathlib import Path, PurePath, PurePosixPath
 
-from framework.config import Architecture
 from framework.exception import DPDKBuildError, RemoteCommandExecutionError
 from framework.settings import SETTINGS
 from framework.utils import (
@@ -26,6 +25,7 @@ from framework.utils import (
     extract_tarball,
 )
 
+from .cpu import Architecture
 from .os_session import OSSession, OSSessionInfo
 
 
@@ -95,6 +95,11 @@ class PosixSession(OSSession):
         """Overrides :meth:`~.os_session.OSSession.remote_path_exists`."""
         result = self.send_command(f"test -e {remote_path}")
         return not result.return_code
+
+    def create_tmp_dir(self, template: str = "dts.XXXXX") -> PurePath:
+        """Overrides :meth:`~.os_session.OSSession.create_tmp_dir`."""
+        result = self.send_command(f'mktemp -dp "" {template}')
+        return PurePath(result.stdout)
 
     def copy_from(self, source_file: str | PurePath, destination_dir: str | Path) -> None:
         """Overrides :meth:`~.os_session.OSSession.copy_from`."""
@@ -191,7 +196,9 @@ class PosixSession(OSSession):
         return target_tarball_path
 
     def extract_remote_tarball(
-        self, remote_tarball_path: str | PurePath, expected_dir: str | PurePath | None = None
+        self,
+        remote_tarball_path: str | PurePath,
+        expected_dir: str | PurePath | None = None,
     ) -> None:
         """Overrides :meth:`~.os_session.OSSession.extract_remote_tarball`."""
         self.send_command(
@@ -236,7 +243,11 @@ class PosixSession(OSSession):
         rebuild: bool = False,
         timeout: float = SETTINGS.compile_timeout,
     ) -> None:
-        """Overrides :meth:`~.os_session.OSSession.build_dpdk`."""
+        """Overrides :meth:`~.os_session.OSSession.build_dpdk`.
+
+        Raises:
+            DPDKBuildError: If the DPDK build failed.
+        """
         try:
             if rebuild:
                 # reconfigure, then build
@@ -369,7 +380,11 @@ class PosixSession(OSSession):
         return ""
 
     def get_compiler_version(self, compiler_name: str) -> str:
-        """Overrides :meth:`~.os_session.OSSession.get_compiler_version`."""
+        """Overrides :meth:`~.os_session.OSSession.get_compiler_version`.
+
+        Raises:
+            ValueError: If the given `compiler_name` is invalid.
+        """
         match compiler_name:
             case "gcc":
                 return self.send_command(
@@ -381,8 +396,6 @@ class PosixSession(OSSession):
                 ).stdout.split("\n")[0]
             case "msvc":
                 return self.send_command("cl", SETTINGS.timeout).stdout
-            case "icc":
-                return self.send_command(f"{compiler_name} -V", SETTINGS.timeout).stdout
             case _:
                 raise ValueError(f"Unknown compiler {compiler_name}")
 
@@ -394,3 +407,7 @@ class PosixSession(OSSession):
         ).stdout.split("\n")
         kernel_version = self.send_command("uname -r", SETTINGS.timeout).stdout
         return OSSessionInfo(os_release_info[0].strip(), os_release_info[1].strip(), kernel_version)
+
+    def get_arch_info(self) -> str:
+        """Overrides :meth'~.os_session.OSSession.get_arch_info'."""
+        return self.send_command("uname -m").stdout.strip()

@@ -673,7 +673,7 @@ struct mlx5_flow_dv_tag_resource {
 };
 
 /* Modify resource structure */
-struct mlx5_flow_dv_modify_hdr_resource {
+struct __rte_packed_begin mlx5_flow_dv_modify_hdr_resource {
 	struct mlx5_list_entry entry;
 	void *action; /**< Modify header action object. */
 	uint32_t idx;
@@ -684,7 +684,7 @@ struct mlx5_flow_dv_modify_hdr_resource {
 	bool root; /**< Whether action is in root table. */
 	struct mlx5_modification_cmd actions[];
 	/**< Modification actions. */
-} __rte_packed;
+} __rte_packed_end;
 
 /* Modify resource key of the hash organization. */
 union mlx5_flow_modify_hdr_key {
@@ -831,7 +831,7 @@ struct mlx5_flow_dv_dest_array_resource {
 
 
 /** Device flow handle structure for DV mode only. */
-struct mlx5_flow_handle_dv {
+struct __rte_packed_begin mlx5_flow_handle_dv {
 	/* Flow DV api: */
 	struct mlx5_flow_dv_matcher *matcher; /**< Cache to matcher. */
 	struct mlx5_flow_dv_modify_hdr_resource *modify_hdr;
@@ -846,10 +846,10 @@ struct mlx5_flow_handle_dv {
 	/**< Index to sample action resource in cache. */
 	uint32_t rix_dest_array;
 	/**< Index to destination array resource in cache. */
-} __rte_packed;
+} __rte_packed_end;
 
 /** Device flow handle structure: used both for creating & destroying. */
-struct mlx5_flow_handle {
+struct __rte_packed_begin mlx5_flow_handle {
 	SILIST_ENTRY(uint32_t)next;
 	struct mlx5_vf_vlan vf_vlan; /**< Structure for VF VLAN workaround. */
 	/**< Index to next device flow handle. */
@@ -875,7 +875,7 @@ struct mlx5_flow_handle {
 	struct mlx5_flow_handle_dv dvh;
 #endif
 	uint8_t flex_item; /**< referenced Flex Item bitmask. */
-} __rte_packed;
+} __rte_packed_end;
 
 /*
  * Size for Verbs device flow handle structure only. Do not use the DV only
@@ -1250,7 +1250,7 @@ struct mlx5_flow_attr {
 };
 
 /* Flow structure. */
-struct rte_flow {
+struct __rte_packed_begin rte_flow {
 	uint32_t dev_handles;
 	/**< Device flow handles that are part of the flow. */
 	uint32_t type:2;
@@ -1268,7 +1268,7 @@ struct rte_flow {
 		uint32_t ct; /**< Holds ASO CT index. */
 	};
 	uint32_t geneve_tlv_option; /**< Holds Geneve TLV option id. > */
-} __rte_packed;
+} __rte_packed_end;
 
 /*
  * HWS COUNTER ID's layout
@@ -1583,7 +1583,7 @@ struct mlx5_hw_modify_header_action {
 };
 
 /* The maximum actions support in the flow. */
-#define MLX5_HW_MAX_ACTS 16
+#define MLX5_HW_MAX_ACTS 32
 
 /* DR action set struct. */
 struct mlx5_hw_actions {
@@ -1812,6 +1812,7 @@ flow_hw_get_reg_id_from_ctx(void *dr_ctx, enum rte_flow_item_type type,
 
 #endif
 
+
 /*
  * Define list of valid combinations of RX Hash fields
  * (see enum ibv_rx_hash_fields).
@@ -1919,6 +1920,9 @@ struct mlx5_flow_workspace {
 	/* The meter policy used by meter in flow. */
 	struct mlx5_flow_meter_policy *final_policy;
 	/* The final policy when meter policy is hierarchy. */
+#ifdef HAVE_MLX5_HWS_SUPPORT
+	struct rte_flow_template_table *table;
+#endif
 	uint32_t skip_matcher_reg:1;
 	/* Indicates if need to skip matcher register in translate. */
 	uint32_t mark:1; /* Indicates if flow contains mark action. */
@@ -2153,6 +2157,23 @@ flow_hw_get_port_id_from_ctx(void *dr_ctx, uint32_t *port_val)
 #endif
 	return -EINVAL;
 }
+
+/**
+ * Get GENEVE TLV option matching to given type and class.
+ *
+ * @param priv
+ *   Pointer to port's private data.
+ * @param type
+ *   GENEVE option type.
+ * @param class
+ *   GENEVE option class.
+ *
+ * @return
+ *   Pointer to option structure if exist, NULL otherwise and rte_errno is set.
+ */
+struct mlx5_geneve_tlv_option *
+mlx5_geneve_tlv_option_get(const struct mlx5_priv *priv, uint8_t type,
+			    uint16_t class);
 
 /**
  * Get GENEVE TLV option FW information according type and class.
@@ -3448,8 +3469,6 @@ flow_hw_resource_release(struct rte_eth_dev *dev);
 int
 mlx5_geneve_tlv_options_destroy(struct mlx5_geneve_tlv_options *options,
 				struct mlx5_physical_device *phdev);
-int
-mlx5_geneve_tlv_options_check_busy(struct mlx5_priv *priv);
 void
 flow_hw_rxq_flag_set(struct rte_eth_dev *dev, bool enable);
 int flow_dv_action_validate(struct rte_eth_dev *dev,
@@ -3700,6 +3719,8 @@ mlx5_flow_nta_update_copy_table(struct rte_eth_dev *dev,
 				const struct rte_flow_action *mark,
 				uint64_t action_flags,
 				struct rte_flow_error *error);
+
+struct mlx5_ecpri_parser_profile *flow_hw_get_ecpri_parser_profile(void *dr_ctx);
 
 #endif
 #endif /* RTE_PMD_MLX5_FLOW_H_ */

@@ -22,7 +22,7 @@
 #include <ena_eth_io_defs.h>
 
 #define DRV_MODULE_VER_MAJOR	2
-#define DRV_MODULE_VER_MINOR	11
+#define DRV_MODULE_VER_MINOR	12
 #define DRV_MODULE_VER_SUBMINOR	0
 
 #define __MERGE_64B_H_L(h, l) (((uint64_t)h << 32) | l)
@@ -603,7 +603,7 @@ __extension__ ({
 	ENA_TOUCH(ena_dev);
 	if (ind_tbl != adapter->indirect_table)
 		rte_memcpy(ind_tbl, adapter->indirect_table,
-			   sizeof(adapter->indirect_table));
+			   sizeof(u32) * adapter->indirect_table_size);
 }),
 	struct ena_com_dev *ena_dev, u32 *ind_tbl);
 
@@ -889,6 +889,13 @@ err:
 	ena_com_delete_debug_area(&adapter->ena_dev);
 }
 
+static inline void ena_indirect_table_release(struct ena_adapter *adapter)
+{
+	if (likely(adapter->indirect_table)) {
+		rte_free(adapter->indirect_table);
+		adapter->indirect_table = NULL;
+	}
+}
 static int ena_close(struct rte_eth_dev *dev)
 {
 	struct rte_pci_device *pci_dev = RTE_ETH_DEV_TO_PCI(dev);
@@ -920,6 +927,7 @@ static int ena_close(struct rte_eth_dev *dev)
 	ena_rx_queue_release_all(dev);
 	ena_tx_queue_release_all(dev);
 
+	ena_indirect_table_release(adapter);
 	rte_free(adapter->drv_stats);
 	adapter->drv_stats = NULL;
 
@@ -1413,7 +1421,6 @@ static int ena_create_io_queue(struct rte_eth_dev *dev, struct ena_ring *ring)
 	struct rte_pci_device *pci_dev = RTE_ETH_DEV_TO_PCI(dev);
 	struct rte_intr_handle *intr_handle = pci_dev->intr_handle;
 	struct ena_com_create_io_ctx ctx =
-		/* policy set to _HOST just to satisfy icc compiler */
 		{ ENA_ADMIN_PLACEMENT_POLICY_HOST,
 		  0, 0, 0, 0, 0 };
 	uint16_t ena_qid;
@@ -1916,10 +1923,7 @@ static int ena_device_init(struct ena_adapter *adapter,
 	}
 
 	aenq_groups = BIT(ENA_ADMIN_LINK_CHANGE) |
-		      BIT(ENA_ADMIN_NOTIFICATION) |
 		      BIT(ENA_ADMIN_KEEP_ALIVE) |
-		      BIT(ENA_ADMIN_FATAL_ERROR) |
-		      BIT(ENA_ADMIN_WARNING) |
 		      BIT(ENA_ADMIN_CONF_NOTIFICATIONS);
 
 	aenq_groups &= get_feat_ctx->aenq.supported_groups;
@@ -2278,6 +2282,7 @@ static int eth_ena_dev_init(struct rte_eth_dev *eth_dev)
 	int rc;
 	static int adapters_found;
 	bool disable_meta_caching;
+	size_t indirect_table_size;
 
 	eth_dev->dev_ops = &ena_dev_ops;
 	eth_dev->rx_pkt_burst = &eth_ena_recv_pkts;
@@ -2330,6 +2335,7 @@ static int eth_ena_dev_init(struct rte_eth_dev *eth_dev)
 
 	/* Assign default devargs values */
 	adapter->missing_tx_completion_to = ENA_TX_TIMEOUT;
+	adapter->llq_header_policy = ENA_LLQ_POLICY_RECOMMENDED;
 
 	/* Get user bypass */
 	rc = ena_parse_devargs(adapter, pci_dev->device.devargs);
@@ -2412,12 +2418,24 @@ static int eth_ena_dev_init(struct rte_eth_dev *eth_dev)
 			get_feat_ctx.dev_attr.mac_addr,
 			(struct rte_ether_addr *)adapter->mac_addr);
 
-	rc = ena_com_rss_init(ena_dev, ENA_RX_RSS_TABLE_LOG_SIZE);
+	rc = ena_com_rss_init(ena_dev);
 	if (unlikely(rc != 0)) {
 		PMD_DRV_LOG_LINE(ERR, "Failed to initialize RSS in ENA device");
 		goto err_delete_debug_area;
 	}
 
+	indirect_table_size = ena_rss_get_indirection_table_size(adapter);
+	if (indirect_table_size) {
+		adapter->indirect_table = rte_zmalloc("adapter RSS indirection table",
+						sizeof(u32) * indirect_table_size,
+						RTE_CACHE_LINE_SIZE);
+		if (!adapter->indirect_table) {
+			PMD_DRV_LOG_LINE(ERR,
+				"Failed to allocate memory for RSS indirection table");
+			rc = -ENOMEM;
+			goto err_rss_destroy;
+		}
+	}
 	adapter->drv_stats = rte_zmalloc("adapter stats",
 					 sizeof(*adapter->drv_stats),
 					 RTE_CACHE_LINE_SIZE);
@@ -2425,7 +2443,7 @@ static int eth_ena_dev_init(struct rte_eth_dev *eth_dev)
 		PMD_DRV_LOG_LINE(ERR,
 			"Failed to allocate memory for adapter statistics");
 		rc = -ENOMEM;
-		goto err_rss_destroy;
+		goto err_indirect_table_destroy;
 	}
 
 	rte_spinlock_init(&adapter->admin_lock);
@@ -2453,6 +2471,8 @@ static int eth_ena_dev_init(struct rte_eth_dev *eth_dev)
 	return 0;
 err_control_path_destroy:
 	rte_free(adapter->drv_stats);
+err_indirect_table_destroy:
+	ena_indirect_table_release(adapter);
 err_rss_destroy:
 	ena_com_rss_destroy(ena_dev);
 err_delete_debug_area:
@@ -2642,7 +2662,7 @@ static int ena_infos_get(struct rte_eth_dev *dev,
 
 	dev_info->max_rx_queues = adapter->max_num_io_queues;
 	dev_info->max_tx_queues = adapter->max_num_io_queues;
-	dev_info->reta_size = ENA_RX_RSS_TABLE_SIZE;
+	dev_info->reta_size = adapter->indirect_table_size;
 
 	dev_info->rx_desc_lim.nb_max = adapter->max_rx_ring_size;
 	dev_info->rx_desc_lim.nb_min = ENA_MIN_RING_DESC;
@@ -3024,29 +3044,6 @@ eth_ena_prep_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 	}
 
 	return i;
-}
-
-static void ena_update_hints(struct ena_adapter *adapter,
-			     struct ena_admin_ena_hw_hints *hints)
-{
-	if (hints->admin_completion_tx_timeout)
-		adapter->ena_dev.admin_queue.completion_timeout =
-			hints->admin_completion_tx_timeout * 1000;
-
-	if (hints->mmio_read_timeout)
-		/* convert to usec */
-		adapter->ena_dev.mmio_read.reg_read_to =
-			hints->mmio_read_timeout * 1000;
-
-	if (hints->driver_watchdog_timeout) {
-		if (hints->driver_watchdog_timeout == ENA_HW_HINTS_NO_TIMEOUT)
-			adapter->keep_alive_timeout = ENA_HW_HINTS_NO_TIMEOUT;
-		else
-			// Convert msecs to ticks
-			adapter->keep_alive_timeout =
-				(hints->driver_watchdog_timeout *
-				rte_get_timer_hz()) / 1000;
-	}
 }
 
 static void ena_tx_map_mbuf(struct ena_ring *tx_ring,
@@ -4054,30 +4051,6 @@ static void ena_update_on_link_change(void *adapter_data,
 	rte_eth_dev_callback_process(eth_dev, RTE_ETH_EVENT_INTR_LSC, NULL);
 }
 
-static void ena_notification(void *adapter_data,
-			     struct ena_admin_aenq_entry *aenq_e)
-{
-	struct rte_eth_dev *eth_dev = adapter_data;
-	struct ena_adapter *adapter = eth_dev->data->dev_private;
-	struct ena_admin_ena_hw_hints *hints;
-
-	if (aenq_e->aenq_common_desc.group != ENA_ADMIN_NOTIFICATION)
-		PMD_DRV_LOG_LINE(WARNING, "Invalid AENQ group: %x. Expected: %x",
-			aenq_e->aenq_common_desc.group,
-			ENA_ADMIN_NOTIFICATION);
-
-	switch (aenq_e->aenq_common_desc.syndrome) {
-	case ENA_ADMIN_UPDATE_HINTS:
-		hints = (struct ena_admin_ena_hw_hints *)
-			(&aenq_e->inline_data_w4);
-		ena_update_hints(adapter, hints);
-		break;
-	default:
-		PMD_DRV_LOG_LINE(ERR, "Invalid AENQ notification link state: %d",
-			aenq_e->aenq_common_desc.syndrome);
-	}
-}
-
 static void ena_keep_alive(void *adapter_data,
 			   __rte_unused struct ena_admin_aenq_entry *aenq_e)
 {
@@ -4132,7 +4105,6 @@ static void unimplemented_aenq_handler(__rte_unused void *data,
 static struct ena_aenq_handlers aenq_handlers = {
 	.handlers = {
 		[ENA_ADMIN_LINK_CHANGE] = ena_update_on_link_change,
-		[ENA_ADMIN_NOTIFICATION] = ena_notification,
 		[ENA_ADMIN_KEEP_ALIVE] = ena_keep_alive,
 		[ENA_ADMIN_CONF_NOTIFICATIONS] = ena_suboptimal_configuration
 	},

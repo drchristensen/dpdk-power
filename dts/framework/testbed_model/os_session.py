@@ -22,12 +22,13 @@ Example:
     the :attr:`~.node.Node.main_session` translates that to ``rm -rf`` if the node's OS is Linux
     and other commands for other OSs. It also translates the path to match the underlying OS.
 """
+
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path, PurePath, PurePosixPath
 
-from framework.config import Architecture, NodeConfiguration
+from framework.config.node import NodeConfiguration
 from framework.logger import DTSLogger
 from framework.remote_session import (
     InteractiveRemoteSession,
@@ -39,7 +40,7 @@ from framework.remote_session.remote_session import CommandResult
 from framework.settings import SETTINGS
 from framework.utils import MesonArgs, TarCompressionFormat
 
-from .cpu import LogicalCore
+from .cpu import Architecture, LogicalCore
 from .port import Port
 
 
@@ -192,6 +193,18 @@ class OSSession(ABC):
 
         Returns:
             :data:`True` if the path exists, :data:`False` otherwise.
+        """
+
+    @abstractmethod
+    def create_tmp_dir(self, template: str = "dts.XXXXX") -> PurePath:
+        """Create a temporary directory on the remote node.
+
+        Args:
+            template: The template to use for the name of the directory. "X"s are treated
+                as placeholder.
+
+        Returns:
+            The path to the created directory.
         """
 
     @abstractmethod
@@ -366,7 +379,7 @@ class OSSession(ABC):
         """Check if the `remote_path` is a directory.
 
         Args:
-            remote_tarball_path: The path to the remote tarball.
+            remote_path: The path to the remote tarball.
 
         Returns:
             If :data:`True` the `remote_path` is a directory, otherwise :data:`False`.
@@ -444,7 +457,7 @@ class OSSession(ABC):
         """
 
     @abstractmethod
-    def get_remote_cpus(self, use_first_core: bool) -> list[LogicalCore]:
+    def get_remote_cpus(self) -> list[LogicalCore]:
         r"""Get the list of :class:`~.cpu.LogicalCore`\s on the remote node.
 
         Args:
@@ -507,16 +520,30 @@ class OSSession(ABC):
         """
 
     @abstractmethod
-    def update_ports(self, ports: list[Port]) -> None:
-        """Get additional information about ports from the operating system and update them.
+    def get_arch_info(self) -> str:
+        """Discover CPU architecture of the remote host.
 
-        The additional information is:
+        Returns:
+            Remote host CPU architecture.
+        """
 
-            * Logical name (e.g. ``enp7s0``) if applicable,
-            * Mac address.
+    @abstractmethod
+    def get_port_info(self, pci_address: str) -> tuple[str, str]:
+        """Get port information.
+
+        Returns:
+            A tuple containing the logical name and MAC address respectively.
+
+        Raises:
+            ConfigurationError: If the port could not be found.
+        """
+
+    @abstractmethod
+    def bring_up_link(self, ports: Iterable[Port]) -> None:
+        """Send operating system specific command for bringing up link on node interfaces.
 
         Args:
-            ports: The ports to update.
+            ports: The ports to apply the link up command to.
         """
 
     @abstractmethod

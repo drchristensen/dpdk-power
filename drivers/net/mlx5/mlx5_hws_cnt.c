@@ -666,8 +666,13 @@ mlx5_hws_cnt_pool_action_create(struct mlx5_priv *priv,
 	uint32_t flags;
 
 	flags = MLX5DR_ACTION_FLAG_HWS_RX | MLX5DR_ACTION_FLAG_HWS_TX;
-	if (priv->sh->config.dv_esw_en && priv->master)
-		flags |= MLX5DR_ACTION_FLAG_HWS_FDB;
+	if (priv->sh->config.dv_esw_en && priv->master) {
+		flags |= (is_unified_fdb(priv) ?
+				(MLX5DR_ACTION_FLAG_HWS_FDB_RX |
+				 MLX5DR_ACTION_FLAG_HWS_FDB_TX |
+				 MLX5DR_ACTION_FLAG_HWS_FDB_UNIFIED) :
+				MLX5DR_ACTION_FLAG_HWS_FDB);
+	}
 	for (idx = 0; idx < hpool->dcs_mng.batch_total; idx++) {
 		struct mlx5_hws_cnt_dcs *hdcs = &hpool->dcs_mng.dcs[idx];
 		struct mlx5_hws_cnt_dcs *dcs = &cpool->dcs_mng.dcs[idx];
@@ -723,7 +728,7 @@ mlx5_hws_cnt_pool_create(struct rte_eth_dev *dev,
 	if (priv->sh->cnt_svc == NULL) {
 		ret = mlx5_hws_cnt_svc_init(priv->sh, error);
 		if (ret)
-			return ret;
+			goto error;
 	}
 	cparam.fetch_sz = HWS_CNT_CACHE_FETCH_DEFAULT;
 	cparam.preload_sz = HWS_CNT_CACHE_PRELOAD_DEFAULT;
@@ -767,6 +772,7 @@ error:
 	MLX5_ASSERT(ret);
 	mlx5_hws_cnt_pool_destroy(priv->sh, cpool);
 	priv->hws_cpool = NULL;
+	mlx5_free(mp_name);
 	return ret;
 }
 

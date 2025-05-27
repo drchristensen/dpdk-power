@@ -768,8 +768,6 @@ int ena_com_set_dev_mtu(struct ena_com_dev *ena_dev, u32 mtu);
  *
  * @return: 0 on Success and negative value otherwise.
  */
-int ena_com_get_offload_settings(struct ena_com_dev *ena_dev,
-				 struct ena_admin_feature_offload_desc *offload);
 
 /* ena_com_rss_init - Init RSS
  * @ena_dev: ENA communication layer struct
@@ -781,7 +779,7 @@ int ena_com_get_offload_settings(struct ena_com_dev *ena_dev,
  *
  * @return: 0 on Success and negative value otherwise.
  */
-int ena_com_rss_init(struct ena_com_dev *ena_dev, u16 log_size);
+int ena_com_rss_init(struct ena_com_dev *ena_dev);
 
 /* ena_com_rss_destroy - Destroy rss
  * @ena_dev: ENA communication layer struct
@@ -1146,6 +1144,7 @@ static inline void ena_com_disable_adaptive_moderation(struct ena_com_dev *ena_d
 	ena_dev->adaptive_coalescing = false;
 }
 
+bool ena_com_indirection_table_config_supported(struct ena_com_dev *ena_dev);
 /* ena_com_get_cap - query whether device supports a capability.
  * @ena_dev: ENA communication layer struct
  * @cap_id: enum value representing the capability

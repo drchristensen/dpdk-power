@@ -12,6 +12,8 @@
 
 #include "zxdh_ethdev.h"
 
+#define ZXDH_PF_PCIE_ID(pcie_id)  (((pcie_id) & 0xff00) | 1 << 11)
+
 enum zxdh_msix_status {
 	ZXDH_MSIX_NONE     = 0,
 	ZXDH_MSIX_DISABLED = 1,
@@ -64,7 +66,7 @@ enum zxdh_msix_status {
 #define ZXDH_CONFIG_STATUS_FAILED          0x80
 #define ZXDH_PCI_QUEUE_ADDR_SHIFT          12
 
-struct zxdh_net_config {
+struct __rte_packed_begin zxdh_net_config {
 	/* The config defining mac address (if ZXDH_NET_F_MAC) */
 	uint8_t    mac[RTE_ETHER_ADDR_LEN];
 	/* See ZXDH_NET_F_STATUS and ZXDH_NET_S_* above */
@@ -73,7 +75,7 @@ struct zxdh_net_config {
 	uint16_t   mtu;
 	uint32_t   speed;
 	uint8_t    duplex;
-} __rte_packed;
+} __rte_packed_end;
 
 /* This is the PCI capability header: */
 struct zxdh_pci_cap {
@@ -114,15 +116,15 @@ struct zxdh_pci_common_cfg {
 };
 
 static inline int32_t
-vtpci_with_feature(struct zxdh_hw *hw, uint64_t bit)
+zxdh_pci_with_feature(struct zxdh_hw *hw, uint64_t bit)
 {
 	return (hw->guest_features & (1ULL << bit)) != 0;
 }
 
 static inline int32_t
-vtpci_packed_queue(struct zxdh_hw *hw)
+zxdh_pci_packed_queue(struct zxdh_hw *hw)
 {
-	return vtpci_with_feature(hw, ZXDH_F_RING_PACKED);
+	return zxdh_pci_with_feature(hw, ZXDH_F_RING_PACKED);
 }
 
 struct zxdh_pci_ops {
@@ -142,6 +144,7 @@ struct zxdh_pci_ops {
 
 	int32_t  (*setup_queue)(struct zxdh_hw *hw, struct zxdh_virtqueue *vq);
 	void     (*del_queue)(struct zxdh_hw *hw, struct zxdh_virtqueue *vq);
+	void     (*notify_queue)(struct zxdh_hw *hw, struct zxdh_virtqueue *vq);
 };
 
 struct zxdh_hw_internal {

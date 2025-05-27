@@ -23,8 +23,8 @@ from enum import Enum, Flag
 from pathlib import Path
 from typing import Any, Callable
 
-from scapy.layers.inet import IP, TCP, UDP, Ether  # type: ignore[import-untyped]
-from scapy.packet import Packet  # type: ignore[import-untyped]
+from scapy.layers.inet import IP, TCP, UDP, Ether
+from scapy.packet import Packet
 
 from .exception import InternalError
 
@@ -32,7 +32,13 @@ REGEX_FOR_PCI_ADDRESS: str = r"[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}.[0-9
 _REGEX_FOR_COLON_OR_HYPHEN_SEP_MAC: str = r"(?:[\da-fA-F]{2}[:-]){5}[\da-fA-F]{2}"
 _REGEX_FOR_DOT_SEP_MAC: str = r"(?:[\da-fA-F]{4}.){2}[\da-fA-F]{4}"
 REGEX_FOR_MAC_ADDRESS: str = rf"{_REGEX_FOR_COLON_OR_HYPHEN_SEP_MAC}|{_REGEX_FOR_DOT_SEP_MAC}"
-REGEX_FOR_BASE64_ENCODING: str = "[-a-zA-Z0-9+\\/]*={0,3}"
+REGEX_FOR_BASE64_ENCODING: str = r"[-a-zA-Z0-9+\\/]*={0,3}"
+REGEX_FOR_IDENTIFIER: str = r"\w+(?:[\w -]*\w+)?"
+REGEX_FOR_PORT_LINK: str = (
+    rf"(?:(sut|tg)\.)?({REGEX_FOR_IDENTIFIER})"  # left side
+    r"\s+<->\s+"
+    rf"(?:(sut|tg)\.)?({REGEX_FOR_IDENTIFIER})"  # right side
+)
 
 
 def expand_range(range_str: str) -> list[int]:
@@ -177,7 +183,9 @@ def create_tarball(
         The path to the created tarball.
     """
 
-    def create_filter_function(exclude_patterns: str | list[str] | None) -> Callable | None:
+    def create_filter_function(
+        exclude_patterns: str | list[str] | None,
+    ) -> Callable | None:
         """Create a filter function based on the provided exclude patterns.
 
         Args:
@@ -268,7 +276,7 @@ def generate_random_packets(
     if payload_size < 0:
         raise InternalError(f"An invalid payload_size of {payload_size} was given.")
 
-    l4_factories = []
+    l4_factories: list[type[Packet]] = []
     if protocols & PacketProtocols.TCP:
         l4_factories.append(TCP)
     if protocols & PacketProtocols.UDP:
@@ -300,7 +308,7 @@ class MultiInheritanceBaseClass:
     :meth:`super.__init__` without repercussion.
     """
 
-    def __init__(self, *args, **kwargs) -> None:
+    def __init__(self) -> None:
         """Call the init method of :class:`object`."""
         super().__init__()
 

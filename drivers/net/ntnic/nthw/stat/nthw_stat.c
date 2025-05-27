@@ -199,6 +199,8 @@ int nthw_stat_init(nthw_stat_t *p, nthw_fpga_t *p_fpga, int n_instance)
 
 	p->m_nb_rpp_per_ps = nthw_fpga_get_product_param(p_fpga, NT_RPP_PER_PS, 0);
 
+	p->m_nb_ifr_counters = nthw_fpga_get_product_param(p_fpga, NT_TX_MTU_PROFILE_IFR, 0);
+
 	p->m_nb_tx_ports = nthw_fpga_get_product_param(p_fpga, NT_TX_PORTS, 0);
 	p->m_rx_port_replicate = nthw_fpga_get_product_param(p_fpga, NT_RX_PORT_REPLICATE, 0);
 
@@ -257,7 +259,7 @@ int nthw_stat_init(nthw_stat_t *p, nthw_fpga_t *p_fpga, int n_instance)
 			p_adapter_id_str, n_module_version_packed64, p->mn_stat_layout_version);
 	}
 
-	assert(p->mn_stat_layout_version);
+	RTE_ASSERT(p->mn_stat_layout_version);
 
 	/* STA module 0.2+ adds IPF counters per port (Rx feature) */
 	if (n_module_version_packed64 >= VERSION_PACKED64(0, 2))
@@ -330,7 +332,7 @@ int nthw_stat_init(nthw_stat_t *p, nthw_fpga_t *p_fpga, int n_instance)
 int nthw_stat_set_dma_address(nthw_stat_t *p, uint64_t stat_dma_physical,
 	uint32_t *p_stat_dma_virtual)
 {
-	assert(p_stat_dma_virtual);
+	RTE_ASSERT(p_stat_dma_virtual);
 	p->mp_timestamp = NULL;
 
 	p->m_stat_dma_physical = stat_dma_physical;

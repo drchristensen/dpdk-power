@@ -27,8 +27,6 @@
 #include "hw/npc.h"
 #include "hw/ssow.h"
 
-#include "roc_ie_ot.h"
-
 /* NPA */
 #include "roc_npa_dp.h"
 
@@ -37,6 +35,10 @@
 
 /* CPT */
 #include "roc_cpt.h"
+
+#include "roc_ie_ot.h"
+
+#include "roc_ie_ow.h"
 
 /* NIX Inline dev */
 #include "roc_nix_inl_dp.h"
@@ -80,6 +82,7 @@ struct cn20k_eth_rxq {
 	uint64_t meta_aura;
 	uintptr_t meta_pool;
 	uint16_t rq;
+	uint64_t mp_buf_sz;
 	struct cnxk_timesync_info *tstamp;
 } __plt_cache_aligned;
 
@@ -91,7 +94,7 @@ struct cn20k_inb_priv_data {
 	struct cnxk_eth_sec_sess *eth_sec;
 };
 
-struct cn20k_sec_sess_priv {
+struct __rte_packed_begin cn20k_sec_sess_priv {
 	union {
 		struct {
 			uint32_t sa_idx;
@@ -109,7 +112,7 @@ struct cn20k_sec_sess_priv {
 
 		uint64_t u64;
 	};
-} __rte_packed;
+} __rte_packed_end;
 
 #define LMT_OFF(lmt_addr, lmt_num, offset)                                                         \
 	(void *)((uintptr_t)(lmt_addr) + ((uint64_t)(lmt_num) << ROC_LMT_LINE_SIZE_LOG2) + (offset))

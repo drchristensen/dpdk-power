@@ -15,6 +15,7 @@
 #include <sys/stat.h>
 #include <sys/file.h>
 #include <sys/resource.h>
+#include <sys/personality.h>
 #include <unistd.h>
 #include <limits.h>
 #include <signal.h>
@@ -34,6 +35,7 @@
 #include <rte_lcore.h>
 #include <rte_common.h>
 
+#include <eal_export.h>
 #include "eal_private.h"
 #include "eal_memalloc.h"
 #include "eal_memcfg.h"
@@ -87,6 +89,7 @@ uint64_t eal_get_baseaddr(void)
 /*
  * Get physical address of any mapped virtual address in the current process.
  */
+RTE_EXPORT_SYMBOL(rte_mem_virt2phy)
 phys_addr_t
 rte_mem_virt2phy(const void *virtaddr)
 {
@@ -144,6 +147,7 @@ rte_mem_virt2phy(const void *virtaddr)
 	return physaddr;
 }
 
+RTE_EXPORT_SYMBOL(rte_mem_virt2iova)
 rte_iova_t
 rte_mem_virt2iova(const void *virtaddr)
 {
@@ -200,6 +204,17 @@ static int
 aslr_enabled(void)
 {
 	char c;
+
+	/*
+	 * Check whether the current process is executed with the command line
+	 * "setarch ... --addr-no-randomize ..." or "setarch ... -R ..."
+	 * This complements the sysfs check to ensure comprehensive ASLR status detection.
+	 * This check is necessary to support the functionality of the "setarch" command,
+	 * which can disable ASLR by setting the ADDR_NO_RANDOMIZE personality flag.
+	 */
+	if ((personality(0xffffffff) & ADDR_NO_RANDOMIZE) == ADDR_NO_RANDOMIZE)
+		return 0;
+
 	int retval, fd = open(RANDOMIZE_VA_SPACE_FILE, O_RDONLY);
 	if (fd < 0)
 		return -errno;
@@ -1472,6 +1487,7 @@ eal_legacy_hugepage_init(void)
 		mem_sz = msl->len;
 		munmap(msl->base_va, mem_sz);
 		msl->base_va = NULL;
+		msl->len = 0;
 		msl->heap = 0;
 
 		/* destroy backing fbarray */
@@ -1672,6 +1688,7 @@ rte_eal_hugepage_attach(void)
 			eal_hugepage_attach();
 }
 
+RTE_EXPORT_SYMBOL(rte_eal_using_phys_addrs)
 int
 rte_eal_using_phys_addrs(void)
 {

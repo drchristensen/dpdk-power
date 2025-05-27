@@ -533,7 +533,7 @@ cn20k_nix_prep_sec_vec(struct rte_mbuf *m, uint64x2_t *cmd0, uint64x2_t *cmd1,
 	tag = sa_base & 0xFFFFUL;
 	sa_base &= ~0xFFFFUL;
 	sa = (uintptr_t)roc_nix_inl_ot_ipsec_outb_sa(sa_base, sess_priv.sa_idx);
-	ucode_cmd[3] = (ROC_CPT_DFLT_ENG_GRP_SE_IE << 61 | 1UL << 60 | sa);
+	ucode_cmd[3] = (ROC_CPT_DFLT_ENG_GRP_SE << 61 | 1UL << 60 | sa);
 	ucode_cmd[0] = (ROC_IE_OT_MAJOR_OP_PROCESS_OUTBOUND_IPSEC << 48 | 1UL << 54 |
 			((uint64_t)sess_priv.chksum) << 32 | ((uint64_t)sess_priv.dec_ttl) << 34 |
 			pkt_len);
@@ -671,7 +671,7 @@ cn20k_nix_prep_sec(struct rte_mbuf *m, uint64_t *cmd, uintptr_t *nixtx_addr, uin
 	tag = sa_base & 0xFFFFUL;
 	sa_base &= ~0xFFFFUL;
 	sa = (uintptr_t)roc_nix_inl_ot_ipsec_outb_sa(sa_base, sess_priv.sa_idx);
-	ucode_cmd[3] = (ROC_CPT_DFLT_ENG_GRP_SE_IE << 61 | 1UL << 60 | sa);
+	ucode_cmd[3] = (ROC_CPT_DFLT_ENG_GRP_SE << 61 | 1UL << 60 | sa);
 	ucode_cmd[0] = (ROC_IE_OT_MAJOR_OP_PROCESS_OUTBOUND_IPSEC << 48 | 1UL << 54 |
 			((uint64_t)sess_priv.chksum) << 32 | ((uint64_t)sess_priv.dec_ttl) << 34 |
 			pkt_len);
@@ -1733,6 +1733,9 @@ cn20k_nix_prepare_tso(struct rte_mbuf *m, union nix_send_hdr_w1_u *w1, union nix
 	w0->lso_mps = m->tso_segsz;
 	w0->lso_format = NIX_LSO_FORMAT_IDX_TSOV4 + !!(ol_flags & RTE_MBUF_F_TX_IPV6);
 	w1->ol4type = NIX_SENDL4TYPE_TCP_CKSUM;
+	w1->ol3type = ((!!(ol_flags & RTE_MBUF_F_TX_IPV4)) << 1) +
+		      ((!!(ol_flags & RTE_MBUF_F_TX_IPV6)) << 2) +
+		      !!(ol_flags & RTE_MBUF_F_TX_IP_CKSUM);
 
 	/* Handle tunnel tso */
 	if ((flags & NIX_TX_OFFLOAD_OL3_OL4_CSUM_F) && (ol_flags & RTE_MBUF_F_TX_TUNNEL_MASK)) {
@@ -2395,7 +2398,7 @@ again:
 			 */
 			const uint8x16_t tbl = {
 				/* [0-15] = il4type:il3type */
-				0x04, /* none (IPv6 assumed) */
+				0x00, /* none */
 				0x14, /* RTE_MBUF_F_TX_TCP_CKSUM (IPv6 assumed) */
 				0x24, /* RTE_MBUF_F_TX_SCTP_CKSUM (IPv6 assumed) */
 				0x34, /* RTE_MBUF_F_TX_UDP_CKSUM (IPv6 assumed) */
@@ -2595,7 +2598,7 @@ again:
 			const uint8x16x2_t tbl = {{
 				{
 					/* [0-15] = il4type:il3type */
-					0x04, /* none (IPv6) */
+					0x00, /* none */
 					0x14, /* RTE_MBUF_F_TX_TCP_CKSUM (IPv6) */
 					0x24, /* RTE_MBUF_F_TX_SCTP_CKSUM (IPv6) */
 					0x34, /* RTE_MBUF_F_TX_UDP_CKSUM (IPv6) */

@@ -28,13 +28,6 @@ PLT_STATIC_ASSERT(RTE_PMD_CNXK_AR_WIN_SIZE_MAX == ROC_AR_WIN_SIZE_MAX);
 PLT_STATIC_ASSERT(RTE_PMD_CNXK_LOG_MIN_AR_WIN_SIZE_M1 == ROC_LOG_MIN_AR_WIN_SIZE_M1);
 PLT_STATIC_ASSERT(RTE_PMD_CNXK_AR_WINBITS_SZ == ROC_AR_WINBITS_SZ);
 
-cnxk_ethdev_rx_offload_cb_t cnxk_ethdev_rx_offload_cb;
-void
-cnxk_ethdev_rx_offload_cb_register(cnxk_ethdev_rx_offload_cb_t cb)
-{
-	cnxk_ethdev_rx_offload_cb = cb;
-}
-
 static struct rte_cryptodev_capabilities cn10k_eth_sec_crypto_caps[] = {
 	{	/* AES GCM */
 		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
@@ -793,13 +786,6 @@ cn10k_eth_sec_session_create(void *device,
 	inbound = !!(ipsec->direction == RTE_SECURITY_IPSEC_SA_DIR_INGRESS);
 	inl_dev = !!dev->inb.inl_dev;
 
-	/* Search if a session already exits */
-	if (cnxk_eth_sec_sess_get_by_spi(dev, ipsec->spi, inbound)) {
-		plt_err("%s SA with SPI %u already in use",
-			inbound ? "Inbound" : "Outbound", ipsec->spi);
-		return -EEXIST;
-	}
-
 	memset(eth_sec, 0, sizeof(struct cnxk_eth_sec_sess));
 	sess_priv.u64 = 0;
 
@@ -820,6 +806,13 @@ cn10k_eth_sec_session_create(void *device,
 				  ROC_NIX_INL_OT_IPSEC_INB_SW_RSVD);
 
 		spi_mask = roc_nix_inl_inb_spi_range(nix, inl_dev, NULL, NULL);
+
+		/* Search if a session already exits */
+		if (cnxk_eth_sec_sess_get_by_sa_idx(dev, ipsec->spi & spi_mask, true)) {
+			plt_err("Inbound SA with SPI/SA index %u already in use", ipsec->spi);
+			rc = -EEXIST;
+			goto err;
+		}
 
 		/* Get Inbound SA from NIX_RX_IPSEC_SA_BASE */
 		sa = roc_nix_inl_inb_sa_get(nix, inl_dev, ipsec->spi);
@@ -851,8 +844,7 @@ cn10k_eth_sec_session_create(void *device,
 		memset(inb_sa_dptr, 0, sizeof(struct roc_ot_ipsec_inb_sa));
 
 		/* Fill inbound sa params */
-		rc = cnxk_ot_ipsec_inb_sa_fill(inb_sa_dptr, ipsec, crypto,
-					       true);
+		rc = cnxk_ot_ipsec_inb_sa_fill(inb_sa_dptr, ipsec, crypto);
 		if (rc) {
 			snprintf(tbuf, sizeof(tbuf),
 				 "Failed to init inbound sa, rc=%d", rc);
@@ -1063,7 +1055,7 @@ cn10k_eth_sec_session_destroy(void *device, struct rte_security_session *sess)
 	if (eth_sec->inb) {
 		/* Disable SA */
 		sa_dptr = dev->inb.sa_dptr;
-		roc_ot_ipsec_inb_sa_init(sa_dptr, true);
+		roc_ot_ipsec_inb_sa_init(sa_dptr);
 
 		roc_nix_inl_ctx_write(&dev->nix, sa_dptr, eth_sec->sa,
 				      eth_sec->inb,
@@ -1146,8 +1138,7 @@ cn10k_eth_sec_session_update(void *device, struct rte_security_session *sess,
 		inb_sa_dptr = (struct roc_ot_ipsec_inb_sa *)dev->inb.sa_dptr;
 		memset(inb_sa_dptr, 0, sizeof(struct roc_ot_ipsec_inb_sa));
 
-		rc = cnxk_ot_ipsec_inb_sa_fill(inb_sa_dptr, ipsec, crypto,
-					       true);
+		rc = cnxk_ot_ipsec_inb_sa_fill(inb_sa_dptr, ipsec, crypto);
 		if (rc)
 			return -EINVAL;
 		/* Use cookie for original data */
@@ -1245,7 +1236,6 @@ cn10k_eth_sec_session_stats_get(void *device, struct rte_security_session *sess,
 			    ROC_NIX_INL_SA_OP_FLUSH);
 	if (rc)
 		return -EINVAL;
-	rte_delay_ms(1);
 
 	stats->protocol = RTE_SECURITY_PROTOCOL_IPSEC;
 

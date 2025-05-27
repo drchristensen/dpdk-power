@@ -27,8 +27,6 @@
 #include "hw/npc.h"
 #include "hw/ssow.h"
 
-#include "roc_ie_ot.h"
-
 /* NPA */
 #include "roc_npa_dp.h"
 
@@ -37,6 +35,10 @@
 
 /* CPT */
 #include "roc_cpt.h"
+
+#include "roc_ie_ot.h"
+
+#include "roc_ie_ow.h"
 
 /* NIX Inline dev */
 #include "roc_nix_inl_dp.h"
@@ -92,7 +94,7 @@ struct cn10k_inb_priv_data {
 	struct cnxk_eth_sec_sess *eth_sec;
 };
 
-struct cn10k_sec_sess_priv {
+struct __rte_packed_begin cn10k_sec_sess_priv {
 	union {
 		struct {
 			uint32_t sa_idx;
@@ -110,7 +112,7 @@ struct cn10k_sec_sess_priv {
 
 		uint64_t u64;
 	};
-} __rte_packed;
+} __rte_packed_end;
 
 #define LMT_OFF(lmt_addr, lmt_num, offset)                                     \
 	(void *)((uintptr_t)(lmt_addr) +                                       \

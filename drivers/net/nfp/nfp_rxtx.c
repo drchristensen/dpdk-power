@@ -12,6 +12,7 @@
 
 #include "nfd3/nfp_nfd3.h"
 #include "nfdk/nfp_nfdk.h"
+#include "nfdk/nfp_nfdk_vec.h"
 #include "flower/nfp_flower.h"
 
 #include "nfp_ipsec.h"
@@ -862,6 +863,7 @@ nfp_net_rx_queue_info_get(struct rte_eth_dev *dev,
 	nfp_net_infos_get(dev, &dev_info);
 	info->conf.offloads = dev_info.rx_offload_capa &
 			dev->data->dev_conf.rxmode.offloads;
+	info->conf.rx_thresh = dev_info.default_rxconf.rx_thresh;
 }
 
 void
@@ -883,6 +885,7 @@ nfp_net_tx_queue_info_get(struct rte_eth_dev *dev,
 	nfp_net_infos_get(dev, &dev_info);
 	info->conf.offloads = dev_info.tx_offload_capa &
 			dev->data->dev_conf.txmode.offloads;
+	info->conf.tx_thresh = dev_info.default_txconf.tx_thresh;
 }
 
 void
@@ -892,4 +895,49 @@ nfp_net_recv_pkts_set(struct rte_eth_dev *eth_dev)
 		eth_dev->rx_pkt_burst = nfp_net_vec_avx2_recv_pkts;
 	else
 		eth_dev->rx_pkt_burst = nfp_net_recv_pkts;
+}
+
+int
+nfp_net_rx_burst_mode_get(struct rte_eth_dev *eth_dev,
+		uint16_t queue_id __rte_unused,
+		struct rte_eth_burst_mode *mode)
+{
+	eth_rx_burst_t pkt_burst;
+
+	pkt_burst = eth_dev->rx_pkt_burst;
+	if (pkt_burst == nfp_net_recv_pkts) {
+		strlcpy(mode->info, "Scalar",
+				RTE_ETH_BURST_MODE_INFO_SIZE);
+	} else if (pkt_burst == nfp_net_vec_avx2_recv_pkts) {
+		strlcpy(mode->info, "Vector AVX2",
+				RTE_ETH_BURST_MODE_INFO_SIZE);
+	} else {
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+int
+nfp_net_tx_burst_mode_get(struct rte_eth_dev *eth_dev,
+		uint16_t queue_id __rte_unused,
+		struct rte_eth_burst_mode *mode)
+{
+	eth_tx_burst_t pkt_burst;
+
+	pkt_burst = eth_dev->tx_pkt_burst;
+	if (pkt_burst == nfp_net_nfd3_xmit_pkts) {
+		strlcpy(mode->info, "NFD3 Scalar",
+				RTE_ETH_BURST_MODE_INFO_SIZE);
+	} else if (pkt_burst == nfp_net_nfdk_xmit_pkts) {
+		strlcpy(mode->info, "NFDk Scalar",
+				RTE_ETH_BURST_MODE_INFO_SIZE);
+	} else if (pkt_burst == nfp_net_nfdk_vec_avx2_xmit_pkts) {
+		strlcpy(mode->info, "NFDk Vector AVX2",
+				RTE_ETH_BURST_MODE_INFO_SIZE);
+	} else {
+		return -EINVAL;
+	}
+
+	return 0;
 }

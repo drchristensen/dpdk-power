@@ -9,6 +9,7 @@
 #include <net/if.h>
 #include <unistd.h>
 
+#include <eal_export.h>
 #include <rte_ip.h>
 #include <rte_udp.h>
 #include <rte_mbuf.h>
@@ -1491,8 +1492,8 @@ dpaa2_sec_enqueue_burst(void *qp, struct rte_crypto_op **ops,
 			if (*dpaa2_seqn((*ops)->sym->m_src)) {
 				if (*dpaa2_seqn((*ops)->sym->m_src) & QBMAN_ENQUEUE_FLAG_DCA) {
 					DPAA2_PER_LCORE_DQRR_SIZE--;
-					DPAA2_PER_LCORE_DQRR_HELD &= ~(1 <<
-					*dpaa2_seqn((*ops)->sym->m_src) &
+					DPAA2_PER_LCORE_DQRR_HELD &= ~(UINT64_C(1) <<
+						*dpaa2_seqn((*ops)->sym->m_src) &
 					QBMAN_EQCR_DCA_IDXMASK);
 				}
 				flags[loop] = *dpaa2_seqn((*ops)->sym->m_src);
@@ -1772,7 +1773,7 @@ dpaa2_sec_set_enqueue_descriptor(struct dpaa2_queue *dpaa2_q,
 		dq_idx = *dpaa2_seqn(m) - 1;
 		qbman_eq_desc_set_dca(eqdesc, 1, dq_idx, 0);
 		DPAA2_PER_LCORE_DQRR_SIZE--;
-		DPAA2_PER_LCORE_DQRR_HELD &= ~(1 << dq_idx);
+		DPAA2_PER_LCORE_DQRR_HELD &= ~(UINT64_C(1) << dq_idx);
 	}
 	*dpaa2_seqn(m) = DPAA2_INVALID_MBUF_SEQN;
 }
@@ -4055,7 +4056,7 @@ dpaa2_sec_process_atomic_event(struct qbman_swp *swp __rte_unused,
 	dqrr_index = qbman_get_dqrr_idx(dq);
 	*dpaa2_seqn(crypto_op->sym->m_src) = QBMAN_ENQUEUE_FLAG_DCA | dqrr_index;
 	DPAA2_PER_LCORE_DQRR_SIZE++;
-	DPAA2_PER_LCORE_DQRR_HELD |= 1 << dqrr_index;
+	DPAA2_PER_LCORE_DQRR_HELD |= UINT64_C(1) << dqrr_index;
 	DPAA2_PER_LCORE_DQRR_MBUF(dqrr_index) = crypto_op->sym->m_src;
 	ev->event_ptr = crypto_op;
 }
@@ -4090,6 +4091,7 @@ dpaa2_sec_process_ordered_event(struct qbman_swp *swp,
 	ev->event_ptr = crypto_op;
 }
 
+RTE_EXPORT_INTERNAL_SYMBOL(dpaa2_sec_eventq_attach)
 int
 dpaa2_sec_eventq_attach(const struct rte_cryptodev *dev,
 		int qp_id,
@@ -4170,6 +4172,7 @@ dpaa2_sec_eventq_attach(const struct rte_cryptodev *dev,
 	return 0;
 }
 
+RTE_EXPORT_INTERNAL_SYMBOL(dpaa2_sec_eventq_detach)
 int
 dpaa2_sec_eventq_detach(const struct rte_cryptodev *dev,
 			int qp_id)

@@ -62,7 +62,7 @@ struct rte_config {
 	 * DPDK instances
 	 */
 	struct rte_mem_config *mem_config;
-} __rte_packed;
+};
 
 /**
  * Get the global configuration structure.
@@ -124,7 +124,7 @@ int rte_eal_memseg_init(void);
  *   0 on success, negative on error
  */
 int rte_eal_memory_init(void)
-	__rte_shared_locks_required(rte_mcfg_mem_get_lock());
+	__rte_requires_shared_capability(rte_mcfg_mem_get_lock());
 
 /**
  * Configure timers
@@ -701,6 +701,12 @@ eal_get_internal_configuration(void);
  */
 rte_usage_hook_t
 eal_get_application_usage_hook(void);
+
+/**
+ * Initialise random subsystem.
+ */
+void
+eal_rand_init(void);
 
 /**
  * Instruct primary process that a secondary process wants to attach.

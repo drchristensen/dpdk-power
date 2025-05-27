@@ -62,7 +62,7 @@ queue_ops_rsa_sign_verify(void *sess)
 	struct rte_crypto_op *op, *result_op;
 	struct rte_crypto_asym_op *asym_op;
 	uint8_t output_buf[TEST_DATA_SIZE];
-	int status = TEST_SUCCESS;
+	int status;
 
 	/* Set up crypto op data structure */
 	op = rte_crypto_op_alloc(op_mpool, RTE_CRYPTO_OP_TYPE_ASYMMETRIC);
@@ -129,12 +129,35 @@ queue_ops_rsa_sign_verify(void *sess)
 		goto error_exit;
 	}
 
-	status = TEST_SUCCESS;
 	if (result_op->status != RTE_CRYPTO_OP_STATUS_SUCCESS) {
+		RTE_LOG(ERR, USER1, "Failed to process sign-verify op\n");
+		status = TEST_FAILED;
+		goto error_exit;
+	}
+
+	/* Negative test */
+	result_op->asym->rsa.sign.data[0] ^= 0xff;
+	if (rte_cryptodev_enqueue_burst(dev_id, 0, &result_op, 1) != 1) {
+		RTE_LOG(ERR, USER1, "Error sending packet for verify\n");
+		status = TEST_FAILED;
+		goto error_exit;
+	}
+
+	while (rte_cryptodev_dequeue_burst(dev_id, 0, &result_op, 1) == 0)
+		rte_pause();
+
+	if (result_op == NULL) {
+		RTE_LOG(ERR, USER1, "Failed to process verify op\n");
+		status = TEST_FAILED;
+		goto error_exit;
+	}
+
+	if (result_op->status != RTE_CRYPTO_OP_STATUS_ERROR) {
 		RTE_LOG(ERR, USER1, "Failed to process sign-verify op\n");
 		status = TEST_FAILED;
 	}
 
+	status = TEST_SUCCESS;
 error_exit:
 
 	rte_crypto_op_free(op);
@@ -234,10 +257,16 @@ test_rsa_sign_verify(void)
 {
 	struct crypto_testsuite_params_asym *ts_params = &testsuite_params;
 	struct rte_mempool *sess_mpool = ts_params->session_mpool;
+	struct rte_cryptodev_asym_capability_idx idx;
 	uint8_t dev_id = ts_params->valid_devs[0];
 	void *sess = NULL;
 	struct rte_cryptodev_info dev_info;
 	int ret, status = TEST_SUCCESS;
+
+	/* Check RSA capability */
+	idx.type = RTE_CRYPTO_ASYM_XFORM_RSA;
+	if (rte_cryptodev_asym_capability_get(dev_id, &idx) == NULL)
+		return -ENOTSUP;
 
 	/* Test case supports op with exponent key only,
 	 * Check in PMD feature flag for RSA exponent key type support.
@@ -274,10 +303,16 @@ test_rsa_enc_dec(void)
 {
 	struct crypto_testsuite_params_asym *ts_params = &testsuite_params;
 	struct rte_mempool *sess_mpool = ts_params->session_mpool;
+	struct rte_cryptodev_asym_capability_idx idx;
 	uint8_t dev_id = ts_params->valid_devs[0];
 	void *sess = NULL;
 	struct rte_cryptodev_info dev_info;
 	int ret, status = TEST_SUCCESS;
+
+	/* Check RSA capability */
+	idx.type = RTE_CRYPTO_ASYM_XFORM_RSA;
+	if (rte_cryptodev_asym_capability_get(dev_id, &idx) == NULL)
+		return -ENOTSUP;
 
 	/* Test case supports op with exponent key only,
 	 * Check in PMD feature flag for RSA exponent key type support.
@@ -314,10 +349,16 @@ test_rsa_sign_verify_crt(void)
 {
 	struct crypto_testsuite_params_asym *ts_params = &testsuite_params;
 	struct rte_mempool *sess_mpool = ts_params->session_mpool;
+	struct rte_cryptodev_asym_capability_idx idx;
 	uint8_t dev_id = ts_params->valid_devs[0];
 	void *sess = NULL;
 	struct rte_cryptodev_info dev_info;
 	int ret, status = TEST_SUCCESS;
+
+	/* Check RSA capability */
+	idx.type = RTE_CRYPTO_ASYM_XFORM_RSA;
+	if (rte_cryptodev_asym_capability_get(dev_id, &idx) == NULL)
+		return -ENOTSUP;
 
 	/* Test case supports op with quintuple format key only,
 	 * Check im PMD feature flag for RSA quintuple key type support.
@@ -354,10 +395,16 @@ test_rsa_enc_dec_crt(void)
 {
 	struct crypto_testsuite_params_asym *ts_params = &testsuite_params;
 	struct rte_mempool *sess_mpool = ts_params->session_mpool;
+	struct rte_cryptodev_asym_capability_idx idx;
 	uint8_t dev_id = ts_params->valid_devs[0];
 	void *sess = NULL;
 	struct rte_cryptodev_info dev_info;
 	int ret, status = TEST_SUCCESS;
+
+	/* Check RSA capability */
+	idx.type = RTE_CRYPTO_ASYM_XFORM_RSA;
+	if (rte_cryptodev_asym_capability_get(dev_id, &idx) == NULL)
+		return -ENOTSUP;
 
 	/* Test case supports op with quintuple format key only,
 	 * Check in PMD feature flag for RSA quintuple key type support.
@@ -3927,6 +3974,9 @@ static struct unit_test_suite cryptodev_octeontx_asym_testsuite  = {
 				test_rsa_enc_dec_crt),
 		TEST_CASE_ST(ut_setup_asym, ut_teardown_asym,
 				test_rsa_sign_verify_crt),
+		TEST_CASE_ST(ut_setup_asym, ut_teardown_asym, test_rsa_enc_dec),
+		TEST_CASE_ST(ut_setup_asym, ut_teardown_asym,
+				test_rsa_sign_verify),
 		TEST_CASE_ST(ut_setup_asym, ut_teardown_asym, test_mod_exp),
 		TEST_CASE_NAMED_WITH_DATA(
 			"Modex test for zero padding",
@@ -3969,6 +4019,19 @@ static struct unit_test_suite cryptodev_octeontx_asym_testsuite  = {
 		TEST_CASE_ST(ut_setup_asym, ut_teardown_asym,
 				test_ecpm_all_curve),
 		TEST_CASE_ST(ut_setup_asym, ut_teardown_asym, test_eddsa_sign_verify_all_curve),
+		TEST_CASES_END() /**< NULL terminate unit test array */
+	}
+};
+
+static struct unit_test_suite cryptodev_virtio_asym_testsuite  = {
+	.suite_name = "Crypto Device VIRTIO ASYM Unit Test Suite",
+	.setup = testsuite_setup,
+	.teardown = testsuite_teardown,
+	.unit_test_cases = {
+		TEST_CASE_ST(ut_setup_asym, ut_teardown_asym, test_capability),
+		TEST_CASE_ST(ut_setup_asym, ut_teardown_asym,
+				test_rsa_sign_verify_crt),
+		TEST_CASE_ST(ut_setup_asym, ut_teardown_asym, test_rsa_enc_dec_crt),
 		TEST_CASES_END() /**< NULL terminate unit test array */
 	}
 };
@@ -4041,8 +4104,38 @@ test_cryptodev_cn10k_asym(void)
 	return unit_test_suite_runner(&cryptodev_octeontx_asym_testsuite);
 }
 
+static int
+test_cryptodev_virtio_asym(void)
+{
+	gbl_driver_id = rte_cryptodev_driver_id_get(
+			RTE_STR(CRYPTODEV_NAME_VIRTIO_PMD));
+	if (gbl_driver_id == -1) {
+		RTE_LOG(ERR, USER1, "virtio PMD must be loaded.\n");
+		return TEST_SKIPPED;
+	}
+
+	/* Use test suite registered for crypto_virtio PMD */
+	return unit_test_suite_runner(&cryptodev_virtio_asym_testsuite);
+}
+
+static int
+test_cryptodev_virtio_user_asym(void)
+{
+	gbl_driver_id = rte_cryptodev_driver_id_get(
+			RTE_STR(CRYPTODEV_NAME_VIRTIO_USER_PMD));
+	if (gbl_driver_id == -1) {
+		RTE_LOG(ERR, USER1, "virtio user PMD must be loaded.\n");
+		return TEST_SKIPPED;
+	}
+
+	/* Use test suite registered for crypto_virtio_user PMD */
+	return unit_test_suite_runner(&cryptodev_virtio_asym_testsuite);
+}
+
 REGISTER_DRIVER_TEST(cryptodev_openssl_asym_autotest, test_cryptodev_openssl_asym);
 REGISTER_DRIVER_TEST(cryptodev_qat_asym_autotest, test_cryptodev_qat_asym);
 REGISTER_DRIVER_TEST(cryptodev_octeontx_asym_autotest, test_cryptodev_octeontx_asym);
 REGISTER_DRIVER_TEST(cryptodev_cn9k_asym_autotest, test_cryptodev_cn9k_asym);
 REGISTER_DRIVER_TEST(cryptodev_cn10k_asym_autotest, test_cryptodev_cn10k_asym);
+REGISTER_DRIVER_TEST(cryptodev_virtio_asym_autotest, test_cryptodev_virtio_asym);
+REGISTER_DRIVER_TEST(cryptodev_virtio_user_asym_autotest, test_cryptodev_virtio_user_asym);

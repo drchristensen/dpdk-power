@@ -1144,6 +1144,35 @@ chacha20_poly1305_testsuite_setup(void)
 }
 
 static int
+sm4_gcm_testsuite_setup(void)
+{
+	struct crypto_testsuite_params *ts_params = &testsuite_params;
+	uint8_t dev_id = ts_params->valid_devs[0];
+	struct rte_cryptodev_info dev_info;
+	const enum rte_crypto_aead_algorithm aeads[] = {
+		RTE_CRYPTO_AEAD_SM4_GCM
+	};
+
+	rte_cryptodev_info_get(dev_id, &dev_info);
+
+	if (!(dev_info.feature_flags & RTE_CRYPTODEV_FF_SYMMETRIC_CRYPTO) ||
+			((global_api_test_type == CRYPTODEV_RAW_API_TEST) &&
+			!(dev_info.feature_flags & RTE_CRYPTODEV_FF_SYM_RAW_DP))) {
+		RTE_LOG(INFO, USER1, "Feature flag requirements for "
+				"SM4 GCM testsuite not met\n");
+		return TEST_SKIPPED;
+	}
+
+	if (check_aead_capabilities_supported(aeads, RTE_DIM(aeads)) != 0) {
+		RTE_LOG(INFO, USER1, "Capability requirements for "
+				"SM4 GCM testsuite not met\n");
+		return TEST_SKIPPED;
+	}
+
+	return 0;
+}
+
+static int
 snow3g_testsuite_setup(void)
 {
 	struct crypto_testsuite_params *ts_params = &testsuite_params;
@@ -2886,7 +2915,7 @@ create_wireless_algo_hash_session(uint8_t dev_id,
 	enum rte_crypto_auth_operation op,
 	enum rte_crypto_auth_algorithm algo)
 {
-	uint8_t hash_key[key_len];
+	uint8_t *hash_key = alloca(key_len);
 
 	struct crypto_testsuite_params *ts_params = &testsuite_params;
 	struct crypto_unittest_params *ut_params = &unittest_params;
@@ -2922,7 +2951,7 @@ create_wireless_algo_cipher_session(uint8_t dev_id,
 			const uint8_t *key, const uint8_t key_len,
 			uint8_t iv_len)
 {
-	uint8_t cipher_key[key_len];
+	uint8_t *cipher_key = alloca(key_len);
 	struct crypto_testsuite_params *ts_params = &testsuite_params;
 	struct crypto_unittest_params *ut_params = &unittest_params;
 
@@ -3074,7 +3103,7 @@ create_wireless_cipher_auth_session(uint8_t dev_id,
 		const struct wireless_test_data *tdata)
 {
 	const uint8_t key_len = tdata->key.len;
-	uint8_t cipher_auth_key[key_len];
+	uint8_t *cipher_auth_key = alloca(key_len);
 
 	struct crypto_testsuite_params *ts_params = &testsuite_params;
 	struct crypto_unittest_params *ut_params = &unittest_params;
@@ -9078,7 +9107,7 @@ create_aead_session(uint8_t dev_id, enum rte_crypto_aead_algorithm algo,
 		const uint16_t aad_len, const uint8_t auth_len,
 		uint8_t iv_len)
 {
-	uint8_t aead_key[key_len];
+	uint8_t *aead_key = alloca(key_len);
 
 	struct crypto_testsuite_params *ts_params = &testsuite_params;
 	struct crypto_unittest_params *ut_params = &unittest_params;
@@ -12989,7 +13018,7 @@ test_cryptodev_error_recover_helper(uint8_t dev_id, const void *test_data, bool 
 	struct crypto_testsuite_params *ts_params = &testsuite_params;
 	struct crypto_unittest_params *ut_params = &unittest_params;
 	const struct blockcipher_test_data *tdata = test_data;
-	uint8_t cipher_key[tdata->cipher_key.len];
+	uint8_t *cipher_key = alloca(tdata->cipher_key.len);
 	struct rte_crypto_sym_op *sym_op = NULL;
 	struct rte_crypto_op *op = NULL;
 	char *dst;
@@ -13006,6 +13035,8 @@ test_cryptodev_error_recover_helper(uint8_t dev_id, const void *test_data, bool 
 
 	ut_params->sess = rte_cryptodev_sym_session_create(dev_id, &ut_params->cipher_xform,
 							   ts_params->session_mpool);
+	if (ut_params->sess == NULL && rte_errno == ENOTSUP)
+		return TEST_SKIPPED;
 	TEST_ASSERT_NOT_NULL(ut_params->sess, "Session creation failed");
 
 	ut_params->op = rte_crypto_op_alloc(ts_params->op_mpool, RTE_CRYPTO_OP_TYPE_SYMMETRIC);
@@ -13343,7 +13374,7 @@ static int
 test_AES_GCM_auth_encryption_fail_aad_corrupt(void)
 {
 	struct aead_test_data tdata;
-	uint8_t aad[gcm_test_case_7.aad.len];
+	uint8_t *aad = alloca(gcm_test_case_7.aad.len);
 	int res;
 
 	RTE_LOG(INFO, USER1, "This is a negative test, errors are expected\n");
@@ -13732,7 +13763,7 @@ static int
 test_AES_GCM_auth_decryption_fail_aad_corrupt(void)
 {
 	struct aead_test_data tdata;
-	uint8_t aad[gcm_test_case_7.aad.len];
+	uint8_t *aad = alloca(gcm_test_case_7.aad.len);
 	int res;
 
 	memcpy(&tdata, &gcm_test_case_7, sizeof(struct aead_test_data));
@@ -13767,8 +13798,9 @@ test_authenticated_encryption_oop(const struct aead_test_data *tdata)
 	struct crypto_testsuite_params *ts_params = &testsuite_params;
 	struct crypto_unittest_params *ut_params = &unittest_params;
 
+	uint32_t i;
 	int retval;
-	uint8_t *ciphertext, *auth_tag;
+	uint8_t *ciphertext, *auth_tag, *buffer_oop;
 	uint16_t plaintext_pad_len;
 	struct rte_cryptodev_info dev_info;
 
@@ -13844,6 +13876,18 @@ test_authenticated_encryption_oop(const struct aead_test_data *tdata)
 			ut_params->op->sym->cipher.data.offset);
 	auth_tag = ciphertext + plaintext_pad_len;
 
+	/* Check if the data within the offset range is not overwritten in the OOP */
+	buffer_oop = rte_pktmbuf_mtod(ut_params->obuf, uint8_t *);
+	for (i = 0; i < ut_params->op->sym->cipher.data.offset; i++) {
+		if (buffer_oop[i]) {
+			RTE_LOG(ERR, USER1,
+				"Incorrect value of the output buffer header\n");
+			debug_hexdump(stdout, "Incorrect value:", buffer_oop,
+				ut_params->op->sym->cipher.data.offset);
+			return TEST_FAILED;
+		}
+	}
+
 	debug_hexdump(stdout, "ciphertext:", ciphertext, tdata->ciphertext.len);
 	debug_hexdump(stdout, "auth tag:", auth_tag, tdata->auth_tag.len);
 
@@ -13876,8 +13920,9 @@ test_authenticated_decryption_oop(const struct aead_test_data *tdata)
 	struct crypto_testsuite_params *ts_params = &testsuite_params;
 	struct crypto_unittest_params *ut_params = &unittest_params;
 
+	uint32_t i;
 	int retval;
-	uint8_t *plaintext;
+	uint8_t *plaintext, *buffer_oop;
 	struct rte_cryptodev_info dev_info;
 
 	rte_cryptodev_info_get(ts_params->valid_devs[0], &dev_info);
@@ -13955,6 +14000,17 @@ test_authenticated_decryption_oop(const struct aead_test_data *tdata)
 
 	debug_hexdump(stdout, "plaintext:", plaintext, tdata->ciphertext.len);
 
+	/* Check if the data within the offset range is not overwritten in the OOP */
+	buffer_oop = rte_pktmbuf_mtod(ut_params->obuf, uint8_t *);
+	for (i = 0; i < ut_params->op->sym->cipher.data.offset; i++) {
+		if (buffer_oop[i]) {
+			RTE_LOG(ERR, USER1,
+				"Incorrect value of the output buffer header\n");
+			debug_hexdump(stdout, "Incorrect value:", buffer_oop,
+				ut_params->op->sym->cipher.data.offset);
+			return TEST_FAILED;
+		}
+	}
 	/* Validate obuf */
 	TEST_ASSERT_BUFFERS_ARE_EQUAL(
 			plaintext,
@@ -13984,7 +14040,7 @@ test_authenticated_encryption_sessionless(
 	int retval;
 	uint8_t *ciphertext, *auth_tag;
 	uint16_t plaintext_pad_len;
-	uint8_t key[tdata->key.len + 1];
+	uint8_t *key = alloca(tdata->key.len + 1);
 	struct rte_cryptodev_info dev_info;
 
 	rte_cryptodev_info_get(ts_params->valid_devs[0], &dev_info);
@@ -14086,7 +14142,7 @@ test_authenticated_decryption_sessionless(
 
 	int retval;
 	uint8_t *plaintext;
-	uint8_t key[tdata->key.len + 1];
+	uint8_t *key = alloca(tdata->key.len + 1);
 	struct rte_cryptodev_info dev_info;
 
 	rte_cryptodev_info_get(ts_params->valid_devs[0], &dev_info);
@@ -14707,15 +14763,19 @@ test_multi_session(void)
 		sessions[i] = rte_cryptodev_sym_session_create(
 			ts_params->valid_devs[0], &ut_params->auth_xform,
 				ts_params->session_mpool);
-		if (sessions[i] == NULL && rte_errno == ENOTSUP) {
+		if (sessions[i] == NULL) {
 			nb_sess = i;
-			ret = TEST_SKIPPED;
+			if (rte_errno == ENOTSUP)
+				ret = TEST_SKIPPED;
+			else {
+				ret = TEST_FAILED;
+				printf("TestCase %s() line %d failed : "
+						"Session creation failed at session number %u",
+						__func__, __LINE__, i);
+			}
 			break;
 		}
 
-		TEST_ASSERT_NOT_NULL(sessions[i],
-				"Session creation failed at session number %u",
-				i);
 
 		/* Attempt to send a request on each session */
 		ret = test_AES_CBC_HMAC_SHA512_decrypt_perform(
@@ -14843,15 +14903,19 @@ test_multi_session_random_usage(void)
 				ts_params->valid_devs[0],
 				&ut_paramz[i].ut_params.auth_xform,
 				ts_params->session_mpool);
-		if (sessions[i] == NULL && rte_errno == ENOTSUP) {
+		if (sessions[i] == NULL) {
 			nb_sess = i;
-			ret = TEST_SKIPPED;
+			if (rte_errno == ENOTSUP)
+				ret = TEST_SKIPPED;
+			else {
+				ret = TEST_FAILED;
+				printf("TestCase %s() line %d failed : "
+						"Session creation failed at session number %u",
+						__func__, __LINE__, i);
+			}
 			goto session_clear;
 		}
 
-		TEST_ASSERT_NOT_NULL(sessions[i],
-				"Session creation failed at session number %u",
-				i);
 	}
 
 	nb_sess = i;
@@ -14934,6 +14998,8 @@ test_null_invalid_operation(void)
 	ut_params->sess = rte_cryptodev_sym_session_create(
 			ts_params->valid_devs[0], &ut_params->cipher_xform,
 			ts_params->session_mpool);
+	if (ut_params->sess == NULL && rte_errno == ENOTSUP)
+		return TEST_SKIPPED;
 	TEST_ASSERT(ut_params->sess == NULL,
 			"Session creation succeeded unexpectedly");
 
@@ -14948,6 +15014,8 @@ test_null_invalid_operation(void)
 	ut_params->sess = rte_cryptodev_sym_session_create(
 			ts_params->valid_devs[0], &ut_params->auth_xform,
 			ts_params->session_mpool);
+	if (ut_params->sess == NULL && rte_errno == ENOTSUP)
+		return TEST_SKIPPED;
 	TEST_ASSERT(ut_params->sess == NULL,
 			"Session creation succeeded unexpectedly");
 
@@ -15095,6 +15163,8 @@ test_enqdeq_callback_null_cipher(void)
 	/* Create Crypto session */
 	ut_params->sess = rte_cryptodev_sym_session_create(ts_params->valid_devs[0],
 				&ut_params->auth_xform, ts_params->session_mpool);
+	if (ut_params->sess == NULL && rte_errno == ENOTSUP)
+		return TEST_SKIPPED;
 	TEST_ASSERT_NOT_NULL(ut_params->sess, "Session creation failed");
 
 	ut_params->op = rte_crypto_op_alloc(ts_params->op_mpool, RTE_CRYPTO_OP_TYPE_SYMMETRIC);
@@ -15479,7 +15549,7 @@ static int create_gmac_session(uint8_t dev_id,
 		const struct gmac_test_data *tdata,
 		enum rte_crypto_auth_operation auth_op)
 {
-	uint8_t auth_key[tdata->key.len];
+	uint8_t *auth_key = alloca(tdata->key.len);
 
 	struct crypto_testsuite_params *ts_params = &testsuite_params;
 	struct crypto_unittest_params *ut_params = &unittest_params;
@@ -16136,7 +16206,7 @@ create_auth_session(struct crypto_unittest_params *ut_params,
 		enum rte_crypto_auth_operation auth_op)
 {
 	struct crypto_testsuite_params *ts_params = &testsuite_params;
-	uint8_t auth_key[reference->auth_key.len + 1];
+	uint8_t *auth_key = alloca(reference->auth_key.len + 1);
 
 	memcpy(auth_key, reference->auth_key.data, reference->auth_key.len);
 
@@ -16155,6 +16225,7 @@ create_auth_session(struct crypto_unittest_params *ut_params,
 				ts_params->session_mpool);
 	if (ut_params->sess == NULL && rte_errno == ENOTSUP)
 		return TEST_SKIPPED;
+	TEST_ASSERT_NOT_NULL(ut_params->sess, "Session creation failed");
 
 	return 0;
 }
@@ -16167,8 +16238,8 @@ create_auth_cipher_session(struct crypto_unittest_params *ut_params,
 		enum rte_crypto_cipher_operation cipher_op)
 {
 	struct crypto_testsuite_params *ts_params = &testsuite_params;
-	uint8_t cipher_key[reference->cipher_key.len + 1];
-	uint8_t auth_key[reference->auth_key.len + 1];
+	uint8_t *cipher_key = alloca(reference->cipher_key.len + 1);
+	uint8_t *auth_key = alloca(reference->auth_key.len + 1);
 
 	memcpy(cipher_key, reference->cipher_key.data,
 			reference->cipher_key.len);
@@ -16205,6 +16276,7 @@ create_auth_cipher_session(struct crypto_unittest_params *ut_params,
 				ts_params->session_mpool);
 	if (ut_params->sess == NULL && rte_errno == ENOTSUP)
 		return TEST_SKIPPED;
+	TEST_ASSERT_NOT_NULL(ut_params->sess, "Session creation failed");
 
 	return 0;
 }
@@ -16668,8 +16740,8 @@ test_authenticated_encrypt_with_esn(
 
 	uint8_t *authciphertext, *plaintext, *auth_tag;
 	uint16_t plaintext_pad_len;
-	uint8_t cipher_key[reference->cipher_key.len + 1];
-	uint8_t auth_key[reference->auth_key.len + 1];
+	uint8_t *cipher_key = alloca(reference->cipher_key.len + 1);
+	uint8_t *auth_key = alloca(reference->auth_key.len + 1);
 	struct rte_cryptodev_info dev_info;
 
 	rte_cryptodev_info_get(ts_params->valid_devs[0], &dev_info);
@@ -16800,8 +16872,8 @@ test_authenticated_decrypt_with_esn(
 	int retval;
 
 	uint8_t *ciphertext;
-	uint8_t cipher_key[reference->cipher_key.len + 1];
-	uint8_t auth_key[reference->auth_key.len + 1];
+	uint8_t *cipher_key = alloca(reference->cipher_key.len + 1);
+	uint8_t *auth_key = alloca(reference->auth_key.len + 1);
 	struct rte_cryptodev_info dev_info;
 
 	rte_cryptodev_info_get(ts_params->valid_devs[0], &dev_info);
@@ -17488,6 +17560,96 @@ test_chacha20_poly1305_encrypt_SGL_out_of_place(void)
 	return test_authenticated_encryption_SGL(
 		&chacha20_poly1305_case_2, OUT_OF_PLACE, 32,
 		chacha20_poly1305_case_2.plaintext.len);
+}
+
+static int
+test_SM4_GCM_case_1(void)
+{
+	return test_authenticated_encryption(&sm4_gcm_case_1);
+}
+
+static int
+test_SM4_GCM_case_2(void)
+{
+	return test_authenticated_encryption(&sm4_gcm_case_2);
+}
+
+static int
+test_SM4_GCM_case_3(void)
+{
+	return test_authenticated_encryption(&sm4_gcm_case_3);
+}
+
+static int
+test_SM4_GCM_case_4(void)
+{
+	return test_authenticated_encryption(&sm4_gcm_case_4);
+}
+
+static int
+test_SM4_GCM_case_5(void)
+{
+	return test_authenticated_encryption(&sm4_gcm_case_5);
+}
+
+static int
+test_SM4_GCM_case_6(void)
+{
+	return test_authenticated_encryption(&sm4_gcm_case_6);
+}
+
+static int
+test_SM4_GCM_case_7(void)
+{
+	return test_authenticated_encryption(&sm4_gcm_case_7);
+}
+
+static int
+test_SM4_GCM_case_8(void)
+{
+	return test_authenticated_encryption(&sm4_gcm_case_8);
+}
+
+static int
+test_SM4_GCM_case_9(void)
+{
+	return test_authenticated_encryption(&sm4_gcm_case_9);
+}
+
+static int
+test_SM4_GCM_case_10(void)
+{
+	return test_authenticated_encryption(&sm4_gcm_case_10);
+}
+
+static int
+test_SM4_GCM_case_11(void)
+{
+	return test_authenticated_encryption(&sm4_gcm_case_11);
+}
+
+static int
+test_SM4_GCM_case_12(void)
+{
+	return test_authenticated_encryption(&sm4_gcm_case_12);
+}
+
+static int
+test_SM4_GCM_case_13(void)
+{
+	return test_authenticated_encryption(&sm4_gcm_case_13);
+}
+
+static int
+test_SM4_GCM_case_14(void)
+{
+	return test_authenticated_encryption(&sm4_gcm_case_14);
+}
+
+static int
+test_SM4_GCM_case_15(void)
+{
+	return test_authenticated_encryption(&sm4_gcm_case_15);
 }
 
 #ifdef RTE_CRYPTO_SCHEDULER
@@ -19598,6 +19760,44 @@ static struct unit_test_suite cryptodev_mixed_cipher_hash_testsuite  = {
 	}
 };
 
+static struct unit_test_suite cryptodev_sm4_gcm_testsuite  = {
+	.suite_name = "SM4 GCM Test Suite",
+	.setup = sm4_gcm_testsuite_setup,
+	.unit_test_cases = {
+		TEST_CASE_ST(ut_setup, ut_teardown,
+			test_SM4_GCM_case_1),
+		TEST_CASE_ST(ut_setup, ut_teardown,
+			test_SM4_GCM_case_2),
+		TEST_CASE_ST(ut_setup, ut_teardown,
+			test_SM4_GCM_case_3),
+		TEST_CASE_ST(ut_setup, ut_teardown,
+			test_SM4_GCM_case_4),
+		TEST_CASE_ST(ut_setup, ut_teardown,
+			test_SM4_GCM_case_5),
+		TEST_CASE_ST(ut_setup, ut_teardown,
+			test_SM4_GCM_case_6),
+		TEST_CASE_ST(ut_setup, ut_teardown,
+			test_SM4_GCM_case_7),
+		TEST_CASE_ST(ut_setup, ut_teardown,
+			test_SM4_GCM_case_8),
+		TEST_CASE_ST(ut_setup, ut_teardown,
+			test_SM4_GCM_case_9),
+		TEST_CASE_ST(ut_setup, ut_teardown,
+			test_SM4_GCM_case_10),
+		TEST_CASE_ST(ut_setup, ut_teardown,
+			test_SM4_GCM_case_11),
+		TEST_CASE_ST(ut_setup, ut_teardown,
+			test_SM4_GCM_case_12),
+		TEST_CASE_ST(ut_setup, ut_teardown,
+			test_SM4_GCM_case_13),
+		TEST_CASE_ST(ut_setup, ut_teardown,
+			test_SM4_GCM_case_14),
+		TEST_CASE_ST(ut_setup, ut_teardown,
+			test_SM4_GCM_case_15),
+		TEST_CASES_END()
+	}
+};
+
 static int
 run_cryptodev_testsuite(const char *pmd_name)
 {
@@ -19630,6 +19830,7 @@ run_cryptodev_testsuite(const char *pmd_name)
 		&cryptodev_mixed_cipher_hash_testsuite,
 		&cryptodev_negative_hmac_sha1_testsuite,
 		&cryptodev_gen_testsuite,
+		&cryptodev_sm4_gcm_testsuite,
 #ifdef RTE_LIB_SECURITY
 		&ipsec_proto_testsuite,
 		&pdcp_proto_testsuite,
@@ -19717,6 +19918,12 @@ static int
 test_cryptodev_virtio(void)
 {
 	return run_cryptodev_testsuite(RTE_STR(CRYPTODEV_NAME_VIRTIO_PMD));
+}
+
+static int
+test_cryptodev_virtio_user(void)
+{
+	return run_cryptodev_testsuite(RTE_STR(CRYPTODEV_NAME_VIRTIO_USER_PMD));
 }
 
 static int
@@ -20056,6 +20263,7 @@ REGISTER_DRIVER_TEST(cryptodev_dpaa_sec_autotest, test_cryptodev_dpaa_sec);
 REGISTER_DRIVER_TEST(cryptodev_ccp_autotest, test_cryptodev_ccp);
 REGISTER_DRIVER_TEST(cryptodev_uadk_autotest, test_cryptodev_uadk);
 REGISTER_DRIVER_TEST(cryptodev_virtio_autotest, test_cryptodev_virtio);
+REGISTER_DRIVER_TEST(cryptodev_virtio_user_autotest, test_cryptodev_virtio_user);
 REGISTER_DRIVER_TEST(cryptodev_octeontx_autotest, test_cryptodev_octeontx);
 REGISTER_DRIVER_TEST(cryptodev_caam_jr_autotest, test_cryptodev_caam_jr);
 REGISTER_DRIVER_TEST(cryptodev_nitrox_autotest, test_cryptodev_nitrox);

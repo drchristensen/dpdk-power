@@ -10,6 +10,8 @@ This intermediate module implements the common parts of mostly POSIX compliant d
 """
 
 import json
+from collections.abc import Iterable
+from functools import cached_property
 from typing import TypedDict
 
 from typing_extensions import NotRequired
@@ -67,15 +69,12 @@ class LinuxSession(PosixSession):
     def _get_privileged_command(command: str) -> str:
         return f"sudo -- sh -c '{command}'"
 
-    def get_remote_cpus(self, use_first_core: bool) -> list[LogicalCore]:
+    def get_remote_cpus(self) -> list[LogicalCore]:
         """Overrides :meth:`~.os_session.OSSession.get_remote_cpus`."""
         cpu_info = self.send_command("lscpu -p=CPU,CORE,SOCKET,NODE|grep -v \\#").stdout
         lcores = []
         for cpu_line in cpu_info.splitlines():
             lcore, core, socket, node = map(int, cpu_line.split(","))
-            if core == 0 and socket == 0 and not use_first_core:
-                self._logger.info("Not using the first physical core.")
-                continue
             lcores.append(LogicalCore(lcore, core, socket, node))
         return lcores
 
@@ -84,14 +83,18 @@ class LinuxSession(PosixSession):
         return dpdk_prefix
 
     def setup_hugepages(self, number_of: int, hugepage_size: int, force_first_numa: bool) -> None:
-        """Overrides :meth:`~.os_session.OSSession.setup_hugepages`."""
+        """Overrides :meth:`~.os_session.OSSession.setup_hugepages`.
+
+        Raises:
+            ConfigurationError: If the given `hugepage_size` is not supported by the OS.
+        """
         self._logger.info("Getting Hugepage information.")
-        hugepages_total = self._get_hugepages_total(hugepage_size)
         if (
             f"hugepages-{hugepage_size}kB"
             not in self.send_command("ls /sys/kernel/mm/hugepages").stdout
         ):
             raise ConfigurationError("hugepage size not supported by operating system")
+        hugepages_total = self._get_hugepages_total(hugepage_size)
         self._numa_nodes = self._get_numa_nodes()
 
         if force_first_numa or hugepages_total < number_of:
@@ -148,24 +151,40 @@ class LinuxSession(PosixSession):
 
         self.send_command(f"echo {number_of} | tee {hugepage_config_path}", privileged=True)
 
-    def update_ports(self, ports: list[Port]) -> None:
-        """Overrides :meth:`~.os_session.OSSession.update_ports`."""
-        self._logger.debug("Gathering port info.")
-        for port in ports:
-            assert port.node == self.name, "Attempted to gather port info on the wrong node"
+    def get_port_info(self, pci_address: str) -> tuple[str, str]:
+        """Overrides :meth:`~.os_session.OSSession.get_port_info`.
 
-        port_info_list = self._get_lshw_info()
-        for port in ports:
-            for port_info in port_info_list:
-                if f"pci@{port.pci}" == port_info.get("businfo"):
-                    self._update_port_attr(port, port_info.get("logicalname"), "logical_name")
-                    self._update_port_attr(port, port_info.get("serial"), "mac_address")
-                    port_info_list.remove(port_info)
-                    break
-            else:
-                self._logger.warning(f"No port at pci address {port.pci} found.")
+        Raises:
+            ConfigurationError: If the port could not be found.
+        """
+        self._logger.debug(f"Gathering info for port {pci_address}.")
 
-    def _get_lshw_info(self) -> list[LshwOutput]:
+        bus_info = f"pci@{pci_address}"
+        port = next(port for port in self._lshw_net_info if port.get("businfo") == bus_info)
+        if port is None:
+            raise ConfigurationError(f"Port {pci_address} could not be found on the node.")
+
+        logical_name = port.get("logicalname") or ""
+        if not logical_name:
+            self._logger.warning(f"Port {pci_address} does not have a valid logical name.")
+            # raise ConfigurationError(f"Port {pci_address} does not have a valid logical name.")
+
+        mac_address = port.get("serial") or ""
+        if not mac_address:
+            self._logger.warning(f"Port {pci_address} does not have a valid mac address.")
+            # raise ConfigurationError(f"Port {pci_address} does not have a valid mac address.")
+
+        return logical_name, mac_address
+
+    def bring_up_link(self, ports: Iterable[Port]) -> None:
+        """Overrides :meth:`~.os_session.OSSession.bring_up_link`."""
+        for port in ports:
+            self.send_command(
+                f"ip link set dev {port.logical_name} up", privileged=True, verify=True
+            )
+
+    @cached_property
+    def _lshw_net_info(self) -> list[LshwOutput]:
         output = self.send_command("lshw -quiet -json -C network", verify=True)
         return json.loads(output.stdout)
 

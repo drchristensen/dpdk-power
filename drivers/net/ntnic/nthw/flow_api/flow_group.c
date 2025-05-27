@@ -14,6 +14,7 @@
 struct group_lookup_entry_s {
 	uint64_t ref_counter;
 	uint32_t *reverse_lookup;
+	uint32_t group_orig;
 };
 
 struct group_handle_s {
@@ -24,7 +25,7 @@ struct group_handle_s {
 	struct group_lookup_entry_s *lookup_entries;
 };
 
-int flow_group_handle_create(void **handle, uint32_t group_count)
+int nthw_flow_group_handle_create(void **handle, uint32_t group_count)
 {
 	struct group_handle_s *group_handle;
 
@@ -39,7 +40,7 @@ int flow_group_handle_create(void **handle, uint32_t group_count)
 	return *handle != NULL ? 0 : -1;
 }
 
-int flow_group_handle_destroy(void **handle)
+int nthw_flow_group_handle_destroy(void **handle)
 {
 	if (*handle) {
 		struct group_handle_s *group_handle = (struct group_handle_s *)*handle;
@@ -54,8 +55,8 @@ int flow_group_handle_destroy(void **handle)
 	return 0;
 }
 
-int flow_group_translate_get(void *handle, uint8_t owner_id, uint8_t port_id, uint32_t group_in,
-	uint32_t *group_out)
+int nthw_flow_group_translate_get(void *handle, uint8_t owner_id, uint8_t port_id,
+	uint32_t group_in, uint32_t *group_out)
 {
 	struct group_handle_s *group_handle = (struct group_handle_s *)handle;
 	uint32_t *table_ptr;
@@ -83,6 +84,7 @@ int flow_group_translate_get(void *handle, uint8_t owner_id, uint8_t port_id, ui
 		if (lookup < group_handle->group_count) {
 			group_handle->lookup_entries[lookup].reverse_lookup = table_ptr;
 			group_handle->lookup_entries[lookup].ref_counter += 1;
+			group_handle->lookup_entries[lookup].group_orig = group_in;
 
 			*table_ptr = lookup;
 
@@ -96,4 +98,28 @@ int flow_group_translate_get(void *handle, uint8_t owner_id, uint8_t port_id, ui
 
 	*group_out = lookup;
 	return 0;
+}
+
+int nthw_flow_group_translate_get_orig_group(void *handle, uint32_t translated_group,
+	uint32_t *group_orig)
+{
+	struct group_handle_s *group_handle = (struct group_handle_s *)handle;
+	struct group_lookup_entry_s *lookup;
+
+	if (group_handle == NULL || translated_group >= group_handle->group_count)
+		return -1;
+
+	/* Don't translate group 0 */
+	if (translated_group == 0) {
+		*group_orig = 0;
+		return 0;
+	}
+
+	lookup = &group_handle->lookup_entries[translated_group];
+
+	if (lookup->reverse_lookup && lookup->ref_counter > 0) {
+		*group_orig = lookup->group_orig;
+		return 0;
+	}
+	return -1;
 }

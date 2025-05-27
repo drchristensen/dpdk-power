@@ -202,6 +202,16 @@ int nthw_hif_init(nthw_hif_t *p, nthw_fpga_t *p_fpga, int n_instance)
 	return 0;
 }
 
+int nthw_hif_force_soft_reset(nthw_hif_t *p)
+{
+	if (p->mp_fld_ctrl_fsr) {
+		nthw_field_update_register(p->mp_fld_ctrl_fsr);
+		nthw_field_set_flush(p->mp_fld_ctrl_fsr);
+	}
+
+	return 0;
+}
+
 int nthw_hif_trigger_sample_time(nthw_hif_t *p)
 {
 	nthw_field_set_val_flush32(p->mp_fld_sample_time, 0xfee1dead);
@@ -290,11 +300,93 @@ int nthw_hif_stat_req_disable(nthw_hif_t *p)
 
 int nthw_hif_end_point_counters_sample(nthw_hif_t *p, struct nthw_hif_end_point_counters *epc)
 {
-	assert(epc);
+	RTE_ASSERT(epc);
 
 	/* Get stat rate and maintain rx/tx min/max */
 	nthw_hif_get_stat_rate(p, &epc->cur_tx, &epc->cur_rx, &epc->n_ref_clk_cnt,
 		&epc->n_tags_in_use, &epc->n_rd_err, &epc->n_wr_err);
+
+	return 0;
+}
+
+int nthw_hif_read_test_reg(nthw_hif_t *p, uint8_t test_reg, uint32_t *p_value)
+{
+	uint32_t data;
+
+	switch (test_reg) {
+	case 0:
+		data = nthw_field_get_updated(p->mp_fld_pci_test0);
+		break;
+
+	case 1:
+		data = nthw_field_get_updated(p->mp_fld_pci_test1);
+		break;
+
+	case 2:
+		if (p->mp_fld_pci_test2)
+			data = nthw_field_get_updated(p->mp_fld_pci_test2);
+
+		else
+			return -1;
+
+		break;
+
+	case 3:
+		if (p->mp_fld_pci_test3)
+			data = nthw_field_get_updated(p->mp_fld_pci_test3);
+
+		else
+			return -1;
+
+		break;
+
+	default:
+		RTE_ASSERT(false);
+		return -1;
+	}
+
+	if (p_value)
+		*p_value = data;
+
+	else
+		return -1;
+
+	return 0;
+}
+
+int nthw_hif_write_test_reg(nthw_hif_t *p, uint8_t test_reg, uint32_t value)
+{
+	switch (test_reg) {
+	case 0:
+		nthw_field_set_val_flush32(p->mp_fld_pci_test0, value);
+		break;
+
+	case 1:
+		nthw_field_set_val_flush32(p->mp_fld_pci_test1, value);
+		break;
+
+	case 2:
+		if (p->mp_fld_pci_test2)
+			nthw_field_set_val_flush32(p->mp_fld_pci_test2, value);
+
+		else
+			return -1;
+
+		break;
+
+	case 3:
+		if (p->mp_fld_pci_test3)
+			nthw_field_set_val_flush32(p->mp_fld_pci_test3, value);
+
+		else
+			return -1;
+
+		break;
+
+	default:
+		RTE_ASSERT(false);
+		return -1;
+	}
 
 	return 0;
 }

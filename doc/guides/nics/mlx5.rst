@@ -17,9 +17,10 @@ NVIDIA MLX5 Ethernet Driver
 The mlx5 Ethernet poll mode driver library (**librte_net_mlx5**) provides support
 for **NVIDIA ConnectX-4**, **NVIDIA ConnectX-4 Lx** , **NVIDIA ConnectX-5**,
 **NVIDIA ConnectX-6**, **NVIDIA ConnectX-6 Dx**, **NVIDIA ConnectX-6 Lx**,
-**NVIDIA ConnectX-7**, **NVIDIA BlueField**, **NVIDIA BlueField-2** and
-**NVIDIA BlueField-3** families of 10/25/40/50/100/200/400 Gb/s adapters
-as well as their virtual functions (VF) in SR-IOV context.
+**NVIDIA ConnectX-7**, **NVIDIA ConnectX-8**, **NVIDIA BlueField**,
+**NVIDIA BlueField-2** and **NVIDIA BlueField-3** families of
+10/25/40/50/100/200/400 Gb/s adapters as well as their virtual
+functions (VF) in SR-IOV context.
 
 Supported NICs
 --------------
@@ -34,6 +35,7 @@ The following NVIDIA device families are supported by the same mlx5 driver:
   - ConnectX-6 Dx
   - ConnectX-6 Lx
   - ConnectX-7
+  - ConnectX-8
   - BlueField
   - BlueField-2
   - BlueField-3
@@ -67,6 +69,7 @@ Below are detailed device names:
 * NVIDIA\ |reg| ConnectX\ |reg|-6 Dx EN 200G MCX623105AN-VDAT (1x200G)
 * NVIDIA\ |reg| ConnectX\ |reg|-6 Lx EN 25G MCX631102AN-ADAT (2x25G)
 * NVIDIA\ |reg| ConnectX\ |reg|-7 200G CX713106AE-HEA_QP1_Ax (2x200G)
+* NVIDIA\ |reg| ConnectX\ |reg|-8 400G C900-9X81Q-00CN-STQ_Ax (2x400G)
 * NVIDIA\ |reg| BlueField\ |reg|-2 25G MBF2H332A-AEEOT_A1 (2x25Gg
 * NVIDIA\ |reg| BlueField\ |reg|-3 200GbE 900-9D3B6-00CV-AA0 (2x200)
 * NVIDIA\ |reg| BlueField\ |reg|-3 200GbE 900-9D3B6-00SV-AA0 (2x200)
@@ -229,6 +232,12 @@ Limitations
   - When configuring host shaper with ``RTE_PMD_MLX5_HOST_SHAPER_FLAG_AVAIL_THRESH_TRIGGERED`` flag,
     only rates 0 and 100Mbps are supported.
 
+- Unified FDB:
+
+  - Jump FDB Rx is valid only when unified FDB is enabled,
+    as it is required to have FDB Rx/Tx.
+  - In unified FDB mode, the tag and RSS actions are only allowed in FDB Rx domain.
+
 - HW steering:
 
   - WQE based high scaling and safer flow insertion/destruction.
@@ -278,6 +287,23 @@ Limitations
     c. Any encapsulation action, including the combination of RAW_ENCAP and RAW_DECAP actions
        which results in L3 encap.
     d. Only in transfer (switchdev) mode.
+
+  - MPLS:
+
+    - RTE_FLOW_ITEM_TYPE_MPLS matching is only supported with ``FLEX_PARSER_PROFILE_ENABLE = 1``.
+    - RTE_FLOW_ITEM_TYPE_MPLS matching is not supported on group 0.
+
+  - When using synchronous flow API,
+    the following limitations and considerations apply:
+
+    - Geneve options is supported when ``FLEX_PARSER_PROFILE_ENABLE`` = 0 (default).
+
+  - Template table with flags ``RTE_FLOW_TABLE_SPECIALIZE_TRANSFER_WIRE_ORIG``
+    or ``RTE_FLOW_TABLE_SPECIALIZE_TRANSFER_VPORT_ORIG``
+    cannot be created on group 0 (group 1 in practice),
+    since group 0 is created on startup in unified FDB domain.
+
+  - ``RTE_FLOW_ACTION_TYPE_MARK`` is not supported in FDB Tx domain.
 
 - When using Verbs flow engine (``dv_flow_en`` = 0), flow pattern without any
   specific VLAN will match for VLAN packets as well:
@@ -339,6 +365,10 @@ Limitations
   - For ConnectX-5, the UDP destination port must be the standard one (4789).
   - Default UDP destination is 4789 if not explicitly specified.
   - Group zero's behavior may differ which depends on FW.
+  - User should set different flags when matching on VXLAN-GPE/GBP:
+
+    - for VXLAN-GPE - P flag
+    - for VXLAN-GBP - G flag
 
 - Matching on VXLAN-GPE header fields:
 
@@ -347,8 +377,6 @@ Limitations
      - ``protocol`` should be explicitly specified in HWS (``dv_flow_en`` = 2).
 
 - L3 VXLAN and VXLAN-GPE tunnels cannot be supported together with MPLSoGRE and MPLSoUDP.
-
-- MPLSoGRE is not supported in HW steering (``dv_flow_en`` = 2).
 
 - MPLSoUDP with multiple MPLS headers is only supported in HW steering (``dv_flow_en`` = 2).
 
@@ -497,9 +525,18 @@ Limitations
   cannot be used in conjunction with MPRQ
   since packets may be already attached to PMD-managed external buffers.
 
-- If Multi-Packet Rx queue is configured (``mprq_en``) and Rx CQE compression is
-  enabled (``rxq_cqe_comp_en``) at the same time, RSS hash result is not fully
-  supported. Some Rx packets may not have RTE_MBUF_F_RX_RSS_HASH.
+- RSS hash result limitations:
+
+  Full support is only available when hash RSS format is selected
+  as the current CQE compression format on the Rx side (``rxq_cqe_comp_en``).
+
+  Using any other format may result in some Rx packets
+  not having the ``RTE_MBUF_F_RX_RSS_HASH`` flag set.
+
+  When multi-packet Rx queue is enabled (``mprq_en``)
+  and Rx CQE compression is enabled (``rxq_cqe_comp_en``) simultaneously,
+  RSS hash result is not fully supported.
+  This is because the checksum format is selected by default in this configuration.
 
 - IPv6 Multicast messages are not supported on VM, while promiscuous mode
   and allmulticast mode are both set to off.
@@ -624,8 +661,7 @@ Limitations
 - CRC:
 
   - ``RTE_ETH_RX_OFFLOAD_KEEP_CRC`` cannot be supported with decapsulation
-    for some NICs (such as ConnectX-6 Dx, ConnectX-6 Lx, ConnectX-7, BlueField-2,
-    and BlueField-3).
+    for ConnectX-6 Dx, BlueField-2, and above.
     The capability bit ``scatter_fcs_w_decap_disable`` shows NIC support.
 
 - TX mbuf fast free:
@@ -1061,6 +1097,20 @@ Runtime Configuration
 Please refer to :ref:`mlx5 common options <mlx5_common_driver_options>`
 for an additional list of options shared with other mlx5 drivers.
 
+- ``probe_opt_en`` parameter [int]
+
+  A non-zero value optimizes the probing process, especially for large scale.
+  The PMD will hold the IB device information internally and reuse it.
+
+  By default, the PMD will set this value to 0.
+
+  .. note::
+
+    There is a race condition in probing port if ``probe_opt_en`` is enabled.
+    Port probing may fail with a wrong ifindex in cache
+    while the interrupt thread is updating the cache.
+    Please try again if port probing failed.
+
 - ``rxq_cqe_comp_en`` parameter [int]
 
   A nonzero value enables the compression of CQE on RX side. This feature
@@ -1087,9 +1137,9 @@ for an additional list of options shared with other mlx5 drivers.
   Supported on:
 
   - x86_64 with ConnectX-4, ConnectX-4 Lx, ConnectX-5, ConnectX-6, ConnectX-6 Dx,
-    ConnectX-6 Lx, ConnectX-7, BlueField, BlueField-2, and BlueField-3.
+    ConnectX-6 Lx, ConnectX-7, ConnectX-8, BlueField, BlueField-2, and BlueField-3.
   - POWER9 and ARMv8 with ConnectX-4 Lx, ConnectX-5, ConnectX-6, ConnectX-6 Dx,
-    ConnectX-6 Lx, ConnectX-7 BlueField, BlueField-2, and BlueField-3.
+    ConnectX-6 Lx, ConnectX-7, ConnectX-8, BlueField, BlueField-2, and BlueField-3.
 
 - ``rxq_pkt_pad_en`` parameter [int]
 
@@ -1102,9 +1152,9 @@ for an additional list of options shared with other mlx5 drivers.
   Supported on:
 
   - x86_64 with ConnectX-4, ConnectX-4 Lx, ConnectX-5, ConnectX-6, ConnectX-6 Dx,
-    ConnectX-6 Lx, ConnectX-7, BlueField, BlueField-2, and BlueField-3.
+    ConnectX-6 Lx, ConnectX-7, ConnectX-8, BlueField, BlueField-2, and BlueField-3.
   - POWER8 and ARMv8 with ConnectX-4 Lx, ConnectX-5, ConnectX-6, ConnectX-6 Dx,
-    ConnectX-6 Lx, ConnectX-7, BlueField, BlueField-2, and BlueField-3.
+    ConnectX-6 Lx, ConnectX-7, ConnectX-8, BlueField, BlueField-2, and BlueField-3.
 
 - ``delay_drop`` parameter [int]
 
@@ -1341,9 +1391,8 @@ for an additional list of options shared with other mlx5 drivers.
 
 - ``txq_mpw_en`` parameter [int]
 
-  A nonzero value enables Enhanced Multi-Packet Write (eMPW) for ConnectX-5,
-  ConnectX-6, ConnectX-6 Dx, ConnectX-6 Lx, ConnectX-7, BlueField, BlueField-2
-  BlueField-3. eMPW allows the Tx burst function to pack up multiple packets
+  A nonzero value enables Enhanced Multi-Packet Write (eMPW) for NICs starting
+  ConnectX-5, and BlueField. eMPW allows the Tx burst function to pack up multiple packets
   in a single descriptor session in order to save PCI bandwidth
   and improve performance at the cost of a slightly higher CPU usage.
   When ``txq_inline_mpw`` is set along with ``txq_mpw_en``,
@@ -1387,8 +1436,7 @@ for an additional list of options shared with other mlx5 drivers.
 
 - ``tx_vec_en`` parameter [int]
 
-  A nonzero value enables Tx vector on ConnectX-5, ConnectX-6, ConnectX-6 Dx,
-  ConnectX-6 Lx, ConnectX-7, BlueField, BlueField-2, and BlueField-3 NICs
+  A nonzero value enables Tx vector with ConnectX-5 NICs and above.
   if the number of global Tx queues on the port is less than ``txqs_max_vec``.
   The parameter is deprecated and ignored.
 

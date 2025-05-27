@@ -83,6 +83,8 @@ are listed in the Tested Platforms section of the Release Notes for each release
    +-----------+---------------+-----------------+-----------+--------------+-----------+
    |    24.11  |     1.15.4    |      1.3.36     |  1.3.46   |    1.3.14    |    4.6    |
    +-----------+---------------+-----------------+-----------+--------------+-----------+
+   |    25.03  |     1.16.3    |      1.3.39     |  1.3.53   |    1.3.14    |    4.7    |
+   +-----------+---------------+-----------------+-----------+--------------+-----------+
 
 Dynamic Device Personalization (DDP) package loading
 ----------------------------------------------------
@@ -291,7 +293,7 @@ Runtime Configuration
 
     -a 0000:88:00.0,hw_debug_mask=0x80 --log-level=pmd.net.ice.driver:8
 
-  These ICE_DBG_XXX are defined in ``drivers/net/ice/base/ice_type.h``.
+  These ICE_DBG_XXX are defined in ``drivers/net/intel/ice/base/ice_type.h``.
 
 - ``1PPS out support``
 

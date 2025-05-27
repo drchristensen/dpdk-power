@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # Copyright(c) 2024 PANTHEON.tech s.r.o.
+# Copyright(c) 2025 Arm Limited
 
 """Testbed topology representation.
 
@@ -7,22 +8,19 @@ A topology of a testbed captures what links are available between the testbed's 
 The link information then implies what type of topology is available.
 """
 
+from collections.abc import Iterator
 from dataclasses import dataclass
-from os import environ
-from typing import TYPE_CHECKING, Iterable
+from enum import Enum
+from typing import NamedTuple
 
-if TYPE_CHECKING or environ.get("DTS_DOC_BUILD"):
-    from enum import Enum as NoAliasEnum
-else:
-    from aenum import NoAliasEnum
+from typing_extensions import Self
 
-from framework.config import PortConfig
 from framework.exception import ConfigurationError
 
 from .port import Port
 
 
-class TopologyType(int, NoAliasEnum):
+class TopologyType(int, Enum):
     """Supported topology types."""
 
     #: A topology with no Traffic Generator.
@@ -31,107 +29,90 @@ class TopologyType(int, NoAliasEnum):
     one_link = 1
     #: A topology with two physical links between the Sut node and the TG node.
     two_links = 2
-    #: The default topology required by test cases if not specified otherwise.
-    default = 2
 
     @classmethod
-    def get_from_value(cls, value: int) -> "TopologyType":
-        r"""Get the corresponding instance from value.
-
-        :class:`~enum.Enum`\s that don't allow aliases don't know which instance should be returned
-        as there could be multiple valid instances. Except for the :attr:`default` value,
-        :class:`TopologyType` is a regular :class:`~enum.Enum`.
-        When getting an instance from value, we're not interested in the default,
-        since we already know the value, allowing us to remove the ambiguity.
-        """
-        match value:
-            case 0:
-                return TopologyType.no_link
-            case 1:
-                return TopologyType.one_link
-            case 2:
-                return TopologyType.two_links
-            case _:
-                raise ConfigurationError("More than two links in a topology are not supported.")
+    def default(cls) -> "TopologyType":
+        """The default topology required by test cases if not specified otherwise."""
+        return cls.two_links
 
 
+class PortLink(NamedTuple):
+    """The physical, cabled connection between the ports."""
+
+    #: The port on the SUT node connected to `tg_port`.
+    sut_port: Port
+    #: The port on the TG node connected to `sut_port`.
+    tg_port: Port
+
+
+@dataclass(frozen=True)
 class Topology:
     """Testbed topology.
 
     The topology contains ports processed into ingress and egress ports.
-    If there are no ports on a node, dummy ports (ports with no actual values) are stored.
-    If there is only one link available, the ports of this link are stored
+    If there are no ports on a node, accesses to :attr:`~Topology.tg_port_egress` and alike will
+    raise an exception. If there is only one link available, the ports of this link are stored
     as both ingress and egress ports.
 
-    The dummy ports shouldn't be used. It's up to :class:`~framework.runner.DTSRunner`
-    to ensure no test case or suite requiring actual links is executed
-    when the topology prohibits it and up to the developers to make sure that test cases
-    not requiring any links don't use any ports. Otherwise, the underlying methods
-    using the ports will fail.
+    It's up to :class:`~framework.test_run.TestRun` to ensure no test case or suite requiring actual
+    links is executed when the topology prohibits it and up to the developers to make sure that test
+    cases not requiring any links don't use any ports. Otherwise, the underlying methods using the
+    ports will fail.
 
     Attributes:
         type: The type of the topology.
-        tg_port_egress: The egress port of the TG node.
-        sut_port_ingress: The ingress port of the SUT node.
-        sut_port_egress: The egress port of the SUT node.
-        tg_port_ingress: The ingress port of the TG node.
+        sut_ports: The SUT ports.
+        tg_ports: The TG ports.
     """
 
     type: TopologyType
-    tg_port_egress: Port
-    sut_port_ingress: Port
-    sut_port_egress: Port
-    tg_port_ingress: Port
+    sut_ports: list[Port]
+    tg_ports: list[Port]
 
-    def __init__(self, sut_ports: Iterable[Port], tg_ports: Iterable[Port]):
-        """Create the topology from `sut_ports` and `tg_ports`.
+    @classmethod
+    def from_port_links(cls, port_links: Iterator[PortLink]) -> Self:
+        """Create the topology from `port_links`.
 
         Args:
-            sut_ports: The SUT node's ports.
-            tg_ports: The TG node's ports.
+            port_links: The test run's required port links.
+
+        Raises:
+            ConfigurationError: If an unsupported link topology is supplied.
         """
-        port_links = []
-        for sut_port in sut_ports:
-            for tg_port in tg_ports:
-                if (sut_port.identifier, sut_port.peer) == (
-                    tg_port.peer,
-                    tg_port.identifier,
-                ):
-                    port_links.append(PortLink(sut_port=sut_port, tg_port=tg_port))
+        type = TopologyType.no_link
 
-        self.type = TopologyType.get_from_value(len(port_links))
-        dummy_port = Port(
-            "",
-            PortConfig(
-                pci="0000:00:00.0",
-                os_driver_for_dpdk="",
-                os_driver="",
-                peer_node="",
-                peer_pci="0000:00:00.0",
-            ),
-        )
-        self.tg_port_egress = dummy_port
-        self.sut_port_ingress = dummy_port
-        self.sut_port_egress = dummy_port
-        self.tg_port_ingress = dummy_port
-        if self.type > TopologyType.no_link:
-            self.tg_port_egress = port_links[0].tg_port
-            self.sut_port_ingress = port_links[0].sut_port
-            self.sut_port_egress = self.sut_port_ingress
-            self.tg_port_ingress = self.tg_port_egress
-        if self.type > TopologyType.one_link:
-            self.sut_port_egress = port_links[1].sut_port
-            self.tg_port_ingress = port_links[1].tg_port
+        if port_link := next(port_links, None):
+            type = TopologyType.one_link
+            sut_ports = [port_link.sut_port]
+            tg_ports = [port_link.tg_port]
 
+            if port_link := next(port_links, None):
+                type = TopologyType.two_links
+                sut_ports.append(port_link.sut_port)
+                tg_ports.append(port_link.tg_port)
 
-@dataclass(slots=True, frozen=True)
-class PortLink:
-    """The physical, cabled connection between the ports.
+                if next(port_links, None) is not None:
+                    msg = "More than two links in a topology are not supported."
+                    raise ConfigurationError(msg)
 
-    Attributes:
-        sut_port: The port on the SUT node connected to `tg_port`.
-        tg_port: The port on the TG node connected to `sut_port`.
-    """
+        return cls(type, sut_ports, tg_ports)
 
-    sut_port: Port
-    tg_port: Port
+    @property
+    def tg_port_egress(self) -> Port:
+        """The egress port of the TG node."""
+        return self.tg_ports[0]
+
+    @property
+    def sut_port_ingress(self) -> Port:
+        """The ingress port of the SUT node."""
+        return self.sut_ports[0]
+
+    @property
+    def sut_port_egress(self) -> Port:
+        """The egress port of the SUT node."""
+        return self.sut_ports[1 if self.type is TopologyType.two_links else 0]
+
+    @property
+    def tg_port_ingress(self) -> Port:
+        """The ingress port of the TG node."""
+        return self.tg_ports[1 if self.type is TopologyType.two_links else 0]

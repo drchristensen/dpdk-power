@@ -106,6 +106,7 @@ uint8_t interactive = 0;
 uint8_t auto_start = 0;
 uint8_t tx_first;
 char cmdline_filename[PATH_MAX] = {0};
+bool echo_cmdline_file;
 
 /*
  * NUMA support configuration.
@@ -501,6 +502,16 @@ volatile int test_done = 1; /* stop packet forwarding when set to 1. */
 uint8_t xstats_hide_zero;
 
 /*
+ * Display of xstats without their state disabled by default
+ */
+uint8_t xstats_show_state;
+
+/*
+ * Display disabled xstat by default for xstats
+ */
+uint8_t xstats_hide_disabled;
+
+/*
  * Measure of CPU cycles disabled by default
  */
 uint8_t record_core_cycles;
@@ -694,7 +705,7 @@ eth_dev_set_mtu_mp(uint16_t port_id, uint16_t mtu)
 }
 
 /* Forward function declarations */
-static void setup_attached_port(portid_t pi);
+static void setup_attached_port(void *arg);
 static void check_all_ports_link_status(uint32_t port_mask);
 static int eth_event_callback(portid_t port_id,
 			      enum rte_eth_event_type type,
@@ -2895,6 +2906,7 @@ start_port(portid_t pid)
 		at_least_one_port_exist = true;
 
 		port = &ports[pi];
+
 		if (port->port_status == RTE_PORT_STOPPED) {
 			port->port_status = RTE_PORT_HANDLING;
 			all_ports_already_started = false;
@@ -3242,6 +3254,7 @@ remove_invalid_ports(void)
 	remove_invalid_ports_in(ports_ids, &nb_ports);
 	remove_invalid_ports_in(fwd_ports_ids, &nb_fwd_ports);
 	nb_cfg_ports = nb_fwd_ports;
+	printf("Now total ports is %d\n", nb_ports);
 }
 
 static void
@@ -3414,14 +3427,11 @@ attach_port(char *identifier)
 		return;
 	}
 
-	/* first attach mode: event */
+	/* First attach mode: event
+	 * New port flag is updated on RTE_ETH_EVENT_NEW event
+	 */
 	if (setup_on_probe_event) {
-		/* new ports are detected on RTE_ETH_EVENT_NEW event */
-		for (pi = 0; pi < RTE_MAX_ETHPORTS; pi++)
-			if (ports[pi].port_status == RTE_PORT_HANDLING &&
-					ports[pi].need_setup != 0)
-				setup_attached_port(pi);
-		return;
+		goto out;
 	}
 
 	/* second attach mode: iterator */
@@ -3429,13 +3439,17 @@ attach_port(char *identifier)
 		/* setup ports matching the devargs used for probing */
 		if (port_is_forwarding(pi))
 			continue; /* port was already attached before */
-		setup_attached_port(pi);
+		setup_attached_port((void *)(intptr_t)pi);
 	}
+out:
+	printf("Port %s is attached.\n", identifier);
+	printf("Done\n");
 }
 
 static void
-setup_attached_port(portid_t pi)
+setup_attached_port(void *arg)
 {
+	portid_t pi = (intptr_t)arg;
 	unsigned int socket_id;
 	int ret;
 
@@ -3450,14 +3464,8 @@ setup_attached_port(portid_t pi)
 			"Error during enabling promiscuous mode for port %u: %s - ignore\n",
 			pi, rte_strerror(-ret));
 
-	ports_ids[nb_ports++] = pi;
-	fwd_ports_ids[nb_fwd_ports++] = pi;
-	nb_cfg_ports = nb_fwd_ports;
 	ports[pi].need_setup = 0;
 	ports[pi].port_status = RTE_PORT_STOPPED;
-
-	printf("Port %d is attached. Now total ports is %d\n", pi, nb_ports);
-	printf("Done\n");
 }
 
 static void
@@ -3487,10 +3495,8 @@ detach_device(struct rte_device *dev)
 		TESTPMD_LOG(ERR, "Failed to detach device %s\n", rte_dev_name(dev));
 		return;
 	}
-	remove_invalid_ports();
 
 	printf("Device is detached\n");
-	printf("Now total ports is %d\n", nb_ports);
 	printf("Done\n");
 	return;
 }
@@ -3722,7 +3728,25 @@ rmv_port_callback(void *arg)
 		struct rte_device *device = dev_info.device;
 		close_port(port_id);
 		detach_device(device); /* might be already removed or have more ports */
+		remove_invalid_ports();
 	}
+	if (need_to_start)
+		start_packet_forwarding(0);
+}
+
+static void
+remove_invalid_ports_callback(void *arg)
+{
+	portid_t port_id = (intptr_t)arg;
+	int need_to_start = 0;
+
+	if (!test_done && port_is_forwarding(port_id)) {
+		need_to_start = 1;
+		stop_packet_forwarding();
+	}
+
+	remove_invalid_ports();
+
 	if (need_to_start)
 		start_packet_forwarding(0);
 }
@@ -3748,8 +3772,23 @@ eth_event_callback(portid_t port_id, enum rte_eth_event_type type, void *param,
 
 	switch (type) {
 	case RTE_ETH_EVENT_NEW:
-		ports[port_id].need_setup = 1;
-		ports[port_id].port_status = RTE_PORT_HANDLING;
+		/* The port in ports_id and fwd_ports_ids is always valid
+		 * from index 0 ~ (nb_ports - 1) due to updating their
+		 * position when one port is detached or removed.
+		 */
+		ports_ids[nb_ports++] = port_id;
+		fwd_ports_ids[nb_fwd_ports++] = port_id;
+		nb_cfg_ports = nb_fwd_ports;
+		printf("Port %d is probed. Now total ports is %d\n", port_id, nb_ports);
+
+		if (setup_on_probe_event) {
+			ports[port_id].need_setup = 1;
+			ports[port_id].port_status = RTE_PORT_HANDLING;
+		}
+		/* Can't initialize port directly in new event. */
+		if (rte_eal_alarm_set(100000, setup_attached_port,
+				      (void *)(intptr_t)port_id))
+			fprintf(stderr, "Could not set up deferred task to setup this attached port.\n");
 		break;
 	case RTE_ETH_EVENT_INTR_RMV:
 		if (port_id_is_invalid(port_id, DISABLED_WARN))
@@ -3762,6 +3801,15 @@ eth_event_callback(portid_t port_id, enum rte_eth_event_type type, void *param,
 	case RTE_ETH_EVENT_DESTROY:
 		ports[port_id].port_status = RTE_PORT_CLOSED;
 		printf("Port %u is closed\n", port_id);
+		/*
+		 * Defer to remove port id due to the reason that the ethdev
+		 * state is changed from 'ATTACHED' to 'UNUSED' only after the
+		 * event callback finished. Otherwise this port id can not be
+		 * removed.
+		 */
+		if (rte_eal_alarm_set(100000, remove_invalid_ports_callback,
+				      (void *)(intptr_t)port_id))
+			fprintf(stderr, "Could not set up deferred task to remove this port id.\n");
 		break;
 	case RTE_ETH_EVENT_RX_AVAIL_THRESH: {
 		uint16_t rxq_id;
@@ -4108,7 +4156,7 @@ get_eth_dcb_conf(struct rte_eth_conf *eth_conf, enum dcb_mode_enable dcb_mode,
 		for (i = 0; i < vmdq_rx_conf->nb_pool_maps; i++) {
 			vmdq_rx_conf->pool_map[i].vlan_id = vlan_tags[i];
 			vmdq_rx_conf->pool_map[i].pools =
-				1 << (i % vmdq_rx_conf->nb_queue_pools);
+				RTE_BIT64(i % vmdq_rx_conf->nb_queue_pools);
 		}
 		for (i = 0; i < RTE_ETH_DCB_NUM_USER_PRIORITIES; i++) {
 			vmdq_rx_conf->dcb_tc[i] = i % num_tcs;
